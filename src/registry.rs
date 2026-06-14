@@ -116,10 +116,6 @@ impl GlobalRegistry {
         Ok(())
     }
 
-    /// Find a workspace overview by path.
-    pub fn find_workspace(&self, path: &str) -> Option<&WorkspaceOverview> {
-        self.workspaces.iter().find(|w| w.path == path)
-    }
 }
 
 // ── Tier 2: Workspace Detail ────────────────────────────────────────
@@ -229,12 +225,14 @@ impl WorkspaceRegistry {
                     entry.status = SessionStatus::InProgress;
                 }
             } else {
-                // Strategy 2: link last unlinked entry (most recent Ctrl+N)
+                // Strategy 2: link last unlinked InProgress entry (most recent Ctrl+N).
+                // Only match InProgress — skips Completed seed entries that happen to
+                // have empty session_id/pids, which would cause sidebar flickering.
                 if let Some(entry) = self
                     .sessions
                     .iter_mut()
                     .rev()
-                    .find(|e| e.session_id.is_empty() && e.pids.is_empty())
+                    .find(|e| e.session_id.is_empty() && e.pids.is_empty() && e.status == SessionStatus::InProgress)
                 {
                     entry.session_id = live.session_id.clone();
                     entry.pids.push(live.pid);

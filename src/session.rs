@@ -10,27 +10,22 @@ pub struct Session {
     #[serde(rename = "sessionId")]
     pub session_id: String,
     pub cwd: String,
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub status: String,
     #[serde(rename = "startedAt")]
     pub started_at: u64,
     #[serde(rename = "updatedAt")]
+    #[serde(default)]
     pub updated_at: Option<u64>,
+    #[serde(default)]
     pub kind: Option<String>,
+    #[serde(default)]
     pub version: Option<String>,
 }
 
 impl Session {
-    /// Human-friendly status label for the sidebar.
-    pub fn status_label(&self) -> &str {
-        match self.status.as_str() {
-            "busy" => "●",
-            "idle" => "○",
-            "gone" => "✕",
-            _ => "?",
-        }
-    }
-
     /// Short display name: session name or cwd basename.
     pub fn display_name(&self) -> &str {
         if self.name.is_empty() { "unnamed" } else { &self.name }
@@ -85,6 +80,13 @@ fn load_all_unfiltered(sessions_dir: &PathBuf) -> Result<Vec<Session>> {
         match std::fs::read_to_string(&path) {
             Ok(contents) => {
                 if let Ok(session) = serde_json::from_str::<Session>(&contents) {
+                    // Skip transient/incomplete session files: updatedAt is a late
+                    // field in the JSON; its absence means the file was truncated
+                    // mid-write by cds. These files appear and disappear within
+                    // seconds, causing sidebar flicker.
+                    if session.updated_at.is_none() {
+                        continue;
+                    }
                     sessions.push(session);
                 }
             }
@@ -98,12 +100,3 @@ fn load_all_unfiltered(sessions_dir: &PathBuf) -> Result<Vec<Session>> {
     Ok(sessions)
 }
 
-/// Find the most recent session_id for sessions in the given workspace.
-/// Used for lazy transcript lookup when a registry entry has no linked session.
-pub fn find_workspace_session_id(sessions_dir: &PathBuf, workspace: &str) -> Option<String> {
-    let all = load_all_unfiltered(sessions_dir).ok()?;
-    all.into_iter()
-        .filter(|s| s.cwd.starts_with(workspace))
-        .max_by_key(|s| s.updated_at)
-        .map(|s| s.session_id)
-}

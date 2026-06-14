@@ -19,8 +19,6 @@ pub struct SidebarEntry {
     pub live_session: Option<Session>,
     /// If this is a registry entry with a linked session_id, store it for transcript lookup.
     pub registry_session_id: Option<String>,
-    /// CWD for transcript lookup (from live session or workspace).
-    pub cwd: String,
 }
 
 /// Sidebar state: session list + navigation.
@@ -43,11 +41,26 @@ impl Sidebar {
         &mut self,
         live_sessions: Vec<Session>,
         registry_sessions: &[WorkspaceSession],
-        workspace_cwd: &str,
     ) {
+        // Remember which entry is selected so we can re-select it after the
+        // list is rebuilt (entries may shift when live sessions come/go).
+        let selected_id: Option<String> = self
+            .list_state
+            .selected()
+            .and_then(|i| self.entries.get(i))
+            .and_then(|e| {
+                e.live_session
+                    .as_ref()
+                    .map(|s| s.session_id.clone())
+                    .or_else(|| e.registry_session_id.clone())
+                    .or_else(|| Some(e.label.clone()))
+            });
+
         let mut entries: Vec<SidebarEntry> = Vec::new();
 
-        // Live sessions first
+        // Live sessions first.
+        // If the session file has no name (cds writes sessionId but no display name),
+        // resolve it from the matching registry entry so users see "Test4" not "unnamed".
         for s in &live_sessions {
             let status_style = match s.status.as_str() {
                 "busy" => Style::default().fg(Color::Yellow),
@@ -55,14 +68,24 @@ impl Sidebar {
                 _ => Style::default().fg(Color::DarkGray),
             };
 
+            let label = if s.name.is_empty() {
+                registry_sessions
+                    .iter()
+                    .find(|rs| rs.session_id == s.session_id)
+                    .map(|rs| rs.name.as_str())
+                    .unwrap_or("unnamed")
+                    .to_string()
+            } else {
+                s.display_name().to_string()
+            };
+
             entries.push(SidebarEntry {
-                label: s.display_name().to_string(),
+                label,
                 detail: s.cwd_short().to_string(),
                 is_registry: false,
                 status_style,
                 live_session: Some(s.clone()),
                 registry_session_id: None,
-                cwd: s.cwd.clone(),
             });
         }
 
@@ -103,19 +126,27 @@ impl Sidebar {
                 } else {
                     Some(rs.session_id.clone())
                 },
-                cwd: workspace_cwd.to_string(),
             });
         }
 
         self.entries = entries;
 
+        // Preserve selection on the same logical entry after list rebuild.
+        // When a live session replaces a registry entry (same session_id but
+        // different position), the old row index is stale.  Track by identity.
         if self.entries.is_empty() {
             self.list_state.select(None);
-        } else if self
-            .list_state
-            .selected()
-            .map_or(true, |i| i >= self.entries.len())
-        {
+        } else if let Some(ref id) = selected_id {
+            let pos = self.entries.iter().position(|e| {
+                e.live_session
+                    .as_ref()
+                    .map(|s| &s.session_id == id)
+                    .unwrap_or(false)
+                    || e.registry_session_id.as_ref().map(|rs| rs == id).unwrap_or(false)
+                    || &e.label == id
+            });
+            self.list_state.select(pos.or(Some(0)));
+        } else {
             self.list_state.select(Some(0));
         }
     }
@@ -130,11 +161,6 @@ impl Sidebar {
         self.list_state
             .selected()
             .and_then(|i| self.entries.get(i))
-    }
-
-    /// Return a reference to the live session, if the selected entry has one.
-    pub fn selected_session(&self) -> Option<&Session> {
-        self.selected_entry().and_then(|e| e.live_session.as_ref())
     }
 
     pub fn select_next(&mut self) {

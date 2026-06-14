@@ -13,7 +13,14 @@ pub struct Pty {
 
 impl Pty {
     /// Spawn `cds` inside a new PTY in the given working directory.
-    pub fn spawn(rows: u16, cols: u16, cwd: &Path) -> Result<Self> {
+    /// If `resume_session` is Some, passes `--resume <id>` to resume
+    /// that conversation (cds displays the history natively).
+    pub fn spawn(
+        rows: u16,
+        cols: u16,
+        cwd: &Path,
+        resume_session: Option<&str>,
+    ) -> Result<Self> {
         let pty_system = NativePtySystem::default();
 
         let pty_pair = pty_system
@@ -25,16 +32,19 @@ impl Pty {
             })
             .context("failed to open PTY pair")?;
 
-        // Spawn through fish to pick up the `cds` function
-        // (sets Anthropic env vars before launching claude)
-        let mut cmd = CommandBuilder::new("fish");
-        cmd.arg("-c");
-        cmd.arg("cds");
+        // Spawn claude directly — env vars (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN,
+        // etc.) are inherited from cc-tui's parent process. The user must export
+        // them in their shell config (e.g., fish: set -gx ANTHROPIC_BASE_URL ...).
+        let mut cmd = CommandBuilder::new("claude");
+        if let Some(sid) = resume_session {
+            cmd.arg("--resume");
+            cmd.arg(sid);
+        }
         cmd.cwd(cwd);
         let child = pty_pair
             .slave
             .spawn_command(cmd)
-            .context("failed to spawn cds process")?;
+            .context("failed to spawn claude process")?;
 
         // Close slave FD — only the child process needs it
         drop(pty_pair.slave);

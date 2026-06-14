@@ -3,7 +3,6 @@ mod pty;
 mod registry;
 mod session;
 mod sidebar;
-mod transcript;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -20,7 +19,6 @@ use ratatui::{
 use ansi::TerminalScreen;
 use pty::Pty;
 use sidebar::Sidebar;
-use transcript::TranscriptView;
 
 const PTY_READ_BUF: usize = 8192;
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -40,8 +38,6 @@ enum ViewMode {
     Landing,
     /// Live cds PTY.
     Live,
-    /// Viewing a session transcript.
-    Transcript(Box<TranscriptView>),
 }
 
 /// Text input mode for creating a new session.
@@ -132,7 +128,6 @@ fn main() -> anyhow::Result<()> {
     sidebar.refresh(
         session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
         &workspace_registry.sessions,
-        &ws_path_str,
     );
     let mut last_session_refresh = Instant::now();
 
@@ -163,7 +158,6 @@ fn main() -> anyhow::Result<()> {
             sidebar.refresh(
                 session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
                 &workspace_registry.sessions,
-                &ws_path_str,
             );
             let _ = workspace_registry
                 .merge_live_sessions(&sessions_dir, &ws_path_str);
@@ -214,7 +208,6 @@ fn main() -> anyhow::Result<()> {
                                         session::load_all(&sessions_dir, Some(&workspace))
                                             .unwrap_or_default(),
                                         &workspace_registry.sessions,
-                                        &ws_path_str,
                                     );
 
                                     // Lazy-spawn PTY if not already running
@@ -226,6 +219,7 @@ fn main() -> anyhow::Result<()> {
                                             pty_rows,
                                             pty_cols.max(1),
                                             &workspace,
+                                            None,
                                         ) {
                                             Ok(p) => {
                                                 screen = Some(TerminalScreen::new(
@@ -249,27 +243,6 @@ fn main() -> anyhow::Result<()> {
                             }
                             KeyCode::Backspace => inp.backspace(),
                             KeyCode::Char(c) => inp.insert(c),
-                            _ => {}
-                        }
-                        continue;
-                    }
-
-                    // ── Transcript mode ─────────────────────────
-                    if let ViewMode::Transcript(ref mut tv) = view {
-                        match key.code {
-                            KeyCode::Esc | KeyCode::Tab => {
-                                view = if pty.is_some() {
-                                    ViewMode::Live
-                                } else {
-                                    ViewMode::Landing
-                                };
-                                continue;
-                            }
-                            KeyCode::Up | KeyCode::Char('k') => tv.scroll_up(1),
-                            KeyCode::Down | KeyCode::Char('j') => tv.scroll_down(1),
-                            KeyCode::PageUp => tv.scroll_up(10),
-                            KeyCode::PageDown => tv.scroll_down(10),
-                            KeyCode::Home => tv.scroll = 0,
                             _ => {}
                         }
                         continue;
@@ -301,106 +274,43 @@ fn main() -> anyhow::Result<()> {
                             KeyCode::Enter => {
                                 if let Some(entry) = sidebar.selected_entry() {
                                     if let Some(s) = &entry.live_session {
-                                        // Live session → try transcript replay
-                                        let path = transcript::transcript_path(
-                                            &home, &s.cwd, &s.session_id,
-                                        );
-                                        if let Some(p) = path {
-                                            match TranscriptView::load(
-                                                &p, s.display_name(),
-                                            ) {
-                                                Ok(tv) => {
-                                                    view = ViewMode::Transcript(
-                                                        Box::new(tv),
-                                                    );
-                                                }
-                                                Err(_) => {
-                                                    view = ViewMode::Transcript(
-                                                        Box::new(
-                                                            TranscriptView::empty(
-                                                                s.display_name(),
-                                                            ),
-                                                        ),
-                                                    );
-                                                }
-                                            }
-                                        } else {
-                                            view = ViewMode::Transcript(Box::new(
-                                                TranscriptView::empty(
-                                                    s.display_name(),
-                                                ),
-                                            ));
+                                        // Live session → resume in cds
+                                        let sid = s.session_id.clone();
+                                        let pc = term_cols * (100 - SIDEBAR_FRACTION) / 100;
+                                        let pr = term_rows;
+                                        if let Some(ref mut p) = pty {
+                                            let _ = p.kill();
                                         }
+                                        match Pty::spawn(pr, pc.max(1), &workspace, Some(&sid)) {
+                                            Ok(p) => {
+                                                screen = Some(TerminalScreen::new(pr, pc.max(1)));
+                                                last_pty_cols = pc;
+                                                last_pty_rows = pr;
+                                                pty = Some(p);
+                                            }
+                                            Err(e) => eprintln!("PTY spawn error: {e}"),
+                                        }
+                                        view = ViewMode::Live;
+                                        focus = Focus::Pty;
                                     } else if entry.is_registry {
-                                        // Registry entry: try transcript via
-                                        // linked session_id, or lazy lookup
-                                        let lookup_sid = entry
-                                            .registry_session_id
-                                            .clone()
-                                            .or_else(|| {
-                                                session::find_workspace_session_id(
-                                                    &sessions_dir,
-                                                    &ws_path_str,
-                                                )
-                                            });
-
-                                        if let Some(sid) = lookup_sid {
-                                            let path = transcript::transcript_path(
-                                                &home, &entry.cwd, &sid,
-                                            );
-                                            if let Some(p) = path {
-                                                match TranscriptView::load(
-                                                    &p, &entry.label,
-                                                ) {
-                                                    Ok(tv) => {
-                                                        view = ViewMode::Transcript(
-                                                            Box::new(tv),
-                                                        );
-                                                    }
-                                                    Err(_) => {
-                                                        view = ViewMode::Transcript(
-                                                            Box::new(
-                                                                TranscriptView::empty(
-                                                                    &entry.label,
-                                                                ),
-                                                            ),
-                                                        );
-                                                    }
-                                                }
-                                            } else {
-                                                view = ViewMode::Transcript(Box::new(
-                                                    TranscriptView::empty(
-                                                        &entry.label,
-                                                    ),
-                                                ));
-                                            }
-                                        } else if pty.is_none() {
-                                            // No sessions found at all → spawn cds
-                                            let pc = term_cols
-                                                * (100 - SIDEBAR_FRACTION)
-                                                / 100;
-                                            let pr = term_rows;
-                                            match Pty::spawn(pr, pc.max(1), &workspace) {
-                                                Ok(p) => {
-                                                    screen = Some(TerminalScreen::new(
-                                                        pr,
-                                                        pc.max(1),
-                                                    ));
-                                                    last_pty_cols = pc;
-                                                    last_pty_rows = pr;
-                                                    pty = Some(p);
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("PTY spawn error: {e}");
-                                                }
-                                            }
-                                            view = ViewMode::Live;
-                                            focus = Focus::Pty;
-                                        } else {
-                                            // PTY already running — just show it
-                                            view = ViewMode::Live;
-                                            focus = Focus::Pty;
+                                        // Registry entry → resume if session_id linked
+                                        let sid = entry.registry_session_id.clone();
+                                        let pc = term_cols * (100 - SIDEBAR_FRACTION) / 100;
+                                        let pr = term_rows;
+                                        if let Some(ref mut p) = pty {
+                                            let _ = p.kill();
                                         }
+                                        match Pty::spawn(pr, pc.max(1), &workspace, sid.as_deref()) {
+                                            Ok(p) => {
+                                                screen = Some(TerminalScreen::new(pr, pc.max(1)));
+                                                last_pty_cols = pc;
+                                                last_pty_rows = pr;
+                                                pty = Some(p);
+                                            }
+                                            Err(e) => eprintln!("PTY spawn error: {e}"),
+                                        }
+                                        view = ViewMode::Live;
+                                        focus = Focus::Pty;
                                     }
                                 }
                             }
@@ -624,22 +534,6 @@ fn render_ui(
                 );
             }
         }
-        ViewMode::Transcript(tv) => {
-            let available = chunks[1].height as usize;
-            let text = tv.render(available);
-            let widget = Paragraph::new(text)
-                .block(
-                    Block::bordered()
-                        .title_top(format!(" {} ", tv.session_name))
-                        .title_bottom(
-                            " Esc/Tab → back  │  ↑↓/PgUp/PgDn scroll ",
-                        )
-                        .border_style(Style::default().fg(Color::Rgb(120, 180, 255))),
-                )
-                .wrap(Wrap { trim: true })
-                .scroll((0, 0));
-            f.render_widget(widget, chunks[1]);
-        }
     }
 
     // Input overlay (centered)
@@ -693,17 +587,6 @@ fn render_ui(
         (true, _, _) => TLine::from(" NEW SESSION  │  Enter name  │  Esc cancel  │  Enter confirm "),
         (_, ViewMode::Landing, _) => {
             TLine::from(" cc-tui  │  Ctrl+N new  │  Tab sidebar  │  Ctrl+Q quit ")
-        }
-        (_, ViewMode::Transcript(tv), _) => {
-            let pct = if tv.line_count > 0 {
-                tv.scroll * 100 / tv.line_count
-            } else {
-                0
-            };
-            TLine::from(format!(
-                " REPLAY: {}  │  {}/{} lines ({}%)  │  Esc/Tab → back ",
-                tv.session_name, tv.scroll, tv.line_count, pct
-            ))
         }
         (_, ViewMode::Live, Focus::Pty) => {
             TLine::from(" cds  │  Ctrl+Q quit  │  Tab → sidebar  │  Ctrl+N new ")
