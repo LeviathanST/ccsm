@@ -27,3 +27,17 @@ Before writing PTY code against `portable-pty`, grep the trait definitions: `gre
 
 Evidence:
 2026-06-14 cc-tui Phase 1 — 4 compilation errors on first build, all from mismatched API assumptions. Fixed by grep-ing crate source in `.cargo/registry/src/`.
+
+## PTY Size Must Match Panel Area, Not Full Terminal
+
+Symptom:
+cds output breaks layout again after adding a sidebar panel. Text wraps, overflows, or is truncated even though the fixed-grid rendering is correct.
+
+Cause:
+The PTY and vt100 screen were sized to the full terminal dimensions (e.g., 120×40), but the PTY is rendered in a sub-panel (e.g., 70% width = 84 cols). The child process (cds) believes it has 120 columns and formats output accordingly, but only 84 are visible. Adding a border on the PTY panel steals 2 more columns.
+
+Fix:
+Always size the PTY and vt100 screen to match the actual rendered panel area, not the full terminal. Compute: `pty_cols = term_cols * panel_fraction / 100`, `pty_rows = term_rows`. Resize the PTY on every terminal geometry change. Never put a border on the PTY panel — borders steal columns and break the grid. Use a separate status bar or colored sidebar border for focus indication instead.
+
+Evidence:
+2026-06-14 cc-tui Phase 2 — adding a 30/70 sidebar/PTY split with a bordered PTY panel broke cds layout. Fixed by: (1) sizing PTY to `term_cols * 70 / 100` from spawn, (2) removing the PTY border, (3) tracking terminal size via Resize events and re-computing PTY dimensions, (4) moving focus indicator to a bottom status bar.
