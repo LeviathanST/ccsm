@@ -42,6 +42,13 @@ impl Sidebar {
         self.list_state.selected()
     }
 
+    /// Return a reference to the currently selected session, if any.
+    pub fn selected_session(&self) -> Option<&Session> {
+        self.list_state
+            .selected()
+            .and_then(|i| self.sessions.get(i))
+    }
+
     pub fn select_next(&mut self) {
         if self.sessions.is_empty() {
             return;
