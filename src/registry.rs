@@ -146,7 +146,7 @@ pub struct WorkspaceSession {
     pub completed: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Pending,
@@ -193,60 +193,67 @@ impl WorkspaceRegistry {
         }
     }
 
-    /// Merge auto-data from live session files into the registry.
-    /// Updates pids, session_id, and timestamps; preserves curated fields.
-    ///
-    /// Matching strategy:
-    /// 1. Exact match by `session_id`
-    /// 2. Fallback: link unlinked registry entries (empty session_id, no pids)
-    ///    to live sessions from the same workspace. This handles the case
-    ///    where Ctrl+N creates a registry entry before cds writes its
-    ///    session file — on next refresh, the live session gets linked.
-    pub fn merge_live_sessions(
+    /// Write spawn info directly to the registry entry. Called at spawn time
+    /// when we own the child and know its pid. session_id can be None for
+    /// fresh spawns (filled in later from the session file on disk).
+    pub fn link_spawn(
+        &mut self,
+        name: &str,
+        pid: u32,
+        session_id: Option<&str>,
+    ) {
+        // Find by name, prefer newest (reverse iterate).
+        if let Some(entry) = self.sessions.iter_mut().rev()
+            .find(|e| e.name == name)
+        {
+            entry.pids.clear();
+            entry.pids.push(pid);
+            // Only set session_id if the entry doesn't have one yet
+            // (respects manually-set session_ids from the user).
+            if entry.session_id.is_empty() {
+                if let Some(sid) = session_id {
+                    if !sid.is_empty() {
+                        entry.session_id = sid.to_string();
+                    }
+                }
+            }
+            if entry.started.is_empty() {
+                entry.started = now_iso();
+            }
+            self.updated = now_iso();
+        }
+    }
+
+    /// Refresh hook called every 2s. Two jobs:
+    /// 1. Fill session_id for fresh spawns (where Claude writes it after startup).
+    /// 2. Clean stale pids — remove pids whose process has died (no session file).
+    pub fn refresh_from_live(
         &mut self,
         sessions_dir: &PathBuf,
         workspace_path: &str,
     ) -> Result<()> {
-        let all =
-            crate::session::load_all(sessions_dir, Some(&PathBuf::from(workspace_path)))?;
+        let all = crate::session::load_all(sessions_dir, Some(&PathBuf::from(workspace_path)))?;
 
-        for live in &all {
-            // Strategy 1: exact match by session_id
-            let matched = self
-                .sessions
-                .iter_mut()
-                .find(|e| e.session_id == live.session_id);
+        // Only keep pids that still have a live session file on disk.
+        let live_pids: std::collections::HashSet<u32> =
+            all.iter().map(|s| s.pid).collect();
 
-            if let Some(entry) = matched {
-                if !entry.pids.contains(&live.pid) {
-                    entry.pids.push(live.pid);
-                }
-                if entry.started.is_empty() {
-                    entry.started = format_ts(live.started_at);
-                }
-                if live.status == "busy" && entry.status == SessionStatus::Pending {
-                    entry.status = SessionStatus::InProgress;
-                }
-            } else {
-                // Strategy 2: link last unlinked InProgress entry (most recent Ctrl+N).
-                // Only match InProgress — skips Completed seed entries that happen to
-                // have empty session_id/pids, which would cause sidebar flickering.
-                if let Some(entry) = self
-                    .sessions
-                    .iter_mut()
-                    .rev()
-                    .find(|e| e.session_id.is_empty() && e.pids.is_empty() && e.status == SessionStatus::InProgress)
-                {
+        for entry in self.sessions.iter_mut() {
+            // Fill empty session_id from live session file (fresh spawns).
+            if entry.session_id.is_empty()
+                && entry.status == SessionStatus::InProgress
+                && !entry.pids.is_empty()
+            {
+                if let Some(live) = all.iter().find(|s| entry.pids.contains(&s.pid)) {
                     entry.session_id = live.session_id.clone();
-                    entry.pids.push(live.pid);
                     if entry.started.is_empty() {
                         entry.started = format_ts(live.started_at);
                     }
-                    if live.status == "busy" && entry.status == SessionStatus::Pending {
-                        entry.status = SessionStatus::InProgress;
-                    }
                 }
             }
+
+            // Clean stale pids — remove any pid whose session file is gone.
+            entry.pids.retain(|p| live_pids.contains(p));
         }
 
         self.updated = now_iso();
@@ -434,7 +441,7 @@ fn now_iso() -> String {
     format!("day{days}T{h:02}:{m:02}:{s:02}Z")
 }
 
-fn format_ts(ms: u64) -> String {
+pub(crate) fn format_ts(ms: u64) -> String {
     let secs = ms / 1000;
     let day_secs = secs % 86400;
     let days = secs / 86400;
@@ -444,9 +451,11 @@ fn format_ts(ms: u64) -> String {
 }
 
 /// Derive the Claude Code project slug from a workspace path.
-/// Claude replaces '/' with '-' in the absolute path, e.g.
-/// `/home/user/project` → `-home-user-project`.
-fn project_slug(path: &std::path::Path) -> String {
+/// Claude replaces '/' and other non-alphanumeric chars with '-' in the
+/// absolute path, e.g. `/home/user/my_project` → `-home-user-my-project`.
+pub(crate) fn project_slug(path: &std::path::Path) -> String {
     let s = path.to_string_lossy();
-    s.replace('/', "-")
+    s.chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect()
 }

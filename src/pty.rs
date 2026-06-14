@@ -12,9 +12,9 @@ pub struct Pty {
 }
 
 impl Pty {
-    /// Spawn `cds` inside a new PTY in the given working directory.
+    /// Spawn `claude` inside a new PTY in the given working directory.
     /// If `resume_session` is Some, passes `--resume <id>` to resume
-    /// that conversation (cds displays the history natively).
+    /// that conversation (claude loads the transcript from disk).
     pub fn spawn(
         rows: u16,
         cols: u16,
@@ -122,8 +122,16 @@ impl Pty {
         self.child.try_wait().unwrap_or(None)
     }
 
-    /// Kill the child process.
+    /// Kill the child process (SIGKILL — non-trappable, prevents state saving).
     pub fn kill(&mut self) -> Result<()> {
         self.child.kill().context("failed to kill child process")
     }
+
+    /// Return the child process ID, if available.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
+    // detach() removed — cc-tui now kills the child on exit.
+    // Transcripts are saved incrementally by Claude, so nothing is lost.
 }
