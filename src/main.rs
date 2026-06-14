@@ -1,5 +1,6 @@
 mod ansi;
 mod pty;
+mod registry;
 mod session;
 mod sidebar;
 mod transcript;
@@ -52,6 +53,21 @@ fn main() -> anyhow::Result<()> {
     // ── Session data paths ──────────────────────────────────────────
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     let sessions_dir = PathBuf::from(&home).join(".claude").join("sessions");
+    let global_registry_path = PathBuf::from(&home).join(".claude").join("sessions.json");
+
+    // ── Build/refresh global registry (Tier 1) ─────────────────────
+    let _ = registry::GlobalRegistry::load_or_build(&global_registry_path, &sessions_dir)
+        .and_then(|r| r.save(&global_registry_path));
+
+    // ── Load workspace registry (Tier 2), seed if empty ────────────
+    let mut workspace_registry =
+        registry::WorkspaceRegistry::load(&workspace).unwrap_or_else(|_| {
+            registry::WorkspaceRegistry::empty()
+        });
+    workspace_registry.seed(registry::WorkspaceRegistry::default_seed());
+    let ws_path_str = workspace.to_string_lossy().to_string();
+    let _ = workspace_registry.merge_live_sessions(&sessions_dir, &ws_path_str);
+    let _ = workspace_registry.save(&workspace);
 
     // ── Terminal setup ──────────────────────────────────────────────
     let mut stdout = std::io::stdout();
@@ -105,11 +121,21 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // ── Refresh sessions ────────────────────────────────────
+        // ── Refresh sessions & merge into registry ──────────────
         if last_session_refresh.elapsed() >= SESSION_REFRESH_INTERVAL {
             sidebar.refresh(
                 session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
             );
+            // Merge live session data into the workspace registry
+            let _ = workspace_registry
+                .merge_live_sessions(&sessions_dir, &ws_path_str);
+            let _ = workspace_registry.save(&workspace);
+            // Rebuild global overview
+            if let Ok(gr) =
+                registry::GlobalRegistry::build(&sessions_dir)
+            {
+                let _ = gr.save(&global_registry_path);
+            }
             last_session_refresh = Instant::now();
         }
 
