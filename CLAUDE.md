@@ -35,19 +35,19 @@ You are Vex, building a persistent TUI wrapper around Claude Code. This project 
 
 ## Data Sources (zero PTY parsing)
 
-Every panel reads from filesystem files or hook event bridges. Claude Code's PTY output is rendered untouched — never parsed.
+Every panel reads from filesystem files or hook event bridges. Cds's PTY output is rendered untouched — never parsed.
 
 ### Files on Disk (poll/watch)
 
-| Path | Contains | Use For |
-|------|----------|---------|
-| `~/.claude/tasks/<session>/*.json` | All tasks: id, subject, status, blocks | Task dashboard |
-| `~/.claude/sessions/<pid>.json` | Live sessions: sessionId, cwd, status, name | Session list |
-| `~/.claude/history.jsonl` | Every prompt typed, with timestamp + project | Session search |
-| `~/.claude/stats-cache.json` | Daily aggregated: messageCount, sessionCount, toolCallCount | Token dashboard (aggregate) |
-| `~/.claude/projects/<project>/<session>.jsonl` | Full transcript: every message, tool_use block | Detailed session replay |
-| `.claude/sessions.md` | Custom session board (user-authored) | Session manager CRUD |
-| `.claude/sessions/<name>.md` | Per-session detail: goal, scope, progress | Session detail panel |
+| Path | Contains | Use For | Status |
+|------|----------|---------|--------|
+| `~/.claude/sessions/<pid>.json` | Live sessions: sessionId, cwd, status, name | Session list | ✅ Built (Phase 2) |
+| `~/.claude/projects/<project>/<session>.jsonl` | Full transcript: every message, tool_use block | Session replay | ✅ Built (Phase 2) |
+| `~/.claude/tasks/<session>/*.json` | All tasks: id, subject, status, blocks | Task dashboard | 🔜 Phase 4 |
+| `~/.claude/stats-cache.json` | Daily aggregated: messageCount, sessionCount, toolCallCount | Token dashboard | 🔜 Phase 6 |
+| `~/.claude/history.jsonl` | Every prompt typed, with timestamp + project | Session search | 🔜 Future |
+
+> **Decision: `~/.claude/sessions/<pid>.json` is the canonical session data source.** These files are written automatically by Claude Code with pid, sessionId, cwd, status, name, and timestamps. The `.claude/sessions.md` markdown board and `.claude/sessions/<name>.md` files described in the original plan are user-curated notes — not a structured data source. cc-tui reads the JSON files directly. No migration needed; the JSON approach is zero-config and always reflects reality.
 
 ### Hook Events (real-time bridges)
 
@@ -72,9 +72,12 @@ User already has a custom status line via Node.js script. The TUI can embed its 
 
 1. **PTY embedding, not Agent SDK.** User explicitly rejected rebuilding Claude Code's conversation UI. The PTY approach gives 100% of Claude Code's features for free.
 2. **Never parse PTY output.** The golden rule from klaudio-panels. All sidebar data comes from filesystem + hooks.
-3. **Input routing: Tab toggles focus.** When sidebar has focus → arrow keys navigate. When Claude PTY has focus → all keystrokes pass through.
+3. **Input routing: Tab toggles focus.** When sidebar has focus → arrow keys navigate. When cds PTY has focus → all keystrokes pass through.
 4. **Hook-to-file bridge pattern.** Hooks write events to a JSONL file (`/tmp/cc-events.jsonl` or similar). TUI tail-follows it. Zero coupling between hook logic and TUI render loop.
 5. **ratatui, not a web UI.** Terminal-native keeps it in the same environment as Claude Code. No browser context switch.
+6. **`~/.claude/sessions/<pid>.json` is the canonical session source.** Claude Code writes these automatically — pid, sessionId, cwd, status, name, timestamps. No manual markdown board needed. The `.claude/sessions.md` concept from the original plan was a user-curated notes file, not a structured data source. cc-tui reads the JSON directly — zero config, always accurate.
+7. **Tmux-style fixed-grid rendering.** Every vt100 cell position is rendered as a space or glyph — never skip cells. The PTY is sized to exactly match the panel area it renders into. No borders on the PTY panel.
+8. **`CommandBuilder::cwd()` sets the workspace.** Accept workspace path as CLI arg (defaults to `$PWD`). Session list filters to sessions whose cwd matches the workspace.
 
 ## What We Know About Claude Code's Data Surface
 
