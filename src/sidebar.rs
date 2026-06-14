@@ -31,6 +31,8 @@ pub struct SidebarEntry {
 pub struct Sidebar {
     pub entries: Vec<SidebarEntry>,
     pub list_state: ListState,
+    /// How many rows are visible in the sidebar panel (excl. borders).
+    visible_rows: usize,
 }
 
 impl Sidebar {
@@ -38,6 +40,7 @@ impl Sidebar {
         Self {
             entries: Vec::new(),
             list_state: ListState::default(),
+            visible_rows: 0,
         }
     }
 
@@ -113,7 +116,9 @@ impl Sidebar {
             // If no registry matched but a registry entry with the same NAME
             // exists (with a different session_id), the registry takes priority.
             // Hide this live session — it's a stale/accidental process.
-            if matching_registry.is_none() {
+            // BUT only when the label is meaningful: "unnamed" is too generic
+            // and would suppress unrelated live sessions.
+            if matching_registry.is_none() && label != "unnamed" {
                 if registry_sessions.iter().any(|rs|
                     rs.name == label
                     && !rs.session_id.is_empty()
@@ -139,8 +144,9 @@ impl Sidebar {
         // ── Registry entries not seen as live ───────────────────────
         // Reverse-iterate so newer entries (pushed later) are seen first;
         // deduplicate by name preferring non-trashed entries.
-        let mut dedup: std::collections::HashMap<String, &WorkspaceSession> =
-            std::collections::HashMap::new();
+        // BTreeMap for deterministic ordering (HashMap iter order is random).
+        let mut dedup: std::collections::BTreeMap<String, &WorkspaceSession> =
+            std::collections::BTreeMap::new();
         for rs in registry_sessions.iter().rev() {
             // Pending sessions are upcoming topics — only shown in Ctrl+N wizard
             if rs.status == crate::registry::SessionStatus::Pending {
@@ -152,11 +158,15 @@ impl Sidebar {
                 continue; // already shown as live session
             }
             let is_trash = rs.status == crate::registry::SessionStatus::Trashed;
+            // Key by session_id when available (stable identity), else by name.
+            let key = if rs.session_id.is_empty() {
+                rs.name.clone()
+            } else {
+                rs.session_id.clone()
+            };
             dedup
-                .entry(rs.name.clone())
+                .entry(key)
                 .and_modify(|existing| {
-                    // Replace a trashed entry with a non-trashed one if the
-                    // newer entry (seen first via .rev()) is non-trashed.
                     let existing_trash =
                         existing.status == crate::registry::SessionStatus::Trashed;
                     if existing_trash && !is_trash {
@@ -227,7 +237,7 @@ impl Sidebar {
             entries.push(SidebarEntry {
                 label: String::new(),
                 detail: String::new(),
-                is_registry: true,
+                is_registry: false,
                 status_style: Style::default().fg(Color::DarkGray),
                 live_session: None,
                 registry_session_id: None,
@@ -257,8 +267,14 @@ impl Sidebar {
                 .map(|i| i.min(self.entries.len().saturating_sub(1)))
                 .unwrap_or(0);
             self.list_state.select(pos.or(Some(fallback)));
+            self.scroll_into_view();
         } else {
-            self.list_state.select(Some(0));
+            // No stable identity to track — fall back to positional clamping.
+            let fallback = old_index
+                .map(|i| i.min(self.entries.len().saturating_sub(1)))
+                .unwrap_or(0);
+            self.list_state.select(Some(fallback));
+            self.scroll_into_view();
         }
     }
 
@@ -274,6 +290,22 @@ impl Sidebar {
             .and_then(|i| self.entries.get(i))
     }
 
+    /// Adjust scroll offset so the selected entry is visible.
+    fn scroll_into_view(&mut self) {
+        let Some(selected) = self.list_state.selected() else {
+            return;
+        };
+        if self.visible_rows == 0 {
+            return;
+        }
+        let offset = self.list_state.offset();
+        if selected < offset {
+            *self.list_state.offset_mut() = selected;
+        } else if selected >= offset.saturating_add(self.visible_rows) {
+            *self.list_state.offset_mut() = selected.saturating_sub(self.visible_rows - 1);
+        }
+    }
+
     pub fn select_next(&mut self) {
         if self.entries.is_empty() {
             return;
@@ -281,16 +313,20 @@ impl Sidebar {
         match self.list_state.selected() {
             Some(i) => {
                 let mut next = (i + 1).min(self.entries.len() - 1);
-                // Skip separator entries
-                while next < self.entries.len() && self.entries[next].is_separator {
-                    next = (next + 1).min(self.entries.len() - 1);
+                // Skip separator entries (guard: don't advance past last entry).
+                while next < self.entries.len().saturating_sub(1)
+                    && self.entries[next].is_separator
+                {
+                    next += 1;
                 }
                 self.list_state.select(Some(next));
+                self.scroll_into_view();
             }
             None => {
                 // Nothing selected — go to first non-separator entry.
                 let first = self.entries.iter().position(|e| !e.is_separator).unwrap_or(0);
                 self.list_state.select(Some(first));
+                self.scroll_into_view();
             }
         }
     }
@@ -307,6 +343,7 @@ impl Sidebar {
                     prev = prev.saturating_sub(1);
                 }
                 self.list_state.select(Some(prev));
+                self.scroll_into_view();
             }
             None => {
                 // Nothing selected — go to last non-separator entry.
@@ -316,12 +353,18 @@ impl Sidebar {
                     .rposition(|e| !e.is_separator)
                     .unwrap_or(0);
                 self.list_state.select(Some(last));
+                self.scroll_into_view();
             }
         }
     }
 
     /// Render the sidebar into the given area.
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        // Track visible rows so scroll_into_view can keep selection on-screen.
+        self.visible_rows = area.height.saturating_sub(2) as usize;
+        // Correct offset NOW so the first render after a refresh shows the
+        // selected item rather than a stale scroll position.
+        self.scroll_into_view();
         let trash_count = self.entries.iter().filter(|e| e.is_trashed).count();
 
         let items: Vec<ListItem> = self
