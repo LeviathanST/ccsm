@@ -188,6 +188,7 @@ cc-tui start     <name>    # → in_progress
 cc-tui complete  <name>    # → completed + timestamp
 cc-tui block     <name>    # → blocked
 cc-tui abandon   <name>    # → abandoned
+cc-tui pending   <name>    # → pending + clear session_id/pids/timestamps
 cc-tui scope     <name> <text>
 cc-tui tag       <name> <tags...>
 

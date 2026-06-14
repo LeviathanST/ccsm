@@ -133,10 +133,12 @@ fn main() -> anyhow::Result<()> {
             "complete" if args.len() > 2 => return run_status(&args[2], "complete"),
             "block" if args.len() > 2 => return run_status(&args[2], "block"),
             "abandon" if args.len() > 2 => return run_status(&args[2], "abandon"),
+            "pending" if args.len() > 2 => return run_pending(&args[2]),
             "scope" if args.len() > 3 => return run_set_field(&args[2], "scope", &args[3..].join(" ")),
             "tag" if args.len() > 3 => return run_set_tags(&args[2], &args[3..]),
             _ if cmd == "show" || cmd == "new" || cmd == "start" || cmd == "complete"
-                || cmd == "block" || cmd == "abandon" || cmd == "scope" || cmd == "tag" => {
+                || cmd == "block" || cmd == "abandon" || cmd == "pending"
+                || cmd == "scope" || cmd == "tag" => {
                 eprintln!("usage: cc-tui {} <name> [value...]", cmd);
                 return Ok(());
             }
@@ -1005,6 +1007,26 @@ fn run_status(name: &str, action: &str) -> anyhow::Result<()> {
             entry.completed = now_iso_ts();
         }
     })
+}
+
+/// `cc-tui pending <name>` — reset to pending, clear identity fields.
+fn run_pending(name: &str) -> anyhow::Result<()> {
+    let workspace = std::env::current_dir()?;
+    let mut reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let entry = reg
+        .sessions
+        .iter_mut()
+        .find(|s| s.name == name)
+        .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+    entry.status = crate::registry::SessionStatus::Pending;
+    entry.session_id.clear();
+    entry.pids.clear();
+    entry.started.clear();
+    entry.completed.clear();
+    reg.updated = now_iso_ts();
+    reg.save(&workspace)?;
+    println!("pending     {}  ← reset (identity fields cleared)", name);
+    Ok(())
 }
 
 /// `cc-tui scope <name> <text>` — set the scope field.
