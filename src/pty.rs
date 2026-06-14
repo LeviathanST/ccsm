@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use std::io::Write;
+use std::path::Path;
 
 /// Manages the PTY that embeds the Claude Code process.
 pub struct Pty {
@@ -11,8 +12,8 @@ pub struct Pty {
 }
 
 impl Pty {
-    /// Spawn `claude` inside a new PTY. Returns the PTY handle.
-    pub fn spawn(rows: u16, cols: u16) -> Result<Self> {
+    /// Spawn `cds` inside a new PTY in the given working directory.
+    pub fn spawn(rows: u16, cols: u16, cwd: &Path) -> Result<Self> {
         let pty_system = NativePtySystem::default();
 
         let pty_pair = pty_system
@@ -29,10 +30,11 @@ impl Pty {
         let mut cmd = CommandBuilder::new("fish");
         cmd.arg("-c");
         cmd.arg("cds");
+        cmd.cwd(cwd);
         let child = pty_pair
             .slave
             .spawn_command(cmd)
-            .context("failed to spawn claude process")?;
+            .context("failed to spawn cds process")?;
 
         // Close slave FD — only the child process needs it
         drop(pty_pair.slave);

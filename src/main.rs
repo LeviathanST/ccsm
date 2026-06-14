@@ -32,6 +32,18 @@ enum Focus {
 }
 
 fn main() -> anyhow::Result<()> {
+    // ── Workspace (CLI arg or current directory) ────────────────────
+    let workspace = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let workspace = std::fs::canonicalize(&workspace)
+        .unwrap_or(workspace);
+
+    // ── Session data paths ──────────────────────────────────────────
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let sessions_dir = PathBuf::from(&home).join(".claude").join("sessions");
+
     // ── Terminal setup ──────────────────────────────────────────────
     let mut stdout = std::io::stdout();
     crossterm::terminal::enable_raw_mode()?;
@@ -53,18 +65,15 @@ fn main() -> anyhow::Result<()> {
     let pty_cols = term_cols * (100 - SIDEBAR_FRACTION) / 100;
     let pty_rows = term_rows;
 
-    // ── Spawn cds in PTY ────────────────────────────────────────────
-    let mut pty = Pty::spawn(pty_rows, pty_cols.max(1))?;
+    // ── Spawn cds in PTY (in the workspace directory) ───────────────
+    let mut pty = Pty::spawn(pty_rows, pty_cols.max(1), &workspace)?;
     let mut screen = TerminalScreen::new(pty_rows, pty_cols.max(1));
     let mut last_pty_cols = pty_cols;
     let mut last_pty_rows = pty_rows;
 
-    // ── Sidebar setup ───────────────────────────────────────────────
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let sessions_dir = PathBuf::from(home).join(".claude").join("sessions");
-
+    // ── Sidebar setup (filtered to current workspace) ───────────────
     let mut sidebar = Sidebar::new();
-    sidebar.refresh(session::load_all(&sessions_dir).unwrap_or_default());
+    sidebar.refresh(session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default());
     let mut last_session_refresh = Instant::now();
 
     // ── Focus state ─────────────────────────────────────────────────
@@ -89,7 +98,9 @@ fn main() -> anyhow::Result<()> {
 
         // ── Refresh sessions periodically ───────────────────────
         if last_session_refresh.elapsed() >= SESSION_REFRESH_INTERVAL {
-            sidebar.refresh(session::load_all(&sessions_dir).unwrap_or_default());
+            sidebar.refresh(
+                session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
+            );
             last_session_refresh = Instant::now();
         }
 

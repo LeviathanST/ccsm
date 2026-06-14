@@ -45,8 +45,23 @@ impl Session {
     }
 }
 
-/// Load all session files from the sessions directory.
-pub fn load_all(sessions_dir: &PathBuf) -> Result<Vec<Session>> {
+/// Load sessions from disk, optionally filtering to those whose cwd
+/// starts with `workspace` (the current project directory).
+pub fn load_all(sessions_dir: &PathBuf, workspace: Option<&PathBuf>) -> Result<Vec<Session>> {
+    let all = load_all_unfiltered(sessions_dir)?;
+    if let Some(ws) = workspace {
+        let ws_str = ws.to_string_lossy().to_string();
+        Ok(all
+            .into_iter()
+            .filter(|s| s.cwd.starts_with(&ws_str))
+            .collect())
+    } else {
+        Ok(all)
+    }
+}
+
+/// Load all session files from the sessions directory (no filter).
+fn load_all_unfiltered(sessions_dir: &PathBuf) -> Result<Vec<Session>> {
     let mut sessions: Vec<Session> = Vec::new();
 
     let entries = match std::fs::read_dir(sessions_dir) {
