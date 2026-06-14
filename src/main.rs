@@ -127,9 +127,12 @@ fn main() -> anyhow::Result<()> {
     let mut last_pty_cols: u16 = 0;
     let mut last_pty_rows: u16 = 0;
 
-    // ── Sidebar ─────────────────────────────────────────────────────
+    // ── Sidebar (merge live sessions + registry entries) ───────────
     let mut sidebar = Sidebar::new();
-    sidebar.refresh(session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default());
+    sidebar.refresh(
+        session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
+        &workspace_registry.sessions,
+    );
     let mut last_session_refresh = Instant::now();
 
     // ── State ───────────────────────────────────────────────────────
@@ -158,6 +161,7 @@ fn main() -> anyhow::Result<()> {
         if last_session_refresh.elapsed() >= SESSION_REFRESH_INTERVAL {
             sidebar.refresh(
                 session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
+                &workspace_registry.sessions,
             );
             let _ = workspace_registry
                 .merge_live_sessions(&sessions_dir, &ws_path_str);
@@ -207,6 +211,7 @@ fn main() -> anyhow::Result<()> {
                                     sidebar.refresh(
                                         session::load_all(&sessions_dir, Some(&workspace))
                                             .unwrap_or_default(),
+                                        &workspace_registry.sessions,
                                     );
 
                                     // Lazy-spawn PTY if not already running
@@ -277,9 +282,9 @@ fn main() -> anyhow::Result<()> {
                         continue;
                     }
 
-                    // `n` — new session (from landing or sidebar)
+                    // Ctrl+N — new session (from landing or sidebar)
                     if key.code == KeyCode::Char('n')
-                        && key.modifiers.is_empty()
+                        && key.modifiers == KeyModifiers::CONTROL
                         && input.is_none()
                     {
                         input = Some(InputState::new("New session name: "));
@@ -501,7 +506,7 @@ fn render_ui(
                 TLine::raw("  Choose a session or create a new one."),
                 TLine::raw(""),
                 TLine::from(Span::styled(
-                    "    n         new session",
+                    "    Ctrl+N    new session",
                     Style::default().fg(Color::Yellow),
                 )),
                 TLine::from(Span::styled(
@@ -604,7 +609,7 @@ fn render_ui(
     let status = match (input.is_some(), view, focus) {
         (true, _, _) => TLine::from(" NEW SESSION  │  Enter name  │  Esc cancel  │  Enter confirm "),
         (_, ViewMode::Landing, _) => {
-            TLine::from(" cc-tui  │  n new session  │  Tab sidebar  │  Ctrl+Q quit ")
+            TLine::from(" cc-tui  │  Ctrl+N new  │  Tab sidebar  │  Ctrl+Q quit ")
         }
         (_, ViewMode::Transcript(tv), _) => {
             let pct = if tv.line_count > 0 {
@@ -618,10 +623,10 @@ fn render_ui(
             ))
         }
         (_, ViewMode::Live, Focus::Pty) => {
-            TLine::from(" cds  │  Ctrl+Q quit  │  Tab → sidebar  │  n new session ")
+            TLine::from(" cds  │  Ctrl+Q quit  │  Tab → sidebar  │  Ctrl+N new ")
         }
         (_, ViewMode::Live, Focus::Sidebar) => {
-            TLine::from("◀◀ SIDEBAR ▶▶  │  ↑↓/jk nav  │  Enter replay  │  n new  │  Tab → cds")
+            TLine::from("◀◀ SIDEBAR ▶▶  │  ↑↓/jk nav  │  Enter replay  │  Ctrl+N new  │  Tab → cds")
         }
     };
 

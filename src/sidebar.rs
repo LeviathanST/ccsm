@@ -6,32 +6,100 @@ use ratatui::{
     Frame,
 };
 
+use crate::registry::WorkspaceSession;
 use crate::session::Session;
+
+/// Unified sidebar entry from live sessions or registry.
+pub struct SidebarEntry {
+    pub label: String,
+    pub detail: String,
+    pub is_registry: bool,
+    pub status_style: Style,
+    /// If this corresponds to a live session, store its data for transcript lookup.
+    pub live_session: Option<Session>,
+}
 
 /// Sidebar state: session list + navigation.
 pub struct Sidebar {
-    pub sessions: Vec<Session>,
+    pub entries: Vec<SidebarEntry>,
     pub list_state: ListState,
 }
 
 impl Sidebar {
     pub fn new() -> Self {
         Self {
-            sessions: Vec::new(),
+            entries: Vec::new(),
             list_state: ListState::default(),
         }
     }
 
-    /// Refresh the session list from disk.
-    pub fn refresh(&mut self, sessions: Vec<Session>) {
-        self.sessions = sessions;
-        // Clamp selection if list shrank
-        if self.sessions.is_empty() {
+    /// Refresh from live sessions and registry entries.
+    /// Registry entries without a matching live session are shown as planned/pending.
+    pub fn refresh(
+        &mut self,
+        live_sessions: Vec<Session>,
+        registry_sessions: &[WorkspaceSession],
+    ) {
+        let mut entries: Vec<SidebarEntry> = Vec::new();
+
+        // Live sessions first
+        for s in &live_sessions {
+            let status_style = match s.status.as_str() {
+                "busy" => Style::default().fg(Color::Yellow),
+                "idle" => Style::default().fg(Color::Green),
+                _ => Style::default().fg(Color::DarkGray),
+            };
+
+            entries.push(SidebarEntry {
+                label: s.display_name().to_string(),
+                detail: s.cwd_short().to_string(),
+                is_registry: false,
+                status_style,
+                live_session: Some(s.clone()),
+            });
+        }
+
+        // Registry entries not yet seen as live sessions
+        for rs in registry_sessions {
+            if live_sessions.iter().any(|ls| ls.session_id == rs.session_id) {
+                continue; // already shown above
+            }
+            let status_style = match rs.status {
+                crate::registry::SessionStatus::Completed => {
+                    Style::default().fg(Color::Green)
+                }
+                crate::registry::SessionStatus::InProgress => {
+                    Style::default().fg(Color::Yellow)
+                }
+                crate::registry::SessionStatus::Blocked => {
+                    Style::default().fg(Color::Red)
+                }
+                _ => Style::default().fg(Color::DarkGray),
+            };
+
+            let goal_hint = if rs.goal.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", &rs.goal[..rs.goal.len().min(60)])
+            };
+
+            entries.push(SidebarEntry {
+                label: rs.name.clone(),
+                detail: goal_hint,
+                is_registry: true,
+                status_style,
+                live_session: None,
+            });
+        }
+
+        self.entries = entries;
+
+        if self.entries.is_empty() {
             self.list_state.select(None);
         } else if self
             .list_state
             .selected()
-            .map_or(true, |i| i >= self.sessions.len())
+            .map_or(true, |i| i >= self.entries.len())
         {
             self.list_state.select(Some(0));
         }
@@ -42,24 +110,25 @@ impl Sidebar {
         self.list_state.selected()
     }
 
-    /// Return a reference to the currently selected session, if any.
+    /// Return a reference to the live session, if the selected entry has one.
     pub fn selected_session(&self) -> Option<&Session> {
         self.list_state
             .selected()
-            .and_then(|i| self.sessions.get(i))
+            .and_then(|i| self.entries.get(i))
+            .and_then(|e| e.live_session.as_ref())
     }
 
     pub fn select_next(&mut self) {
-        if self.sessions.is_empty() {
+        if self.entries.is_empty() {
             return;
         }
         let i = self.list_state.selected().unwrap_or(0);
-        let next = (i + 1).min(self.sessions.len() - 1);
+        let next = (i + 1).min(self.entries.len() - 1);
         self.list_state.select(Some(next));
     }
 
     pub fn select_prev(&mut self) {
-        if self.sessions.is_empty() {
+        if self.entries.is_empty() {
             return;
         }
         let i = self.list_state.selected().unwrap_or(0);
@@ -70,37 +139,26 @@ impl Sidebar {
     /// Render the sidebar into the given area.
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         let items: Vec<ListItem> = self
-            .sessions
+            .entries
             .iter()
-            .map(|s| {
-                let status_style = match s.status.as_str() {
-                    "busy" => Style::default().fg(Color::Yellow),
-                    "idle" => Style::default().fg(Color::Green),
-                    _ => Style::default().fg(Color::DarkGray),
-                };
-
+            .map(|e| {
+                let icon = if e.is_registry { "📋" } else { "●" };
                 let line = Line::from(vec![
-                    Span::styled(s.status_label(), status_style),
+                    Span::styled(icon, e.status_style),
                     Span::raw(" "),
-                    Span::styled(
-                        s.display_name(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(&e.label, Style::default().add_modifier(Modifier::BOLD)),
                     Span::raw("  "),
-                    Span::styled(
-                        s.cwd_short(),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(&e.detail, Style::default().fg(Color::DarkGray)),
                 ]);
                 ListItem::new(line)
             })
             .collect();
 
-        let session_count = self.sessions.len();
+        let count = self.entries.len();
         let list = List::new(items)
             .block(
                 Block::bordered()
-                    .title_top(format!(" Sessions ({session_count}) "))
+                    .title_top(format!(" Sessions ({count}) "))
                     .border_style(Style::default().fg(Color::Rgb(80, 80, 80))),
             )
             .highlight_style(
