@@ -110,12 +110,16 @@ impl Sidebar {
         self.list_state.selected()
     }
 
-    /// Return a reference to the live session, if the selected entry has one.
-    pub fn selected_session(&self) -> Option<&Session> {
+    /// Return a reference to the selected entry, if any.
+    pub fn selected_entry(&self) -> Option<&SidebarEntry> {
         self.list_state
             .selected()
             .and_then(|i| self.entries.get(i))
-            .and_then(|e| e.live_session.as_ref())
+    }
+
+    /// Return a reference to the live session, if the selected entry has one.
+    pub fn selected_session(&self) -> Option<&Session> {
+        self.selected_entry().and_then(|e| e.live_session.as_ref())
     }
 
     pub fn select_next(&mut self) {

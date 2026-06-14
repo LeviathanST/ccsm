@@ -296,28 +296,70 @@ fn main() -> anyhow::Result<()> {
                             KeyCode::Up | KeyCode::Char('k') => sidebar.select_prev(),
                             KeyCode::Down | KeyCode::Char('j') => sidebar.select_next(),
                             KeyCode::Enter => {
-                                if let Some(s) = sidebar.selected_session() {
-                                    let path = transcript::transcript_path(
-                                        &home, &s.cwd, &s.session_id,
-                                    );
-                                    if let Some(p) = path {
-                                        match TranscriptView::load(&p, s.display_name()) {
-                                            Ok(tv) => {
-                                                view =
-                                                    ViewMode::Transcript(Box::new(tv));
+                                if let Some(entry) = sidebar.selected_entry() {
+                                    if let Some(s) = &entry.live_session {
+                                        // Live session → try transcript replay
+                                        let path = transcript::transcript_path(
+                                            &home, &s.cwd, &s.session_id,
+                                        );
+                                        if let Some(p) = path {
+                                            match TranscriptView::load(
+                                                &p, s.display_name(),
+                                            ) {
+                                                Ok(tv) => {
+                                                    view = ViewMode::Transcript(
+                                                        Box::new(tv),
+                                                    );
+                                                }
+                                                Err(_) => {
+                                                    view = ViewMode::Transcript(
+                                                        Box::new(
+                                                            TranscriptView::empty(
+                                                                s.display_name(),
+                                                            ),
+                                                        ),
+                                                    );
+                                                }
                                             }
-                                            Err(_) => {
-                                                view = ViewMode::Transcript(Box::new(
-                                                    TranscriptView::empty(
-                                                        s.display_name(),
-                                                    ),
-                                                ));
+                                        } else {
+                                            view = ViewMode::Transcript(Box::new(
+                                                TranscriptView::empty(
+                                                    s.display_name(),
+                                                ),
+                                            ));
+                                        }
+                                    } else if entry.is_registry {
+                                        // Registry-only entry → switch to live PTY
+                                        // (launch cds if not running)
+                                        if pty.is_none() {
+                                            let pc =
+                                                term_cols * (100 - SIDEBAR_FRACTION)
+                                                    / 100;
+                                            let pr = term_rows;
+                                            match Pty::spawn(
+                                                pr,
+                                                pc.max(1),
+                                                &workspace,
+                                            ) {
+                                                Ok(p) => {
+                                                    screen =
+                                                        Some(TerminalScreen::new(
+                                                            pr,
+                                                            pc.max(1),
+                                                        ));
+                                                    last_pty_cols = pc;
+                                                    last_pty_rows = pr;
+                                                    pty = Some(p);
+                                                }
+                                                Err(e) => {
+                                                    eprintln!(
+                                                        "Failed to spawn cds: {e}"
+                                                    );
+                                                }
                                             }
                                         }
-                                    } else {
-                                        view = ViewMode::Transcript(Box::new(
-                                            TranscriptView::empty(s.display_name()),
-                                        ));
+                                        view = ViewMode::Live;
+                                        focus = Focus::Pty;
                                     }
                                 }
                             }
