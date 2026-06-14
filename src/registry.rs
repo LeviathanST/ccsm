@@ -195,7 +195,14 @@ impl WorkspaceRegistry {
     }
 
     /// Merge auto-data from live session files into the registry.
-    /// Updates pids and timestamps, but preserves curated fields.
+    /// Updates pids, session_id, and timestamps; preserves curated fields.
+    ///
+    /// Matching strategy:
+    /// 1. Exact match by `session_id`
+    /// 2. Fallback: link unlinked registry entries (empty session_id, no pids)
+    ///    to live sessions from the same workspace. This handles the case
+    ///    where Ctrl+N creates a registry entry before cds writes its
+    ///    session file — on next refresh, the live session gets linked.
     pub fn merge_live_sessions(
         &mut self,
         sessions_dir: &PathBuf,
@@ -205,22 +212,37 @@ impl WorkspaceRegistry {
             crate::session::load_all(sessions_dir, Some(&PathBuf::from(workspace_path)))?;
 
         for live in &all {
-            // Find matching registry entry by session_id
-            if let Some(entry) = self
+            // Strategy 1: exact match by session_id
+            let matched = self
                 .sessions
                 .iter_mut()
-                .find(|e| e.session_id == live.session_id)
-            {
-                // Add pid if not already tracked
+                .find(|e| e.session_id == live.session_id);
+
+            if let Some(entry) = matched {
                 if !entry.pids.contains(&live.pid) {
                     entry.pids.push(live.pid);
                 }
                 if entry.started.is_empty() {
                     entry.started = format_ts(live.started_at);
                 }
-                // If the live session is active, mark as in_progress
                 if live.status == "busy" && entry.status == SessionStatus::Pending {
                     entry.status = SessionStatus::InProgress;
+                }
+            } else {
+                // Strategy 2: link first unlinked entry (empty session_id, no pids)
+                if let Some(entry) = self
+                    .sessions
+                    .iter_mut()
+                    .find(|e| e.session_id.is_empty() && e.pids.is_empty())
+                {
+                    entry.session_id = live.session_id.clone();
+                    entry.pids.push(live.pid);
+                    if entry.started.is_empty() {
+                        entry.started = format_ts(live.started_at);
+                    }
+                    if live.status == "busy" && entry.status == SessionStatus::Pending {
+                        entry.status = SessionStatus::InProgress;
+                    }
                 }
             }
         }
