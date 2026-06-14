@@ -82,9 +82,9 @@ fn main() -> anyhow::Result<()> {
     let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
 
     // ── Session data paths ──────────────────────────────────────────
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let sessions_dir = PathBuf::from(&home).join(".claude").join("sessions");
-    let global_registry_path = PathBuf::from(&home).join(".claude").join("sessions.json");
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
+    let sessions_dir = home.join(".claude").join("sessions");
+    let global_registry_path = home.join(".claude").join("sessions.json");
 
     // ── Build/refresh global registry (Tier 1) ─────────────────────
     let _ = registry::GlobalRegistry::load_or_build(&global_registry_path, &sessions_dir)
@@ -273,7 +273,18 @@ fn main() -> anyhow::Result<()> {
                             KeyCode::Down | KeyCode::Char('j') => sidebar.select_next(),
                             KeyCode::Enter => {
                                 if let Some(entry) = sidebar.selected_entry() {
-                                    if let Some(s) = &entry.live_session {
+                                    if entry.is_trashed {
+                                        // Enter on trashed → recover
+                                        if let Some(ref sid) = entry.registry_session_id {
+                                            workspace_registry.recover(sid);
+                                            let _ = workspace_registry.save(&workspace);
+                                            sidebar.refresh(
+                                                session::load_all(&sessions_dir, Some(&workspace))
+                                                    .unwrap_or_default(),
+                                                &workspace_registry.sessions,
+                                            );
+                                        }
+                                    } else if let Some(s) = &entry.live_session {
                                         // Live session → resume in cds
                                         let sid = s.session_id.clone();
                                         let pc = term_cols * (100 - SIDEBAR_FRACTION) / 100;
@@ -313,6 +324,56 @@ fn main() -> anyhow::Result<()> {
                                         focus = Focus::Pty;
                                     }
                                 }
+                            }
+                            KeyCode::Char('d') => {
+                                // Trash selected entry
+                                if let Some(entry) = sidebar.selected_entry() {
+                                    if let Some(ref sid) = entry.registry_session_id {
+                                        workspace_registry.trash(sid);
+                                        let _ = workspace_registry.save(&workspace);
+                                    } else if let Some(ref s) = entry.live_session {
+                                        workspace_registry.trash(&s.session_id);
+                                        let _ = workspace_registry.save(&workspace);
+                                    }
+                                    sidebar.refresh(
+                                        session::load_all(&sessions_dir, Some(&workspace))
+                                            .unwrap_or_default(),
+                                        &workspace_registry.sessions,
+                                    );
+                                }
+                            }
+                            KeyCode::Char('D') => {
+                                // Shift+D: permanently clean selected entry
+                                if let Some(entry) = sidebar.selected_entry() {
+                                    let sid = entry
+                                        .registry_session_id
+                                        .clone()
+                                        .or_else(|| {
+                                            entry
+                                                .live_session
+                                                .as_ref()
+                                                .map(|s| s.session_id.clone())
+                                        });
+                                    if let Some(ref sid) = sid {
+                                        workspace_registry.clean(sid, &home, &workspace);
+                                        let _ = workspace_registry.save(&workspace);
+                                        sidebar.refresh(
+                                            session::load_all(&sessions_dir, Some(&workspace))
+                                                .unwrap_or_default(),
+                                            &workspace_registry.sessions,
+                                        );
+                                    }
+                                }
+                            }
+                            KeyCode::Char('C') => {
+                                // Shift+C: permanently clean all trashed sessions
+                                workspace_registry.clean_all_trashed(&home, &workspace);
+                                let _ = workspace_registry.save(&workspace);
+                                sidebar.refresh(
+                                    session::load_all(&sessions_dir, Some(&workspace))
+                                        .unwrap_or_default(),
+                                    &workspace_registry.sessions,
+                                );
                             }
                             KeyCode::Char(' ') => focus = Focus::Pty,
                             _ => {}
@@ -592,7 +653,7 @@ fn render_ui(
             TLine::from(" cds  │  Ctrl+Q quit  │  Tab → sidebar  │  Ctrl+N new ")
         }
         (_, ViewMode::Live, Focus::Sidebar) => {
-            TLine::from("◀◀ SIDEBAR ▶▶  │  ↑↓/jk nav  │  Enter replay  │  Ctrl+N new  │  Tab → cds")
+            TLine::from("◀◀ SIDEBAR ▶▶  │  ↑↓/jk nav  │  Enter resume/recover  │  d trash  │  D clean  │  C clean all")
         }
     };
 

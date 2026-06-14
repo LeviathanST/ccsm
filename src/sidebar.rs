@@ -19,6 +19,10 @@ pub struct SidebarEntry {
     pub live_session: Option<Session>,
     /// If this is a registry entry with a linked session_id, store it for transcript lookup.
     pub registry_session_id: Option<String>,
+    /// True when this entry is trashed (recoverable).
+    pub is_trashed: bool,
+    /// True when this entry is a visual separator (not actionable).
+    pub is_separator: bool,
 }
 
 /// Sidebar state: session list + navigation.
@@ -36,7 +40,6 @@ impl Sidebar {
     }
 
     /// Refresh from live sessions and registry entries.
-    /// `workspace_cwd` is the current workspace path (for transcript lookup on registry entries).
     pub fn refresh(
         &mut self,
         live_sessions: Vec<Session>,
@@ -44,9 +47,8 @@ impl Sidebar {
     ) {
         // Remember which entry is selected so we can re-select it after the
         // list is rebuilt (entries may shift when live sessions come/go).
-        let selected_id: Option<String> = self
-            .list_state
-            .selected()
+        let old_index: Option<usize> = self.list_state.selected();
+        let selected_id: Option<String> = old_index
             .and_then(|i| self.entries.get(i))
             .and_then(|e| {
                 e.live_session
@@ -56,11 +58,10 @@ impl Sidebar {
                     .or_else(|| Some(e.label.clone()))
             });
 
-        let mut entries: Vec<SidebarEntry> = Vec::new();
+        let mut active: Vec<SidebarEntry> = Vec::new();
+        let mut trashed: Vec<SidebarEntry> = Vec::new();
 
-        // Live sessions first.
-        // If the session file has no name (cds writes sessionId but no display name),
-        // resolve it from the matching registry entry so users see "Test4" not "unnamed".
+        // ── Live sessions ───────────────────────────────────────────
         for s in &live_sessions {
             let status_style = match s.status.as_str() {
                 "busy" => Style::default().fg(Color::Yellow),
@@ -79,23 +80,28 @@ impl Sidebar {
                 s.display_name().to_string()
             };
 
-            entries.push(SidebarEntry {
+            active.push(SidebarEntry {
                 label,
                 detail: s.cwd_short().to_string(),
                 is_registry: false,
                 status_style,
                 live_session: Some(s.clone()),
                 registry_session_id: None,
+                is_trashed: false,
+                is_separator: false,
             });
         }
 
-        // Registry entries not yet seen as live sessions
+        // ── Registry entries not seen as live ───────────────────────
         for rs in registry_sessions {
             if !rs.session_id.is_empty()
                 && live_sessions.iter().any(|ls| ls.session_id == rs.session_id)
             {
                 continue; // already shown as live session
             }
+
+            let is_trash = rs.status == crate::registry::SessionStatus::Trashed;
+
             let status_style = match rs.status {
                 crate::registry::SessionStatus::Completed => {
                     Style::default().fg(Color::Green)
@@ -106,6 +112,11 @@ impl Sidebar {
                 crate::registry::SessionStatus::Blocked => {
                     Style::default().fg(Color::Red)
                 }
+                crate::registry::SessionStatus::Trashed => {
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::CROSSED_OUT)
+                }
                 _ => Style::default().fg(Color::DarkGray),
             };
 
@@ -115,7 +126,7 @@ impl Sidebar {
                 format!(" — {}", &rs.goal[..rs.goal.len().min(60)])
             };
 
-            entries.push(SidebarEntry {
+            let entry = SidebarEntry {
                 label: rs.name.clone(),
                 detail: goal_hint,
                 is_registry: true,
@@ -126,14 +137,37 @@ impl Sidebar {
                 } else {
                     Some(rs.session_id.clone())
                 },
+                is_trashed: is_trash,
+                is_separator: false,
+            };
+
+            if is_trash {
+                trashed.push(entry);
+            } else {
+                active.push(entry);
+            }
+        }
+
+        // ── Combine: active first, then separator, then trash ───────
+        let mut entries: Vec<SidebarEntry> = Vec::new();
+        entries.append(&mut active);
+        if !trashed.is_empty() {
+            entries.push(SidebarEntry {
+                label: String::new(),
+                detail: String::new(),
+                is_registry: true,
+                status_style: Style::default().fg(Color::DarkGray),
+                live_session: None,
+                registry_session_id: None,
+                is_trashed: false,
+                is_separator: true,
             });
+            entries.append(&mut trashed);
         }
 
         self.entries = entries;
 
-        // Preserve selection on the same logical entry after list rebuild.
-        // When a live session replaces a registry entry (same session_id but
-        // different position), the old row index is stale.  Track by identity.
+        // ── Restore selection by identity, fall back to position ───
         if self.entries.is_empty() {
             self.list_state.select(None);
         } else if let Some(ref id) = selected_id {
@@ -145,7 +179,12 @@ impl Sidebar {
                     || e.registry_session_id.as_ref().map(|rs| rs == id).unwrap_or(false)
                     || &e.label == id
             });
-            self.list_state.select(pos.or(Some(0)));
+            // If the entry was deleted, clamp to the old row position
+            // so we stay near where we were instead of jumping to 0.
+            let fallback = old_index
+                .map(|i| i.min(self.entries.len().saturating_sub(1)))
+                .unwrap_or(0);
+            self.list_state.select(pos.or(Some(fallback)));
         } else {
             self.list_state.select(Some(0));
         }
@@ -183,11 +222,27 @@ impl Sidebar {
 
     /// Render the sidebar into the given area.
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
+        let trash_count = self.entries.iter().filter(|e| e.is_trashed).count();
+
         let items: Vec<ListItem> = self
             .entries
             .iter()
             .map(|e| {
-                let icon = if e.is_registry { "📋" } else { "●" };
+                if e.is_separator {
+                    let line = Line::from(Span::styled(
+                        "  ── Trash ──────────────────────────",
+                        Style::default().fg(Color::Rgb(60, 60, 60)),
+                    ));
+                    return ListItem::new(line);
+                }
+
+                let icon = if e.is_trashed {
+                    "🗑"
+                } else if e.is_registry {
+                    "📋"
+                } else {
+                    "●"
+                };
                 let line = Line::from(vec![
                     Span::styled(icon, e.status_style),
                     Span::raw(" "),
@@ -200,10 +255,15 @@ impl Sidebar {
             .collect();
 
         let count = self.entries.len();
+        let title = if trash_count > 0 {
+            format!(" Sessions ({count}) 🗑({trash_count}) ")
+        } else {
+            format!(" Sessions ({count}) ")
+        };
         let list = List::new(items)
             .block(
                 Block::bordered()
-                    .title_top(format!(" Sessions ({count}) "))
+                    .title_top(title)
                     .border_style(Style::default().fg(Color::Rgb(80, 80, 80))),
             )
             .highlight_style(

@@ -154,6 +154,8 @@ pub enum SessionStatus {
     Completed,
     Blocked,
     Abandoned,
+    /// Soft-deleted: hidden from normal view, recoverable.
+    Trashed,
 }
 
 fn default_status() -> SessionStatus {
@@ -168,6 +170,7 @@ impl std::fmt::Display for SessionStatus {
             Self::Completed => write!(f, "completed"),
             Self::Blocked => write!(f, "blocked"),
             Self::Abandoned => write!(f, "abandoned"),
+            Self::Trashed => write!(f, "trashed"),
         }
     }
 }
@@ -261,6 +264,71 @@ impl WorkspaceRegistry {
         Ok(())
     }
 
+    /// Soft-delete: mark a session as Trashed.  No files are touched.
+    pub fn trash(&mut self, session_id: &str) -> bool {
+        if let Some(entry) = self.sessions.iter_mut().find(|e| e.session_id == session_id) {
+            entry.status = SessionStatus::Trashed;
+            self.updated = now_iso();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Un-trash: move a trashed session back to InProgress.
+    pub fn recover(&mut self, session_id: &str) -> bool {
+        if let Some(entry) = self.sessions.iter_mut().find(|e| e.session_id == session_id) {
+            entry.status = SessionStatus::InProgress;
+            self.updated = now_iso();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Permanently delete a single session: transcript JSONL, any lingering
+    /// session files, and the registry entry.  `workspace` is the repo root.
+    pub fn clean(&mut self, session_id: &str, home: &std::path::Path, workspace: &std::path::Path) {
+        let slug = project_slug(workspace);
+        let proj_dir = home.join(".claude").join("projects").join(&slug);
+        let transcript = proj_dir.join(format!("{session_id}.jsonl"));
+        let _ = std::fs::remove_file(&transcript);
+        let session_subdir = proj_dir.join(session_id);
+        let _ = std::fs::remove_dir_all(&session_subdir);
+
+        // Remove any session files with this session_id
+        if let Ok(entries) = std::fs::read_dir(home.join(".claude").join("sessions")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().map_or(true, |e| e != "json") {
+                    continue;
+                }
+                if let Ok(contents) = std::fs::read_to_string(&path) {
+                    if contents.contains(session_id) {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+            }
+        }
+
+        self.sessions.retain(|e| e.session_id != session_id);
+        self.updated = now_iso();
+    }
+
+    /// Permanently clean every trashed session at once.
+    pub fn clean_all_trashed(&mut self, home: &std::path::Path, workspace: &std::path::Path) {
+        let trashed: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|e| e.status == SessionStatus::Trashed)
+            .map(|e| e.session_id.clone())
+            .collect();
+        for sid in &trashed {
+            self.clean(sid, home, workspace);
+        }
+        self.updated = now_iso();
+    }
+
     /// Seed with initial entries if empty. Safe to call on every startup.
     pub fn seed(&mut self, entries: Vec<WorkspaceSession>) {
         if self.sessions.is_empty() {
@@ -351,4 +419,12 @@ fn format_ts(ms: u64) -> String {
     let h = day_secs / 3600;
     let m = (day_secs % 3600) / 60;
     format!("day{days}T{h:02}:{m:02}Z")
+}
+
+/// Derive the Claude Code project slug from a workspace path.
+/// Claude replaces '/' with '-' in the absolute path, e.g.
+/// `/home/user/project` → `-home-user-project`.
+fn project_slug(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    s.replace('/', "-")
 }
