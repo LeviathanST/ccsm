@@ -120,6 +120,81 @@ Append-only JSONL at `~/.claude/projects/<project>/<session>.jsonl`. Contains:
 | 6 | Token dashboard from stats-cache.json | ~1h |
 | 7 | Polish: themes, mouse, resize, scrollback | ~2h |
 
+## Agent Workflow (MANDATORY)
+
+Every agent working on cc-tui MUST follow this workflow. The session registry is the team coordination board.
+
+### On Session Start
+
+```bash
+# 1. Scan the board — who's active?
+cc-tui active
+
+# 2. Is someone already doing my task?
+cc-tui show <name>   # check if a session overlaps with my work
+```
+
+| Situation | Action |
+|---|---|
+| **Duplicate found** | Report: "Session X already does this." Help that session or narrow scope. |
+| **Depends on another session** | Note in scope: "Depends on: <name> (status: ...)" |
+| **No overlap** | Create new entry and detail file |
+
+### If starting new work
+
+```bash
+cc-tui new <name> "One-sentence goal"
+cc-tui start <name>
+cp .claude/session-detail-template.md .claude/sessions/<name>.md
+# Edit the detail file — fill in scope, tags, dependencies
+cc-tui scope <name> "2-4 sentence approach and constraints"
+cc-tui tag <name> tag1 tag2
+```
+
+### During work
+
+```bash
+# Append progress notes to .claude/sessions/<name>.md
+# Update dependencies if they change
+```
+
+### On completion
+
+```bash
+cc-tui complete <name>
+# Update .claude/sessions/<name>.md — final status, summary, completed date
+```
+
+### Rules
+
+- **NEVER** edit `.claude/sessions.json` directly — use CLI commands
+- **NEVER** touch `session_id`, `pids`, or `started` — cc-tui manages those
+- **ALWAYS** create a detail file for new sessions
+- **ALWAYS** scan `cc-tui active` before starting new work
+- **NEVER** execute work outside the current session's scope. If a task doesn't advance the session's `goal`, stop and tell the user. Open a new session or explicitly `cc-tui scope` the current one BEFORE doing off-scope work.
+
+## CLI Commands
+
+```
+# Query (token-efficient, agent-optimized)
+cc-tui summary   (sum)     # counts: 2 active | 5 completed | 3 total
+cc-tui active    (a)       # one line per in_progress + blocked session
+cc-tui sessions  (s)       # all sessions, one line each
+cc-tui show      <name>    # full detail — goal, scope, tags, pids, timestamps
+
+# Mutate (never edit JSON directly)
+cc-tui new       <name> [goal]
+cc-tui start     <name>    # → in_progress
+cc-tui complete  <name>    # → completed + timestamp
+cc-tui block     <name>    # → blocked
+cc-tui abandon   <name>    # → abandoned
+cc-tui scope     <name> <text>
+cc-tui tag       <name> <tags...>
+
+# Install
+cc-tui setup               # one-time: install session tracking globally
+```
+
 ## Build & Run
 
 ```bash
