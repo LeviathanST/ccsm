@@ -265,8 +265,13 @@ impl WorkspaceRegistry {
     }
 
     /// Soft-delete: mark a session as Trashed.  No files are touched.
-    pub fn trash(&mut self, session_id: &str) -> bool {
-        if let Some(entry) = self.sessions.iter_mut().find(|e| e.session_id == session_id) {
+    /// Matches by session_id; falls back to name for seed entries with empty id.
+    pub fn trash(&mut self, session_id: &str, name: &str) -> bool {
+        if let Some(entry) = self
+            .sessions
+            .iter_mut()
+            .find(|e| e.session_id == session_id || (session_id.is_empty() && e.name == name))
+        {
             entry.status = SessionStatus::Trashed;
             self.updated = now_iso();
             true
@@ -276,8 +281,12 @@ impl WorkspaceRegistry {
     }
 
     /// Un-trash: move a trashed session back to InProgress.
-    pub fn recover(&mut self, session_id: &str) -> bool {
-        if let Some(entry) = self.sessions.iter_mut().find(|e| e.session_id == session_id) {
+    pub fn recover(&mut self, session_id: &str, name: &str) -> bool {
+        if let Some(entry) = self
+            .sessions
+            .iter_mut()
+            .find(|e| e.session_id == session_id || (session_id.is_empty() && e.name == name))
+        {
             entry.status = SessionStatus::InProgress;
             self.updated = now_iso();
             true
@@ -288,43 +297,56 @@ impl WorkspaceRegistry {
 
     /// Permanently delete a single session: transcript JSONL, any lingering
     /// session files, and the registry entry.  `workspace` is the repo root.
-    pub fn clean(&mut self, session_id: &str, home: &std::path::Path, workspace: &std::path::Path) {
-        let slug = project_slug(workspace);
-        let proj_dir = home.join(".claude").join("projects").join(&slug);
-        let transcript = proj_dir.join(format!("{session_id}.jsonl"));
-        let _ = std::fs::remove_file(&transcript);
-        let session_subdir = proj_dir.join(session_id);
-        let _ = std::fs::remove_dir_all(&session_subdir);
+    /// Matches by session_id; falls back to name for seed entries.
+    pub fn clean(
+        &mut self,
+        session_id: &str,
+        name: &str,
+        home: &std::path::Path,
+        workspace: &std::path::Path,
+    ) {
+        // Only delete files if we have a real session_id
+        if !session_id.is_empty() {
+            let slug = project_slug(workspace);
+            let proj_dir = home.join(".claude").join("projects").join(&slug);
+            let transcript = proj_dir.join(format!("{session_id}.jsonl"));
+            let _ = std::fs::remove_file(&transcript);
+            let session_subdir = proj_dir.join(session_id);
+            let _ = std::fs::remove_dir_all(&session_subdir);
 
-        // Remove any session files with this session_id
-        if let Ok(entries) = std::fs::read_dir(home.join(".claude").join("sessions")) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map_or(true, |e| e != "json") {
-                    continue;
-                }
-                if let Ok(contents) = std::fs::read_to_string(&path) {
-                    if contents.contains(session_id) {
-                        let _ = std::fs::remove_file(&path);
+            // Remove any session files with this session_id
+            if let Ok(entries) = std::fs::read_dir(home.join(".claude").join("sessions")) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().map_or(true, |e| e != "json") {
+                        continue;
+                    }
+                    if let Ok(contents) = std::fs::read_to_string(&path) {
+                        if contents.contains(session_id) {
+                            let _ = std::fs::remove_file(&path);
+                        }
                     }
                 }
             }
         }
 
-        self.sessions.retain(|e| e.session_id != session_id);
+        self.sessions.retain(|e| {
+            !(e.session_id == session_id
+                || (session_id.is_empty() && e.name == name && e.session_id.is_empty()))
+        });
         self.updated = now_iso();
     }
 
     /// Permanently clean every trashed session at once.
     pub fn clean_all_trashed(&mut self, home: &std::path::Path, workspace: &std::path::Path) {
-        let trashed: Vec<String> = self
+        let trashed: Vec<(String, String)> = self
             .sessions
             .iter()
             .filter(|e| e.status == SessionStatus::Trashed)
-            .map(|e| e.session_id.clone())
+            .map(|e| (e.session_id.clone(), e.name.clone()))
             .collect();
-        for sid in &trashed {
-            self.clean(sid, home, workspace);
+        for (sid, name) in &trashed {
+            self.clean(sid, name, home, workspace);
         }
         self.updated = now_iso();
     }

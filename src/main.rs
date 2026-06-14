@@ -276,14 +276,16 @@ fn main() -> anyhow::Result<()> {
                                     if entry.is_trashed {
                                         // Enter on trashed → recover
                                         if let Some(ref sid) = entry.registry_session_id {
-                                            workspace_registry.recover(sid);
-                                            let _ = workspace_registry.save(&workspace);
-                                            sidebar.refresh(
-                                                session::load_all(&sessions_dir, Some(&workspace))
-                                                    .unwrap_or_default(),
-                                                &workspace_registry.sessions,
-                                            );
+                                            workspace_registry.recover(sid, &entry.label);
+                                        } else {
+                                            workspace_registry.recover("", &entry.label);
                                         }
+                                        let _ = workspace_registry.save(&workspace);
+                                        sidebar.refresh(
+                                            session::load_all(&sessions_dir, Some(&workspace))
+                                                .unwrap_or_default(),
+                                            &workspace_registry.sessions,
+                                        );
                                     } else if let Some(s) = &entry.live_session {
                                         // Live session → resume in cds
                                         let sid = s.session_id.clone();
@@ -328,13 +330,18 @@ fn main() -> anyhow::Result<()> {
                             KeyCode::Char('d') => {
                                 // Trash selected entry
                                 if let Some(entry) = sidebar.selected_entry() {
-                                    if let Some(ref sid) = entry.registry_session_id {
-                                        workspace_registry.trash(sid);
-                                        let _ = workspace_registry.save(&workspace);
-                                    } else if let Some(ref s) = entry.live_session {
-                                        workspace_registry.trash(&s.session_id);
-                                        let _ = workspace_registry.save(&workspace);
-                                    }
+                                    let sid = entry
+                                        .registry_session_id
+                                        .clone()
+                                        .or_else(|| {
+                                            entry
+                                                .live_session
+                                                .as_ref()
+                                                .map(|s| s.session_id.clone())
+                                        })
+                                        .unwrap_or_default();
+                                    workspace_registry.trash(&sid, &entry.label);
+                                    let _ = workspace_registry.save(&workspace);
                                     sidebar.refresh(
                                         session::load_all(&sessions_dir, Some(&workspace))
                                             .unwrap_or_default(),
@@ -354,15 +361,14 @@ fn main() -> anyhow::Result<()> {
                                                 .as_ref()
                                                 .map(|s| s.session_id.clone())
                                         });
-                                    if let Some(ref sid) = sid {
-                                        workspace_registry.clean(sid, &home, &workspace);
-                                        let _ = workspace_registry.save(&workspace);
-                                        sidebar.refresh(
-                                            session::load_all(&sessions_dir, Some(&workspace))
-                                                .unwrap_or_default(),
-                                            &workspace_registry.sessions,
-                                        );
-                                    }
+                                    let sid = sid.unwrap_or_default();
+                                    workspace_registry.clean(&sid, &entry.label, &home, &workspace);
+                                    let _ = workspace_registry.save(&workspace);
+                                    sidebar.refresh(
+                                        session::load_all(&sessions_dir, Some(&workspace))
+                                            .unwrap_or_default(),
+                                        &workspace_registry.sessions,
+                                    );
                                 }
                             }
                             KeyCode::Char('C') => {

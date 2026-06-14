@@ -1,5 +1,5 @@
 {
-  "updated": "day20618T06:26:20Z",
+  "updated": "day20618T08:18:09Z",
   "sessions": [
     {
       "session_id": "",
@@ -34,77 +34,41 @@
       "completed": ""
     },
     {
-      "session_id": "",
-      "name": "phase-3-session-replay",
-      "goal": "View historical session transcripts in the PTY panel",
-      "scope": "Enter on session loads JSONL transcript, renders user/assistant messages and tool calls with scroll support (↑↓/PgUp/PgDn/Home), Esc/Tab returns to live cds. ViewMode enum switches between Live and Transcript.",
-      "status": "completed",
-      "pids": [],
-      "tags": [
-        "transcript",
-        "replay",
-        "phase-3"
-      ],
-      "started": "",
-      "completed": ""
-    },
-    {
-      "session_id": "",
+      "session_id": "0f7fd68d-9b84-4dc0-bfe5-8a897b5ec66d",
       "name": "session-registry",
       "goal": "Two-tier session registry for team visibility",
       "scope": "Tier 1: global overview at ~/.claude/sessions.json scanning all workspaces. Tier 2: per-repo .claude/sessions.json with goal/scope/status/tags. Auto-merges live session data. Survives ephemeral session cleanup.",
       "status": "in_progress",
-      "pids": [],
+      "pids": [
+        247154
+      ],
       "tags": [
         "registry",
         "sessions",
         "team"
       ],
-      "started": "",
+      "started": "day20618T06:51Z",
       "completed": ""
     },
     {
-      "session_id": "",
-      "name": "Test",
+      "session_id": "2c9976af-d9a0-4efd-a106-11b89b3d7da6",
+      "name": "Test4",
       "goal": "",
       "scope": "",
       "status": "in_progress",
-      "pids": [],
+      "pids": [
+        250719,
+        263630,
+        264344,
+        267303,
+        267598,
+        269195,
+        269694,
+        271435,
+        273150
+      ],
       "tags": [],
-      "started": "",
-      "completed": ""
-    },
-    {
-      "session_id": "",
-      "name": "Test1",
-      "goal": "",
-      "scope": "",
-      "status": "in_progress",
-      "pids": [],
-      "tags": [],
-      "started": "",
-      "completed": ""
-    },
-    {
-      "session_id": "",
-      "name": "Test2",
-      "goal": "",
-      "scope": "",
-      "status": "in_progress",
-      "pids": [],
-      "tags": [],
-      "started": "",
-      "completed": ""
-    },
-    {
-      "session_id": "",
-      "name": "Test3",
-      "goal": "",
-      "scope": "",
-      "status": "in_progress",
-      "pids": [],
-      "tags": [],
-      "started": "",
+      "started": "day20618T06:53Z",
       "completed": ""
     }
   ]
