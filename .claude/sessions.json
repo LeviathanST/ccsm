@@ -1,5 +1,5 @@
 {
-  "updated": "day20618T06:18:18Z",
+  "updated": "day20618T06:26:20Z",
   "sessions": [
     {
       "session_id": "",
@@ -88,6 +88,17 @@
     {
       "session_id": "",
       "name": "Test2",
+      "goal": "",
+      "scope": "",
+      "status": "in_progress",
+      "pids": [],
+      "tags": [],
+      "started": "",
+      "completed": ""
+    },
+    {
+      "session_id": "",
+      "name": "Test3",
       "goal": "",
       "scope": "",
       "status": "in_progress",

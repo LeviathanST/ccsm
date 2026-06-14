@@ -235,15 +235,6 @@ fn main() -> anyhow::Result<()> {
                                                 last_pty_cols = pty_cols;
                                                 last_pty_rows = pty_rows;
                                                 pty = Some(p);
-                                                // Link the new session_id to the registry
-                                                if let Some(ref spawned) = pty {
-                                                    link_spawned_session(
-                                                        spawned,
-                                                        &sessions_dir,
-                                                        &mut workspace_registry,
-                                                    );
-                                                    let _ = workspace_registry.save(&workspace);
-                                                }
                                             }
                                             Err(e) => {
                                                 eprintln!("Failed to spawn cds: {e}");
@@ -341,11 +332,21 @@ fn main() -> anyhow::Result<()> {
                                             ));
                                         }
                                     } else if entry.is_registry {
-                                        // Registry entry: try transcript first
-                                        // if session_id is linked, else launch PTY
-                                        if let Some(ref sid) = entry.registry_session_id {
+                                        // Registry entry: try transcript via
+                                        // linked session_id, or lazy lookup
+                                        let lookup_sid = entry
+                                            .registry_session_id
+                                            .clone()
+                                            .or_else(|| {
+                                                session::find_workspace_session_id(
+                                                    &sessions_dir,
+                                                    &ws_path_str,
+                                                )
+                                            });
+
+                                        if let Some(sid) = lookup_sid {
                                             let path = transcript::transcript_path(
-                                                &home, &entry.cwd, sid,
+                                                &home, &entry.cwd, &sid,
                                             );
                                             if let Some(p) = path {
                                                 match TranscriptView::load(
@@ -374,48 +375,29 @@ fn main() -> anyhow::Result<()> {
                                                 ));
                                             }
                                         } else if pty.is_none() {
-                                            // No session_id linked → launch fresh PTY
-                                            let pc =
-                                                term_cols * (100 - SIDEBAR_FRACTION)
-                                                    / 100;
+                                            // No sessions found at all → spawn cds
+                                            let pc = term_cols
+                                                * (100 - SIDEBAR_FRACTION)
+                                                / 100;
                                             let pr = term_rows;
-                                            match Pty::spawn(
-                                                pr,
-                                                pc.max(1),
-                                                &workspace,
-                                            ) {
+                                            match Pty::spawn(pr, pc.max(1), &workspace) {
                                                 Ok(p) => {
-                                                    screen =
-                                                        Some(TerminalScreen::new(
-                                                            pr,
-                                                            pc.max(1),
-                                                        ));
+                                                    screen = Some(TerminalScreen::new(
+                                                        pr,
+                                                        pc.max(1),
+                                                    ));
                                                     last_pty_cols = pc;
                                                     last_pty_rows = pr;
                                                     pty = Some(p);
-                                                    if let Some(ref spawned) = pty {
-                                                        link_spawned_session(
-                                                            spawned,
-                                                            &sessions_dir,
-                                                            &mut workspace_registry,
-                                                        );
-                                                        let _ = workspace_registry.save(&workspace);
-                                                    }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!(
-                                                        "Failed to spawn cds: {e}"
-                                                    );
+                                                    eprintln!("PTY spawn error: {e}");
                                                 }
                                             }
                                             view = ViewMode::Live;
                                             focus = Focus::Pty;
-                                        }
-                                        // If pty is already running and no linked
-                                        // session_id, just switch to live view
-                                        if pty.is_some()
-                                            && entry.registry_session_id.is_none()
-                                        {
+                                        } else {
+                                            // PTY already running — just show it
                                             view = ViewMode::Live;
                                             focus = Focus::Pty;
                                         }
@@ -568,36 +550,6 @@ fn encode_fn_key(n: u8) -> Option<Vec<u8>> {
         11 => Some(b"\x1b[23~".to_vec()),
         12 => Some(b"\x1b[24~".to_vec()),
         _ => None,
-    }
-}
-
-// ── Session linking ──────────────────────────────────────────────────
-
-/// After spawning cds, capture its session_id and link it to the
-/// first unlinked registry entry. This ensures transcripts are
-/// findable on subsequent launches.
-fn link_spawned_session(
-    pty: &Pty,
-    sessions_dir: &PathBuf,
-    registry: &mut registry::WorkspaceRegistry,
-) {
-    let Some(pid) = pty.child_pid() else { return };
-    // Poll briefly for the session file to be written
-    for _ in 0..10 {
-        if let Some(sid) = session::read_session_id(sessions_dir, pid) {
-            // Find LAST unlinked entry (most recently created via Ctrl+N)
-            if let Some(entry) = registry
-                .sessions
-                .iter_mut()
-                .rev()
-                .find(|e| e.session_id.is_empty() && e.pids.is_empty())
-            {
-                entry.session_id = sid;
-                entry.pids.push(pid);
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
