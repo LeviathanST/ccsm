@@ -585,10 +585,11 @@ fn link_spawned_session(
     // Poll briefly for the session file to be written
     for _ in 0..10 {
         if let Some(sid) = session::read_session_id(sessions_dir, pid) {
-            // Find first unlinked registry entry and link it
+            // Find LAST unlinked entry (most recently created via Ctrl+N)
             if let Some(entry) = registry
                 .sessions
                 .iter_mut()
+                .rev()
                 .find(|e| e.session_id.is_empty() && e.pids.is_empty())
             {
                 entry.session_id = sid;

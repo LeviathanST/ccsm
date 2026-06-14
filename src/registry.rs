@@ -229,10 +229,11 @@ impl WorkspaceRegistry {
                     entry.status = SessionStatus::InProgress;
                 }
             } else {
-                // Strategy 2: link first unlinked entry (empty session_id, no pids)
+                // Strategy 2: link last unlinked entry (most recent Ctrl+N)
                 if let Some(entry) = self
                     .sessions
                     .iter_mut()
+                    .rev()
                     .find(|e| e.session_id.is_empty() && e.pids.is_empty())
                 {
                     entry.session_id = live.session_id.clone();
