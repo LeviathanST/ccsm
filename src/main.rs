@@ -2,6 +2,7 @@ mod ansi;
 mod pty;
 mod session;
 mod sidebar;
+mod transcript;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -10,20 +11,21 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
-    text::{Line as TLine, Span, Text},
-    widgets::{Block, Clear, Paragraph, Wrap},
+    text::Line as TLine,
+    widgets::{Block, Paragraph, Wrap},
     Frame,
 };
 
 use ansi::TerminalScreen;
 use pty::Pty;
 use sidebar::Sidebar;
+use transcript::TranscriptView;
 
 const PTY_READ_BUF: usize = 8192;
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Fraction of terminal width given to the sidebar.
-const SIDEBAR_FRACTION: u16 = 30; // percent
+const SIDEBAR_FRACTION: u16 = 30;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -31,15 +33,16 @@ enum Focus {
     Pty,
 }
 
-/// Session detail overlay state.
-struct DetailOverlay {
-    session: session::Session,
-    has_transcript: bool,
-    transcript_size: Option<u64>,
+/// What's shown in the right panel.
+enum ViewMode {
+    /// Live cds PTY (default).
+    Live,
+    /// Viewing a session transcript.
+    Transcript(Box<TranscriptView>),
 }
 
 fn main() -> anyhow::Result<()> {
-    // ── Workspace (CLI arg or current directory) ────────────────────
+    // ── Workspace ───────────────────────────────────────────────────
     let workspace = std::env::args()
         .nth(1)
         .map(PathBuf::from)
@@ -67,31 +70,30 @@ fn main() -> anyhow::Result<()> {
     let mut term_cols = cols.max(1);
     let mut term_rows = rows.max(1);
 
-    // PTY gets only the right-hand panel (100 - SIDEBAR_FRACTION)% of width
     let pty_cols = term_cols * (100 - SIDEBAR_FRACTION) / 100;
     let pty_rows = term_rows;
 
-    // ── Spawn cds in PTY (in the workspace directory) ───────────────
+    // ── Spawn cds in PTY ────────────────────────────────────────────
     let mut pty = Pty::spawn(pty_rows, pty_cols.max(1), &workspace)?;
     let mut screen = TerminalScreen::new(pty_rows, pty_cols.max(1));
     let mut last_pty_cols = pty_cols;
     let mut last_pty_rows = pty_rows;
 
-    // ── Sidebar setup (filtered to current workspace) ───────────────
+    // ── Sidebar ─────────────────────────────────────────────────────
     let mut sidebar = Sidebar::new();
     sidebar.refresh(session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default());
     let mut last_session_refresh = Instant::now();
 
-    // ── Focus and overlay state ─────────────────────────────────────
+    // ── State ───────────────────────────────────────────────────────
     let mut focus = Focus::Pty;
-    let mut detail: Option<DetailOverlay> = None;
+    let mut view: ViewMode = ViewMode::Live;
 
     // ── Main event loop ─────────────────────────────────────────────
     let mut pty_buf = vec![0u8; PTY_READ_BUF];
     let mut running = true;
 
     while running {
-        // ── Drain PTY output ────────────────────────────────────
+        // ── Drain PTY output (always, even in transcript mode) ──
         match pty.read(&mut pty_buf) {
             Ok(n) if n > 0 => {
                 screen.process(&pty_buf[..n]);
@@ -103,7 +105,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // ── Refresh sessions periodically ───────────────────────
+        // ── Refresh sessions ────────────────────────────────────
         if last_session_refresh.elapsed() >= SESSION_REFRESH_INTERVAL {
             sidebar.refresh(
                 session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
@@ -111,7 +113,7 @@ fn main() -> anyhow::Result<()> {
             last_session_refresh = Instant::now();
         }
 
-        // ── Handle input events ─────────────────────────────────
+        // ── Handle input ────────────────────────────────────────
         while crossterm::event::poll(Duration::from_millis(1))? {
             match crossterm::event::read()? {
                 Event::Key(key) => {
@@ -123,12 +125,24 @@ fn main() -> anyhow::Result<()> {
                         break;
                     }
 
-                    // Dismiss overlay on Esc or any key when overlay is active
-                    if detail.is_some() {
-                        detail = None;
+                    // ── Transcript mode: any navigation key, Esc/Tab to exit ──
+                    if let ViewMode::Transcript(ref mut tv) = view {
+                        match key.code {
+                            KeyCode::Esc | KeyCode::Tab => {
+                                view = ViewMode::Live;
+                                continue;
+                            }
+                            KeyCode::Up | KeyCode::Char('k') => tv.scroll_up(1),
+                            KeyCode::Down | KeyCode::Char('j') => tv.scroll_down(1),
+                            KeyCode::PageUp => tv.scroll_up(10),
+                            KeyCode::PageDown => tv.scroll_down(10),
+                            KeyCode::Home => tv.scroll = 0,
+                            _ => {}
+                        }
                         continue;
                     }
 
+                    // ── Live mode ───────────────────────────────
                     // Global: Tab toggles focus
                     if key.code == KeyCode::Tab && key.modifiers.is_empty() {
                         focus = match focus {
@@ -143,21 +157,31 @@ fn main() -> anyhow::Result<()> {
                             KeyCode::Up | KeyCode::Char('k') => sidebar.select_prev(),
                             KeyCode::Down | KeyCode::Char('j') => sidebar.select_next(),
                             KeyCode::Enter => {
-                                // Show session detail overlay
+                                // Try to load and view the session transcript
                                 if let Some(s) = sidebar.selected_session() {
-                                    let has = session::transcript_exists(&home, s);
-                                    let size = session::transcript_size(&home, s);
-                                    detail = Some(DetailOverlay {
-                                        session: s.clone(),
-                                        has_transcript: has,
-                                        transcript_size: size,
-                                    });
+                                    let path = transcript::transcript_path(
+                                        &home, &s.cwd, &s.session_id,
+                                    );
+                                    if let Some(p) = path {
+                                        match TranscriptView::load(&p, s.display_name())
+                                        {
+                                            Ok(tv) => {
+                                                view = ViewMode::Transcript(Box::new(tv));
+                                            }
+                                            Err(_) => {
+                                                view = ViewMode::Transcript(Box::new(
+                                                    TranscriptView::empty(s.display_name()),
+                                                ));
+                                            }
+                                        }
+                                    } else {
+                                        view = ViewMode::Transcript(Box::new(
+                                            TranscriptView::empty(s.display_name()),
+                                        ));
+                                    }
                                 }
                             }
-                            KeyCode::Char(' ') => {
-                                // Space: switch focus to PTY
-                                focus = Focus::Pty;
-                            }
+                            KeyCode::Char(' ') => focus = Focus::Pty,
                             _ => {}
                         },
                         Focus::Pty => {
@@ -180,7 +204,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        // ── Resize PTY if the panel dimensions changed ──────────
+        // ── Resize PTY ──────────────────────────────────────────
         let pty_cols = term_cols * (100 - SIDEBAR_FRACTION) / 100;
         let pty_rows = term_rows;
         if pty_cols != last_pty_cols || pty_rows != last_pty_rows {
@@ -190,15 +214,14 @@ fn main() -> anyhow::Result<()> {
             last_pty_rows = pty_rows;
         }
 
-        // ── Render frame ─────────────────────────────────────────
+        // ── Render ──────────────────────────────────────────────
         let current_focus = focus;
-        let show_detail = detail.is_some();
         terminal.draw(|f| {
-            render_ui(f, &screen, &mut sidebar, current_focus, &detail);
+            render_ui(f, &screen, &mut sidebar, current_focus, &view);
         })?;
 
-        // ── Check if child exited ────────────────────────────────
-        if pty.try_wait().is_some() && !show_detail {
+        // ── Check child exit (only quit in live mode) ──────────
+        if matches!(view, ViewMode::Live) && pty.try_wait().is_some() {
             running = false;
         }
     }
@@ -297,7 +320,7 @@ fn render_ui(
     screen: &TerminalScreen,
     sidebar: &mut Sidebar,
     focus: Focus,
-    detail: &Option<DetailOverlay>,
+    view: &ViewMode,
 ) {
     let area = f.area();
 
@@ -312,27 +335,58 @@ fn render_ui(
     // Sidebar (left)
     sidebar.render(f, chunks[0]);
 
-    // PTY panel (right)
-    let text = screen.render();
-    let pty_style = match focus {
-        Focus::Pty => Style::default(),
-        Focus::Sidebar => Style::default().fg(Color::DarkGray),
-    };
+    // Right panel — live PTY or transcript
+    match view {
+        ViewMode::Live => {
+            let text = screen.render();
+            let pty_style = match focus {
+                Focus::Pty => Style::default(),
+                Focus::Sidebar => Style::default().fg(Color::DarkGray),
+            };
+            f.render_widget(
+                Paragraph::new(text).style(pty_style).wrap(Wrap { trim: false }),
+                chunks[1],
+            );
+        }
+        ViewMode::Transcript(tv) => {
+            let available = chunks[1].height as usize;
+            let text = tv.render(available);
 
-    let widget = Paragraph::new(text)
-        .style(pty_style)
-        .wrap(Wrap { trim: false });
+            let widget = Paragraph::new(text)
+                .block(
+                    Block::bordered()
+                        .title_top(format!(" {} ", tv.session_name))
+                        .title_bottom(" Esc/Tab → back to cds  │  ↑↓/PgUp/PgDn scroll ")
+                        .border_style(Style::default().fg(Color::Rgb(120, 180, 255))),
+                )
+                .wrap(Wrap { trim: true })
+                .scroll((0, 0));
 
-    f.render_widget(widget, chunks[1]);
+            f.render_widget(widget, chunks[1]);
+        }
+    }
 
     // Bottom status bar
-    let status = match (focus, detail.is_some()) {
-        (_, true) => TLine::from(" SESSION DETAIL  │  any key to close "),
-        (Focus::Pty, false) => TLine::from(" cds  │  Ctrl+Q quit  │  Tab → sidebar "),
-        (Focus::Sidebar, false) => {
-            TLine::from("◀◀ SIDEBAR ▶▶  │  ↑↓/jk navigate  │  Enter detail  │  Tab → cds")
+    let status = match (focus, view) {
+        (_, ViewMode::Transcript(tv)) => {
+            let pct = if tv.line_count > 0 {
+                tv.scroll * 100 / tv.line_count
+            } else {
+                0
+            };
+            TLine::from(format!(
+                " REPLAY: {}  │  {}/{} lines ({}%)  │  Esc/Tab → back ",
+                tv.session_name, tv.scroll, tv.line_count, pct
+            ))
+        }
+        (Focus::Pty, ViewMode::Live) => {
+            TLine::from(" cds  │  Ctrl+Q quit  │  Tab → sidebar ")
+        }
+        (Focus::Sidebar, ViewMode::Live) => {
+            TLine::from("◀◀ SIDEBAR ▶▶  │  ↑↓/jk nav  │  Enter → replay  │  Space → cds  │  Tab → cds")
         }
     };
+
     let status_area = ratatui::layout::Rect::new(
         area.x,
         area.y + area.height.saturating_sub(1),
@@ -344,87 +398,4 @@ fn render_ui(
             .style(Style::default().fg(Color::Black).bg(Color::Rgb(180, 180, 180))),
         status_area,
     );
-
-    // Session detail overlay
-    if let Some(d) = detail {
-        render_detail_overlay(f, area, d);
-    }
-}
-
-fn render_detail_overlay(f: &mut Frame, area: ratatui::layout::Rect, d: &DetailOverlay) {
-    // Center the overlay
-    let overlay_w = 60u16.min(area.width - 4);
-    let overlay_h = 14u16.min(area.height - 4);
-    let ox = area.x + (area.width - overlay_w) / 2;
-    let oy = area.y + (area.height - overlay_h) / 2;
-    let overlay_area = ratatui::layout::Rect::new(ox, oy, overlay_w, overlay_h);
-
-    f.render_widget(Clear, overlay_area);
-
-    let s = &d.session;
-    let transcript_info = if d.has_transcript {
-        let kb = d.transcript_size.map(|b| b / 1024).unwrap_or(0);
-        format!("✓ transcript exists ({kb} KB)")
-    } else {
-        "✗ no transcript — session was created outside cc-tui\n       or transcript was cleaned up".into()
-    };
-
-    let lines = vec![
-        TLine::from(Span::styled(
-            format!(" Session: {}", s.display_name()),
-            Style::default().fg(Color::White),
-        )),
-        TLine::raw(""),
-        TLine::from(vec![
-            Span::raw("  PID:      "),
-            Span::styled(s.pid.to_string(), Style::default().fg(Color::Yellow)),
-        ]),
-        TLine::from(vec![
-            Span::raw("  Status:   "),
-            Span::styled(
-                format!("{} {}", s.status_label(), s.status),
-                match s.status.as_str() {
-                    "busy" => Style::default().fg(Color::Yellow),
-                    "idle" => Style::default().fg(Color::Green),
-                    _ => Style::default().fg(Color::DarkGray),
-                },
-            ),
-        ]),
-        TLine::from(vec![
-            Span::raw("  CWD:      "),
-            Span::styled(&s.cwd, Style::default().fg(Color::Cyan)),
-        ]),
-        TLine::from(vec![
-            Span::raw("  Session:  "),
-            Span::styled(&s.session_id, Style::default().fg(Color::DarkGray)),
-        ]),
-        TLine::from(vec![
-            Span::raw("  Kind:     "),
-            Span::styled(
-                s.kind.as_deref().unwrap_or("unknown"),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-        TLine::raw(""),
-        TLine::from(Span::styled(transcript_info, Style::default().fg(Color::Yellow))),
-        TLine::raw(""),
-        TLine::from(Span::styled(
-            " Source: Claude Code writes sessions to ~/.claude/sessions/",
-            Style::default().fg(Color::DarkGray),
-        )),
-        TLine::from(Span::styled(
-            " cc-tui displays them — it does not create sessions itself.",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ];
-
-    let overlay = Paragraph::new(Text::from(lines))
-        .block(
-            Block::bordered()
-                .title(" Session Detail ")
-                .border_style(Style::default().fg(Color::Rgb(120, 180, 255))),
-        )
-        .wrap(Wrap { trim: false });
-
-    f.render_widget(overlay, overlay_area);
 }

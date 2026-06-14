@@ -44,41 +44,12 @@ impl Session {
             .unwrap_or(&self.cwd)
     }
 
-    /// Claude Code's project-directory slug for this session's cwd.
-    /// Slashes become dashes, leading slash dropped.
-    /// e.g. `/home/levi/workspaces/cc-tui` → `-home-levi-workspaces-cc-tui`
-    pub fn cwd_slug(&self) -> String {
-        self.cwd.replace('/', "-")
-    }
-
-    /// Human-readable started-at timestamp.
+    /// Human-readable started-at timestamp (kept for future use).
+    #[allow(dead_code)]
     pub fn started_at_display(&self) -> String {
-        // started_at is in milliseconds since epoch
         let secs = self.started_at / 1000;
-        // Simple display: seconds since epoch → roughly readable
-        // For a proper display we'd want chrono, but this keeps deps light
         format!("ts_{secs}")
     }
-}
-
-/// Check if a transcript file exists for a session.
-pub fn transcript_exists(home: &str, session: &Session) -> bool {
-    let path = PathBuf::from(home)
-        .join(".claude")
-        .join("projects")
-        .join(session.cwd_slug())
-        .join(format!("{}.jsonl", session.session_id));
-    path.exists()
-}
-
-/// Return the size of the transcript file in bytes, if it exists.
-pub fn transcript_size(home: &str, session: &Session) -> Option<u64> {
-    let path = PathBuf::from(home)
-        .join(".claude")
-        .join("projects")
-        .join(session.cwd_slug())
-        .join(format!("{}.jsonl", session.session_id));
-    std::fs::metadata(&path).ok().map(|m| m.len())
 }
 
 /// Load sessions from disk, optionally filtering to those whose cwd
