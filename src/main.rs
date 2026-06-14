@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
+    style::{Color, Style},
+    text::Line as TLine,
     widgets::{Paragraph, Wrap},
     Frame,
 };
@@ -19,6 +21,9 @@ use sidebar::Sidebar;
 
 const PTY_READ_BUF: usize = 8192;
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Fraction of terminal width given to the sidebar.
+const SIDEBAR_FRACTION: u16 = 30; // percent
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -41,11 +46,18 @@ fn main() -> anyhow::Result<()> {
 
     // ── Get initial terminal size ───────────────────────────────────
     let (cols, rows) = crossterm::terminal::size()?;
-    let (cols, rows) = (cols.max(1), rows.max(1));
+    let mut term_cols = cols.max(1);
+    let mut term_rows = rows.max(1);
+
+    // PTY gets only the right-hand panel (100 - SIDEBAR_FRACTION)% of width
+    let pty_cols = term_cols * (100 - SIDEBAR_FRACTION) / 100;
+    let pty_rows = term_rows;
 
     // ── Spawn cds in PTY ────────────────────────────────────────────
-    let mut pty = Pty::spawn(rows, cols)?;
-    let mut screen = TerminalScreen::new(rows, cols);
+    let mut pty = Pty::spawn(pty_rows, pty_cols.max(1))?;
+    let mut screen = TerminalScreen::new(pty_rows, pty_cols.max(1));
+    let mut last_pty_cols = pty_cols;
+    let mut last_pty_rows = pty_rows;
 
     // ── Sidebar setup ───────────────────────────────────────────────
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -85,7 +97,6 @@ fn main() -> anyhow::Result<()> {
         while crossterm::event::poll(Duration::from_millis(1))? {
             match crossterm::event::read()? {
                 Event::Key(key) => {
-                    // ── Global: Ctrl+Q always quits ────────────
                     if key.code == KeyCode::Char('q')
                         && key.modifiers == KeyModifiers::CONTROL
                     {
@@ -93,10 +104,7 @@ fn main() -> anyhow::Result<()> {
                         break;
                     }
 
-                    // ── Global: Tab toggles focus ──────────────
-                    if key.code == KeyCode::Tab
-                        && key.modifiers.is_empty()
-                    {
+                    if key.code == KeyCode::Tab && key.modifiers.is_empty() {
                         focus = match focus {
                             Focus::Sidebar => Focus::Pty,
                             Focus::Pty => Focus::Sidebar,
@@ -105,21 +113,12 @@ fn main() -> anyhow::Result<()> {
                     }
 
                     match focus {
-                        Focus::Sidebar => {
-                            match key.code {
-                                KeyCode::Up | KeyCode::Char('k') => {
-                                    sidebar.select_prev();
-                                }
-                                KeyCode::Down | KeyCode::Char('j') => {
-                                    sidebar.select_next();
-                                }
-                                // Enter switches focus to PTY
-                                KeyCode::Enter => {
-                                    focus = Focus::Pty;
-                                }
-                                _ => {}
-                            }
-                        }
+                        Focus::Sidebar => match key.code {
+                            KeyCode::Up | KeyCode::Char('k') => sidebar.select_prev(),
+                            KeyCode::Down | KeyCode::Char('j') => sidebar.select_next(),
+                            KeyCode::Enter => focus = Focus::Pty,
+                            _ => {}
+                        },
                         Focus::Pty => {
                             if let Some(bytes) = encode_key(key) {
                                 if let Err(e) = pty.write(&bytes) {
@@ -132,14 +131,22 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 Event::Resize(w, h) => {
-                    if let Err(e) = pty.resize(h, w) {
-                        eprintln!("PTY resize error: {e}");
-                    }
-                    screen.resize(h, w);
+                    term_cols = w.max(1);
+                    term_rows = h.max(1);
                 }
                 Event::Mouse(_) => {}
                 _ => {}
             }
+        }
+
+        // ── Resize PTY if the panel dimensions changed ──────────
+        let pty_cols = term_cols * (100 - SIDEBAR_FRACTION) / 100;
+        let pty_rows = term_rows;
+        if pty_cols != last_pty_cols || pty_rows != last_pty_rows {
+            let _ = pty.resize(pty_rows, pty_cols.max(1));
+            screen.resize(pty_rows, pty_cols.max(1));
+            last_pty_cols = pty_cols;
+            last_pty_rows = pty_rows;
         }
 
         // ── Render frame ─────────────────────────────────────────
@@ -204,11 +211,7 @@ fn encode_key(key: KeyEvent) -> Option<Vec<u8>> {
                 Some(s.as_bytes().to_vec())
             }
         }
-        KeyCode::Tab => {
-            // Tab is consumed by focus switching; only pass to PTY
-            // when explicitly needed (future: Ctrl+Tab passes Tab through)
-            None
-        }
+        KeyCode::Tab => None, // consumed by focus switching
         KeyCode::Enter => Some(vec![b'\r']),
         KeyCode::Backspace => Some(vec![0x7f]),
         KeyCode::Esc => Some(vec![0x1b]),
@@ -250,56 +253,44 @@ fn encode_fn_key(n: u8) -> Option<Vec<u8>> {
 fn render_ui(f: &mut Frame, screen: &TerminalScreen, sidebar: &mut Sidebar, focus: Focus) {
     let area = f.area();
 
-    // 30 / 70 split: sidebar | PTY
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(70),
+            Constraint::Percentage(SIDEBAR_FRACTION),
+            Constraint::Percentage(100 - SIDEBAR_FRACTION),
         ])
         .split(area);
 
     // Sidebar (left)
     sidebar.render(f, chunks[0]);
 
-    // PTY panel (right) — border color indicates focus
-    let pty_border_style = match focus {
-        Focus::Pty => ratatui::style::Style::default()
-            .fg(ratatui::style::Color::Rgb(120, 180, 255)),
-        Focus::Sidebar => ratatui::style::Style::default()
-            .fg(ratatui::style::Color::Rgb(80, 80, 80)),
+    // PTY panel (right) — no border, full area. Focus shown in status bar.
+    let text = screen.render();
+    let pty_style = match focus {
+        Focus::Pty => Style::default(),
+        Focus::Sidebar => Style::default().fg(Color::DarkGray),
     };
 
-    let text = screen.render();
     let widget = Paragraph::new(text)
-        .block(
-            ratatui::widgets::Block::bordered()
-                .border_style(pty_border_style)
-                .title_top(" cds ")
-                .title_bottom(match focus {
-                    Focus::Pty => " Ctrl+Q quit │ Tab sidebar ",
-                    Focus::Sidebar => " Tab to focus │ Enter to switch ",
-                }),
-        )
+        .style(pty_style)
         .wrap(Wrap { trim: false });
 
     f.render_widget(widget, chunks[1]);
 
-    // Focus indicator overlay
-    if focus == Focus::Sidebar {
-        let focus_text = ratatui::text::Text::from("◀ SIDEBAR ▶");
-        let focus_area = ratatui::layout::Rect::new(
-            chunks[0].x + 2,
-            chunks[0].y + chunks[0].height.saturating_sub(1),
-            focus_text.width() as u16,
-            1,
-        );
-        f.render_widget(
-            Paragraph::new(focus_text)
-                .style(ratatui::style::Style::default()
-                    .fg(ratatui::style::Color::Black)
-                    .bg(ratatui::style::Color::Rgb(180, 180, 180))),
-            focus_area,
-        );
-    }
+    // Bottom status bar
+    let status = match focus {
+        Focus::Pty => TLine::from(" cds  │  Ctrl+Q quit  │  Tab → sidebar "),
+        Focus::Sidebar => TLine::from("◀◀ SIDEBAR ▶▶  │  ↑↓/jk navigate  │  Enter → cds  │  Tab → cds"),
+    };
+    let status_area = ratatui::layout::Rect::new(
+        area.x,
+        area.y + area.height.saturating_sub(1),
+        area.width,
+        1,
+    );
+    f.render_widget(
+        Paragraph::new(status)
+            .style(Style::default().fg(Color::Black).bg(Color::Rgb(180, 180, 180))),
+        status_area,
+    );
 }
