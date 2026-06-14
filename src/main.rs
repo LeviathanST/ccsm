@@ -132,6 +132,7 @@ fn main() -> anyhow::Result<()> {
     sidebar.refresh(
         session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
         &workspace_registry.sessions,
+        &ws_path_str,
     );
     let mut last_session_refresh = Instant::now();
 
@@ -162,6 +163,7 @@ fn main() -> anyhow::Result<()> {
             sidebar.refresh(
                 session::load_all(&sessions_dir, Some(&workspace)).unwrap_or_default(),
                 &workspace_registry.sessions,
+                &ws_path_str,
             );
             let _ = workspace_registry
                 .merge_live_sessions(&sessions_dir, &ws_path_str);
@@ -212,6 +214,7 @@ fn main() -> anyhow::Result<()> {
                                         session::load_all(&sessions_dir, Some(&workspace))
                                             .unwrap_or_default(),
                                         &workspace_registry.sessions,
+                                        &ws_path_str,
                                     );
 
                                     // Lazy-spawn PTY if not already running
@@ -232,6 +235,15 @@ fn main() -> anyhow::Result<()> {
                                                 last_pty_cols = pty_cols;
                                                 last_pty_rows = pty_rows;
                                                 pty = Some(p);
+                                                // Link the new session_id to the registry
+                                                if let Some(ref spawned) = pty {
+                                                    link_spawned_session(
+                                                        spawned,
+                                                        &sessions_dir,
+                                                        &mut workspace_registry,
+                                                    );
+                                                    let _ = workspace_registry.save(&workspace);
+                                                }
                                             }
                                             Err(e) => {
                                                 eprintln!("Failed to spawn cds: {e}");
@@ -329,9 +341,40 @@ fn main() -> anyhow::Result<()> {
                                             ));
                                         }
                                     } else if entry.is_registry {
-                                        // Registry-only entry → switch to live PTY
-                                        // (launch cds if not running)
-                                        if pty.is_none() {
+                                        // Registry entry: try transcript first
+                                        // if session_id is linked, else launch PTY
+                                        if let Some(ref sid) = entry.registry_session_id {
+                                            let path = transcript::transcript_path(
+                                                &home, &entry.cwd, sid,
+                                            );
+                                            if let Some(p) = path {
+                                                match TranscriptView::load(
+                                                    &p, &entry.label,
+                                                ) {
+                                                    Ok(tv) => {
+                                                        view = ViewMode::Transcript(
+                                                            Box::new(tv),
+                                                        );
+                                                    }
+                                                    Err(_) => {
+                                                        view = ViewMode::Transcript(
+                                                            Box::new(
+                                                                TranscriptView::empty(
+                                                                    &entry.label,
+                                                                ),
+                                                            ),
+                                                        );
+                                                    }
+                                                }
+                                            } else {
+                                                view = ViewMode::Transcript(Box::new(
+                                                    TranscriptView::empty(
+                                                        &entry.label,
+                                                    ),
+                                                ));
+                                            }
+                                        } else if pty.is_none() {
+                                            // No session_id linked → launch fresh PTY
                                             let pc =
                                                 term_cols * (100 - SIDEBAR_FRACTION)
                                                     / 100;
@@ -350,6 +393,14 @@ fn main() -> anyhow::Result<()> {
                                                     last_pty_cols = pc;
                                                     last_pty_rows = pr;
                                                     pty = Some(p);
+                                                    if let Some(ref spawned) = pty {
+                                                        link_spawned_session(
+                                                            spawned,
+                                                            &sessions_dir,
+                                                            &mut workspace_registry,
+                                                        );
+                                                        let _ = workspace_registry.save(&workspace);
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     eprintln!(
@@ -357,9 +408,17 @@ fn main() -> anyhow::Result<()> {
                                                     );
                                                 }
                                             }
+                                            view = ViewMode::Live;
+                                            focus = Focus::Pty;
                                         }
-                                        view = ViewMode::Live;
-                                        focus = Focus::Pty;
+                                        // If pty is already running and no linked
+                                        // session_id, just switch to live view
+                                        if pty.is_some()
+                                            && entry.registry_session_id.is_none()
+                                        {
+                                            view = ViewMode::Live;
+                                            focus = Focus::Pty;
+                                        }
                                     }
                                 }
                             }
@@ -509,6 +568,35 @@ fn encode_fn_key(n: u8) -> Option<Vec<u8>> {
         11 => Some(b"\x1b[23~".to_vec()),
         12 => Some(b"\x1b[24~".to_vec()),
         _ => None,
+    }
+}
+
+// ── Session linking ──────────────────────────────────────────────────
+
+/// After spawning cds, capture its session_id and link it to the
+/// first unlinked registry entry. This ensures transcripts are
+/// findable on subsequent launches.
+fn link_spawned_session(
+    pty: &Pty,
+    sessions_dir: &PathBuf,
+    registry: &mut registry::WorkspaceRegistry,
+) {
+    let Some(pid) = pty.child_pid() else { return };
+    // Poll briefly for the session file to be written
+    for _ in 0..10 {
+        if let Some(sid) = session::read_session_id(sessions_dir, pid) {
+            // Find first unlinked registry entry and link it
+            if let Some(entry) = registry
+                .sessions
+                .iter_mut()
+                .find(|e| e.session_id.is_empty() && e.pids.is_empty())
+            {
+                entry.session_id = sid;
+                entry.pids.push(pid);
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 

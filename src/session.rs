@@ -97,3 +97,18 @@ fn load_all_unfiltered(sessions_dir: &PathBuf) -> Result<Vec<Session>> {
 
     Ok(sessions)
 }
+
+/// Read the session_id from a specific PID session file.
+/// Returns None if the file doesn't exist or can't be parsed.
+pub fn read_session_id(sessions_dir: &PathBuf, pid: u32) -> Option<String> {
+    let path = sessions_dir.join(format!("{pid}.json"));
+    let contents = std::fs::read_to_string(&path).ok()?;
+    #[derive(Deserialize)]
+    struct PidSession {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    }
+    serde_json::from_str::<PidSession>(&contents)
+        .ok()
+        .map(|s| s.session_id)
+}

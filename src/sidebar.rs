@@ -17,6 +17,10 @@ pub struct SidebarEntry {
     pub status_style: Style,
     /// If this corresponds to a live session, store its data for transcript lookup.
     pub live_session: Option<Session>,
+    /// If this is a registry entry with a linked session_id, store it for transcript lookup.
+    pub registry_session_id: Option<String>,
+    /// CWD for transcript lookup (from live session or workspace).
+    pub cwd: String,
 }
 
 /// Sidebar state: session list + navigation.
@@ -34,11 +38,12 @@ impl Sidebar {
     }
 
     /// Refresh from live sessions and registry entries.
-    /// Registry entries without a matching live session are shown as planned/pending.
+    /// `workspace_cwd` is the current workspace path (for transcript lookup on registry entries).
     pub fn refresh(
         &mut self,
         live_sessions: Vec<Session>,
         registry_sessions: &[WorkspaceSession],
+        workspace_cwd: &str,
     ) {
         let mut entries: Vec<SidebarEntry> = Vec::new();
 
@@ -56,13 +61,17 @@ impl Sidebar {
                 is_registry: false,
                 status_style,
                 live_session: Some(s.clone()),
+                registry_session_id: None,
+                cwd: s.cwd.clone(),
             });
         }
 
         // Registry entries not yet seen as live sessions
         for rs in registry_sessions {
-            if live_sessions.iter().any(|ls| ls.session_id == rs.session_id) {
-                continue; // already shown above
+            if !rs.session_id.is_empty()
+                && live_sessions.iter().any(|ls| ls.session_id == rs.session_id)
+            {
+                continue; // already shown as live session
             }
             let status_style = match rs.status {
                 crate::registry::SessionStatus::Completed => {
@@ -89,6 +98,12 @@ impl Sidebar {
                 is_registry: true,
                 status_style,
                 live_session: None,
+                registry_session_id: if rs.session_id.is_empty() {
+                    None
+                } else {
+                    Some(rs.session_id.clone())
+                },
+                cwd: workspace_cwd.to_string(),
             });
         }
 

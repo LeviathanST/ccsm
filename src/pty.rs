@@ -112,6 +112,11 @@ impl Pty {
         self.child.try_wait().unwrap_or(None)
     }
 
+    /// Get the child process ID.
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.process_id()
+    }
+
     /// Kill the child process.
     pub fn kill(&mut self) -> Result<()> {
         self.child.kill().context("failed to kill child process")
