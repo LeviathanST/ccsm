@@ -44,8 +44,8 @@ cc-tui show <name>         # registry fields + detail file section headlines
    ```bash
    cc-tui new <name> -g "one-sentence goal"
    cc-tui start <name>
-   cp .claude/session-detail-template.md .claude/sessions/<name>.md
-   # Edit detail file — fill all sections
+   # `new` auto-creates .claude/sessions/<name>.md from template.
+   # Edit it NOW — fill scope, tags, dependencies before starting work.
    cc-tui scope <name> "<2-4 sentence approach>"
    cc-tui tag <name> <tag1> <tag2>
    ```
@@ -148,10 +148,11 @@ trashed      — soft-deleted, recoverable with `cc-tui recover <name>`
 
 ## Session Detail Files
 
-Detail files live at `.claude/sessions/<name>.md`. Copy the template and fill all sections:
+Detail files live at `.claude/sessions/<name>.md`. `cc-tui new` auto-creates them from the template with placeholders — your job is to **fill them in**, not create them.
 
 ```bash
-cp .claude/session-detail-template.md .claude/sessions/<name>.md
+cc-tui show <name>          # check what's already filled
+# Then Edit .claude/sessions/<name>.md to replace remaining {{placeholders}}
 ```
 
 **Token-efficient reading:**

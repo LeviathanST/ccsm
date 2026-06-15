@@ -358,6 +358,41 @@ fn run_new(name: &str, goal: &str) -> anyhow::Result<()> {
     });
     reg.updated = now_iso_ts();
     reg.save(&workspace)?;
+
+    // Auto-create the detail file from template if it doesn't exist.
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", name));
+    if !detail_path.exists() {
+        let template = workspace
+            .join(".claude")
+            .join("session-detail-template.md");
+        if template.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&template) {
+                let populated = contents
+                    .replace("{{name}}", name)
+                    .replace("{{goal}}", goal)
+                    .replace("{{status}}", "pending")
+                    .replace("{{scope}}", "(fill in — approach, constraints, what's in/out)")
+                    .replace("{{tags}}", "(fill in)")
+                    .replace("{{session_id}}", "(auto — cc-tui manages)")
+                    .replace("{{cwd}}", &workspace.to_string_lossy())
+                    .replace("{{pids}}", "(auto — cc-tui manages)")
+                    .replace("{{kind}}", "(auto)")
+                    .replace("{{version}}", "(auto)")
+                    .replace("{{waiting_for}}", "(none)")
+                    .replace("{{dependencies}}", "(none)")
+                    .replace("{{now}}", &now_iso_ts())
+                    .replace("{{note}}", "Session created");
+                if let Some(parent) = detail_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&detail_path, populated);
+            }
+        }
+    }
+
     println!("pending     {}  ← created", name);
     Ok(())
 }
