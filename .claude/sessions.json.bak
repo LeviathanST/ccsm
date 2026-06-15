@@ -1,5 +1,5 @@
 {
-  "updated": "day20619T08:19:59Z",
+  "updated": "day20618T15:34:41Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -21,7 +21,7 @@
       "name": "phase-4-task-dashboard",
       "goal": "Live task dashboard from ~/.claude/tasks/",
       "scope": "Read task files, render task list with status. ~2h.",
-      "status": "in_progress",
+      "status": "pending",
       "pids": [],
       "tags": [
         "tasks",
@@ -85,7 +85,7 @@
       "status": "completed",
       "pids": [],
       "tags": [],
-      "started": "",
+      "started": "day20618T12:14Z",
       "completed": "day20618T12:25:48Z"
     },
     {
@@ -96,7 +96,7 @@
       "status": "completed",
       "pids": [],
       "tags": [],
-      "started": "day20619T06:09:46Z",
+      "started": "day20618T12:25Z",
       "completed": "day20618T13:58:41Z"
     },
     {
@@ -104,56 +104,10 @@
       "name": "sidebar-enhancement",
       "goal": "",
       "scope": "",
-      "status": "completed",
-      "pids": [],
-      "tags": [],
-      "started": "day20618T15:55:07Z",
-      "completed": "day20618T15:44:54Z"
-    },
-    {
-      "session_id": "b429aeff-e334-4bd3-a24b-010089ab6ed1",
-      "name": "Claude Code panel scrollable",
-      "goal": "",
-      "scope": "",
-      "status": "completed",
-      "pids": [],
-      "tags": [],
-      "started": "day20619T05:54:01Z",
-      "completed": "day20618T15:54:45Z"
-    },
-    {
-      "session_id": "8d17ed11-71c5-46ed-946b-aa492c44d3a8",
-      "name": "test1",
-      "goal": "test",
-      "scope": "",
       "status": "in_progress",
       "pids": [],
       "tags": [],
-      "started": "day20619T08:17Z",
-      "completed": ""
-    },
-    {
-      "session_id": "",
-      "name": "resource leak checking",
-      "goal": "",
-      "scope": "",
-      "status": "completed",
-      "pids": [
-        777682
-      ],
-      "tags": [],
-      "started": "",
-      "completed": "day20619T08:03:17Z"
-    },
-    {
-      "session_id": "",
-      "name": "test-harvest",
-      "goal": "test direct pid read harvest",
-      "scope": "",
-      "status": "pending",
-      "pids": [],
-      "tags": [],
-      "started": "",
+      "started": "day20618T15:33:05Z",
       "completed": ""
     }
   ]

@@ -57,6 +57,37 @@ cargo build --release  # Optimized build
 cargo run -- /path/to/project  # Launch for a specific workspace
 ```
 
+## CLI Commands
+
+cc-tui has a full CLI for session management. Agents use these instead of editing JSON directly.
+
+### Query
+
+| Command | Alias | Output |
+|---|---|---|
+| `cc-tui summary` | `sum` | One-line: `2 active \| 5 completed \| 3 total` |
+| `cc-tui active` | `a` | One line per `in_progress` + `blocked` session |
+| `cc-tui sessions` | `s` | All sessions, one line each |
+| `cc-tui show <name>` | — | Full detail: goal, scope, tags, pids, timestamps |
+
+### Mutate
+
+| Command | Action |
+|---|---|
+| `cc-tui new <name> [goal]` | Create session (`pending`) |
+| `cc-tui start <name>` | `pending` → `in_progress` |
+| `cc-tui complete <name>` | → `completed` + timestamp |
+| `cc-tui block <name>` | → `blocked` |
+| `cc-tui abandon <name>` | → `abandoned` |
+| `cc-tui scope <name> <text>` | Set scope field |
+| `cc-tui tag <name> <tags...>` | Replace tags |
+
+### Setup
+
+```bash
+cc-tui setup   # Install session tracking globally (run once)
+```
+
 ## Keybindings
 
 ### Global
