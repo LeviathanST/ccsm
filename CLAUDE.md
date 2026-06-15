@@ -1,124 +1,78 @@
-# cc-tui: A TUI Dashboard Wrapper for Claude Code
+# cc-tui: Session Registry CLI for Claude Code
 
 ## Identity
 
-You are Vex, building a persistent TUI wrapper around Claude Code. This project augments Claude Code — it does NOT replace it.
+You are Vex, building a CLI session registry and lifecycle manager for Claude Code. This project augments Claude Code — it does NOT replace it.
 
 ## Core Principle
 
-**Augment, don't rebuild.** Claude Code's harness (agent loop, tools, hooks, permissions, compaction, sessions, slash commands, skills) runs untouched inside a PTY. This TUI adds persistent sidebar panels that the default CLI doesn't have. Nothing is reimplemented — every Claude Code update is free.
+**Augment, don't rebuild.** Claude Code's harness (agent loop, tools, hooks, permissions, compaction, sessions, slash commands, skills) runs untouched. cc-tui adds structured session tracking with a CLI and JSON registry — nothing is reimplemented, every Claude Code update is free.
 
 ## Architecture
 
 ```
-┌─ cc-tui (Rust binary) ───────────────────────────────────────────┐
-│ ┌─ Sidebar (30%) ────┐ ┌─ Claude Code PTY (70%) ────────────────┐ │
-│ │ Sessions            │ │  Real `claude` process, full harness   │ │
-│ │ Tasks               │ │  ANSI passthrough — zero rendering     │ │
-│ │ Token stats         │ │  Input: Tab switches focus             │ │
-│ │ Git status          │ │                                        │ │
-│ │ Subagents           │ │                                        │ │
-│ └─────────────────────┘ └───────────────────────────────────────┘ │
-│ ┌─ Status Bar ───────────────────────────────────────────────────┐ │
-│ │ cc-tui v0.1 │ Session: X │ active │ 24K tokens │ 4 files       │ │
-│ └────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────┘
+cc-tui CLI
+├── src/main.rs          CLI dispatch (clap), all subcommand handlers
+├── src/registry.rs      WorkspaceRegistry — .claude/sessions.json CRUD
+└── src/session.rs       Session — reads ~/.claude/sessions/<pid>.json
 ```
+
+cc-tui manages a per-workspace session registry at `.claude/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `cc-tui resume` command spawns `claude` (with `--resume` if a session_id is linked), captures the child PID, and harvests the session_id from the session file on exit.
 
 ## Tech Stack
 
-- **Rust** (matches user's ecosystem)
-- **ratatui** 0.29+ with **crossterm** backend (terminal UI)
-- **portable-pty** (spawn and manage Claude Code process)
-- **notify** (filesystem watcher for session/task files)
-- **serde/serde_json** (parse Claude Code's JSON data files)
+- **Rust**
+- **clap** (derive) — CLI argument parsing, auto-generated --help
+- **serde/serde_json** — parse Claude Code's JSON data files
 
-## Data Sources (zero PTY parsing)
+## Data Sources
 
-Every panel reads from filesystem files or hook event bridges. Cds's PTY output is rendered untouched — never parsed.
+### Files on Disk
 
-### Files on Disk (poll/watch)
+| Path | Contains | Use For |
+|------|----------|---------|
+| `<workspace>/.claude/sessions.json` | Registry entries: name, goal, scope, status, session_id, pids, tags, timestamps | All CLI operations |
+| `~/.claude/sessions/<pid>.json` | Live sessions: sessionId, cwd, status, name | `refresh_from_live` harvesting |
+| `~/.claude/projects/<slug>/<session_id>.jsonl` | Full transcript | Resume check (exists → --resume) |
+| `~/.claude/sessions.json` | Global overview across workspaces | Global Registry (Tier 1) |
 
-| Path | Contains | Use For | Status |
-|------|----------|---------|--------|
-| `~/.claude/sessions/<pid>.json` | Live sessions: sessionId, cwd, status, name | Session list | ✅ Built (Phase 2) |
-| `~/.claude/projects/<project>/<session>.jsonl` | Full transcript: every message, tool_use block | Session replay | ✅ Built (Phase 2) |
-| `~/.claude/tasks/<session>/*.json` | All tasks: id, subject, status, blocks | Task dashboard | 🔜 Phase 4 |
-| `~/.claude/stats-cache.json` | Daily aggregated: messageCount, sessionCount, toolCallCount | Token dashboard | 🔜 Phase 6 |
-| `~/.claude/history.jsonl` | Every prompt typed, with timestamp + project | Session search | 🔜 Future |
-
-> **Decision: `~/.claude/sessions/<pid>.json` is the canonical session data source.** These files are written automatically by Claude Code with pid, sessionId, cwd, status, name, and timestamps. The `.claude/sessions.md` markdown board and `.claude/sessions/<name>.md` files described in the original plan are user-curated notes — not a structured data source. cc-tui reads the JSON files directly. No migration needed; the JSON approach is zero-config and always reflects reality.
-
-### Hook Events (real-time bridges)
-
-Pattern: hook → writes to a bridge file → TUI watches file → panel updates
-
-| Hook Event | Carries | Bridge To |
-|-----------|---------|-----------|
-| `TaskCreated` | task data | Task dashboard |
-| `TaskCompleted` | task data | Task dashboard |
-| `PreToolUse` | tool_name, tool_input | Tool log panel |
-| `PostToolUse` | tool_name, tool_output (exit code, stdout) | Tool log panel |
-| `SubagentStart` | agent_type, agent_id, task | Subagent tracker |
-| `SubagentStop` | agent_type, agent_id | Subagent tracker |
-| `Stop` | (fires when Claude finishes responding) | Token update trigger |
-| `SessionStart` | source (startup/resume/clear), model | Session lifecycle |
-
-### Status Line (runs every render frame)
-
-User already has a custom status line via Node.js script. The TUI can embed its own status bar using the same data sources.
-
-## Design Decisions
-
-1. **PTY embedding, not Agent SDK.** User explicitly rejected rebuilding Claude Code's conversation UI. The PTY approach gives 100% of Claude Code's features for free.
-2. **Never parse PTY output.** The golden rule from klaudio-panels. All sidebar data comes from filesystem + hooks.
-3. **Input routing: Tab toggles focus.** When sidebar has focus → arrow keys navigate. When cds PTY has focus → all keystrokes pass through.
-4. **Hook-to-file bridge pattern.** Hooks write events to a JSONL file (`/tmp/cc-events.jsonl` or similar). TUI tail-follows it. Zero coupling between hook logic and TUI render loop.
-5. **ratatui, not a web UI.** Terminal-native keeps it in the same environment as Claude Code. No browser context switch.
-6. **`~/.claude/sessions/<pid>.json` is the canonical session source.** Claude Code writes these automatically — pid, sessionId, cwd, status, name, timestamps. No manual markdown board needed. The `.claude/sessions.md` concept from the original plan was a user-curated notes file, not a structured data source. cc-tui reads the JSON directly — zero config, always accurate.
-7. **Tmux-style fixed-grid rendering.** Every vt100 cell position is rendered as a space or glyph — never skip cells. The PTY is sized to exactly match the panel area it renders into. No borders on the PTY panel.
-8. **`CommandBuilder::cwd()` sets the workspace.** Accept workspace path as CLI arg (defaults to `$PWD`). Session list filters to sessions whose cwd matches the workspace.
+> **Decision: `<workspace>/.claude/sessions.json` is the canonical session data source.** cc-tui reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
 
 ## What We Know About Claude Code's Data Surface
 
-### Task files are rich
-Each task at `~/.claude/tasks/<session-id>/<id>.json`:
+### Session files (`~/.claude/sessions/<pid>.json`)
+
 ```json
 {
-  "id": "47",
-  "subject": "Task 1: AnimationKind enum",
-  "description": "Add AnimationKind enum...",
-  "activeForm": "Adding AnimationKind",
-  "status": "completed",
-  "blocks": [],
-  "blockedBy": []
+  "pid": 727940,
+  "sessionId": "f493397b-456a-426d-92e1-4d5f15da0311",
+  "cwd": "/home/user/project",
+  "name": "my-session",
+  "status": "busy",
+  "startedAt": 1718400000000,
+  "updatedAt": 1718400300000
 }
 ```
-Also: `.highwatermark` (next available ID) and `.lock` files in each task directory.
 
 ### Session JSONL transcript
-Append-only JSONL at `~/.claude/projects/<project>/<session>.jsonl`. Contains:
+
+Append-only JSONL at `~/.claude/projects/<slug>/<session_id>.jsonl`. Contains:
 - `type: "assistant"` with `message.content[]` blocks (text, tool_use with name+input)
 - `type: "user"` with tool_result blocks
 - `type: "system"`, `type: "file-history-snapshot"`, `type: "mode"`
 - Parent UUID chain for branching/resume
 
-### Notable gaps
-- **Per-turn token usage**: Not in hook payloads or JSONL (verified). Only available via `stats-cache.json` (daily aggregate).
-- **TaskCreated/TaskCompleted hook schema**: Full JSON fields not documented yet. Easy to discover: point a hook at a stdout-dump script and create a task.
-- **Streaming tool output**: Only available mid-execution via PTY. Not worth parsing — accept post-hoc updates via PostToolUse.
+### Project slug convention
 
-## Implementation Phases
+Claude Code derives the project directory slug from the absolute path by replacing ALL non-alphanumeric chars with `-`. `/home/user/my_project` → `-home-user-my-project`. Transcripts live at `~/.claude/projects/<slug>/<session_id>.jsonl`.
 
-| Phase | What | Effort |
-|-------|------|--------|
-| 1 | Spawn `claude` in PTY, render in ratatui (one panel, no sidebar) | ~2h |
-| 2 | Add sidebar: read sessions.md, render session list, keyboard nav | ~3h |
-| 3 | Focus switching: Tab toggles between sidebar and Claude PTY | ~1h |
-| 4 | Live panels: task dashboard from ~/.claude/tasks/, git status | ~2h |
-| 5 | Hook bridges: TaskCreated/Completed → file → TUI updates | ~2h |
-| 6 | Token dashboard from stats-cache.json | ~1h |
-| 7 | Polish: themes, mouse, resize, scrollback | ~2h |
+## Design Decisions
+
+1. **CLI-first.** Purpose-built subcommands for every operation. Same output format across Claude, Codex, Gemini, and shell scripts.
+2. **`<workspace>/.claude/sessions.json` is the canonical source.** Structured JSON, diffable in git, parseable by any tool.
+3. **Never parse JSONL transcripts.** Use `claude --resume` for session replay — let Claude handle its own data format.
+4. **`refresh_from_live` harvests session_ids.** After `claude` exits, the session file it wrote at `~/.claude/sessions/<pid>.json` is read to harvest the `sessionId` and save it to the registry entry.
+5. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by cc-tui. Agents use CLI commands, never touch these fields directly.
 
 ## Agent Workflow (MANDATORY)
 
@@ -128,7 +82,7 @@ Every agent working on cc-tui MUST follow this workflow. The session registry is
 
 ```bash
 # 1. Scan the board — who's active?
-cc-tui active
+cc-tui list --active
 
 # 2. Is someone already doing my task?
 cc-tui show <name>   # check if a session overlaps with my work
@@ -143,7 +97,7 @@ cc-tui show <name>   # check if a session overlaps with my work
 ### If starting new work
 
 ```bash
-cc-tui new <name> "One-sentence goal"
+cc-tui new <name> -g "One-sentence goal"
 cc-tui start <name>
 cp .claude/session-detail-template.md .claude/sessions/<name>.md
 # Edit the detail file — fill in scope, tags, dependencies
@@ -170,50 +124,55 @@ cc-tui complete <name>
 - **NEVER** edit `.claude/sessions.json` directly — use CLI commands
 - **NEVER** touch `session_id`, `pids`, or `started` — cc-tui manages those
 - **ALWAYS** create a detail file for new sessions
-- **ALWAYS** scan `cc-tui active` before starting new work
+- **ALWAYS** scan `cc-tui list --active` before starting new work
 - **NEVER** execute work outside the current session's scope. If a task doesn't advance the session's `goal`, stop and tell the user. Open a new session or explicitly `cc-tui scope` the current one BEFORE doing off-scope work.
 
 ## CLI Commands
 
+### Query (token-efficient, agent-optimized)
+
 ```
-# Query (token-efficient, agent-optimized)
-cc-tui summary   (sum)     # counts: 2 active | 5 completed | 3 total
-cc-tui active    (a)       # one line per in_progress + blocked session
-cc-tui sessions  (s)       # all sessions, one line each
-cc-tui show      <name>    # full detail — goal, scope, tags, pids, timestamps
+cc-tui list              (ls, sessions, s)  # all sessions, one line each
+cc-tui list --active     (-a)               # in_progress + blocked only
+cc-tui list --summary    (-s)               # counts: 2 active | 5 completed | 3 total
+cc-tui list --status X   (-S)               # filter by status
+cc-tui show <name>                          # full detail — goal, scope, tags, pids, timestamps
+```
 
-# Mutate (never edit JSON directly)
-cc-tui new       <name> [goal]
-cc-tui start     <name>    # → in_progress
-cc-tui complete  <name>    # → completed + timestamp
-cc-tui block     <name>    # → blocked
-cc-tui abandon   <name>    # → abandoned
-cc-tui pending   <name>    # → pending + clear session_id/pids/timestamps
-cc-tui scope     <name> <text>
-cc-tui tag       <name> <tags...>
+### Mutate (never edit JSON directly)
 
-# Install
-cc-tui setup               # one-time: install session tracking globally
+```
+cc-tui new       <name> -g <goal>  # create pending entry
+cc-tui start     <name>            # → in_progress
+cc-tui complete  <name>            # → completed + timestamp
+cc-tui block     <name>            # → blocked
+cc-tui abandon   <name>            # → abandoned
+cc-tui pending   <name>            # → pending + clear identity fields
+cc-tui scope     <name> <text>     # set scope
+cc-tui tag       <name> <tags...>  # replace tags
+cc-tui attach    <name> <sid>      # link session_id
+cc-tui resume    <name>            # spawn claude (--resume if session_id exists)
+```
+
+### Meta
+
+```
+cc-tui setup      # one-time: install session tracking globally
+cc-tui --version  # print version
+cc-tui --help     # full command list with descriptions
 ```
 
 ## Build & Run
 
 ```bash
-cargo run              # Launch cc-tui (starts claude inside PTY)
-cargo build --release  # Optimized build
+cargo build --release        # Optimized build (symlink at ~/.local/bin/cc-tui auto-updates)
+cc-tui --help                # Show all commands
+cc-tui list                  # List sessions
+cc-tui new my-session -g "goal here"
+cc-tui resume my-session     # Spawn claude
 ```
-
-TUI keybindings:
-- `Tab` — switch focus between sidebar and Claude PTY
-- `↑/↓` — navigate sidebar (when focused)
-- `Enter` — select session / confirm
-- `n` — new session
-- `q` — quit (also sends exit to Claude)
-- `Ctrl+C` — force quit
 
 ## Related Resources
 
 - [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks) — 30 hook events
 - [Claude Code .claude Directory Guide](https://code.claude.com/docs/en/claude-directory) — File layout
-- [klaudio-panels](https://explore.market.dev/ecosystems/typescript/projects/klaudio-panels) — Reference PTY wrapper (Tauri+SolidJS)
-- [claude-agent-tui](https://github.com/severity1/claude-agent-tui) — Go+BubbleTea TUI components

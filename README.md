@@ -1,162 +1,90 @@
 # cc-tui
 
-A TUI dashboard wrapper for Claude Code. Embeds the real Claude Code CLI inside a persistent terminal UI with sidebar panels for session management.
+CLI session registry and lifecycle manager for Claude Code. Tracks sessions in `.claude/sessions.json`, links transcripts, spawns `claude` with `--resume` and `--name`.
 
-## Why
-
-Claude Code is powerful but its conversation UI is ephemeral — scroll past it, it's gone. cc-tui adds persistent panels:
-
-- **Session manager** — browse, switch, create, trash, and resume sessions
-- **Task dashboard** — live view of all tasks (auto-updates)
-- **Token tracker** — see usage at a glance
-- **Git status** — files changed, branch info
-- **Subagent monitor** — track spawned agents
-
-## Architecture
-
-```
-┌─ cc-tui ──────────────────────────────────────────────────────────┐
-│ ┌─ Sidebar (30%) ───┐ ┌─ Claude Code (real, via PTY, 70%) ───────┐ │
-│ │ Sessions           │ │  Full Claude Code harness — tools, hooks, │ │
-│ │ Tasks              │ │  permissions, skills, compaction.         │ │
-│ │ Stats              │ │  100% ANSI passthrough, zero parsing.     │ │
-│ └───────────────────┘ └──────────────────────────────────────────┘ │
-│ ┌─ Status Bar ────────────────────────────────────────────────────┐ │
-│ │ cc-tui │ session │ shortcuts                                    │ │
-│ └─────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────┘
-```
-
-**Augment, don't rebuild.** Claude Code runs untouched. The TUI only adds panels.
-
-## Tech
-
-- Rust + ratatui + crossterm + portable-pty + vt100
-- Zero PTY parsing — all sidebar data from `~/.claude/sessions/*.json` + registry files
-
-## Setup
-
-cc-tui spawns `claude` directly (not through a shell wrapper). Required environment variables must be exported in your shell config so cc-tui inherits them:
-
-```fish
-# ~/.config/fish/config.fish
-set -gx DISABLE_AUTOUPDATER 1
-set -gx ANTHROPIC_BASE_URL https://api.deepseek.com/anthropic
-set -gx ANTHROPIC_AUTH_TOKEN <your-token>
-set -gx ANTHROPIC_MODEL deepseek-v4-pro[1m]
-set -gx ANTHROPIC_DEFAULT_OPUS_MODEL deepseek-v4-pro[1m]
-set -gx ANTHROPIC_DEFAULT_SONNET_MODEL deepseek-v4-pro[1m]
-set -gx ANTHROPIC_DEFAULT_HAIKU_MODEL deepseek-v4-flash
-set -gx CLAUDE_CODE_SUBAGENT_MODEL deepseek-v4-flash
-set -gx CLAUDE_CODE_EFFORT_LEVEL max
-```
+## Install
 
 ```bash
-cargo run              # Launch cc-tui (starts claude inside PTY)
-cargo build --release  # Optimized build
-cargo run -- /path/to/project  # Launch for a specific workspace
+cargo build --release
+ln -s $(pwd)/target/release/cc-tui ~/.local/bin/cc-tui
+cc-tui setup
 ```
 
-## CLI Commands
-
-cc-tui has a full CLI for session management. Agents use these instead of editing JSON directly.
+## Commands
 
 ### Query
 
-| Command | Alias | Output |
-|---|---|---|
-| `cc-tui summary` | `sum` | One-line: `2 active \| 5 completed \| 3 total` |
-| `cc-tui active` | `a` | One line per `in_progress` + `blocked` session |
-| `cc-tui sessions` | `s` | All sessions, one line each |
-| `cc-tui show <name>` | — | Full detail: goal, scope, tags, pids, timestamps |
+| Command | |
+|---|---|
+| `cc-tui list` | All sessions, one line each |
+| `cc-tui list --active` | in_progress + blocked |
+| `cc-tui list --summary` | Counts per status |
+| `cc-tui list --status <s>` | Filter by status. Pass `help` for legend |
+| `cc-tui show <name>` | Registry fields + detail file section headlines |
+| `cc-tui show <name> --section <s>` | Extract one section from the detail file |
 
 ### Mutate
 
-| Command | Action |
+| Command | |
 |---|---|
-| `cc-tui new <name> [goal]` | Create session (`pending`) |
-| `cc-tui start <name>` | `pending` → `in_progress` |
-| `cc-tui complete <name>` | → `completed` + timestamp |
-| `cc-tui block <name>` | → `blocked` |
-| `cc-tui abandon <name>` | → `abandoned` |
-| `cc-tui scope <name> <text>` | Set scope field |
+| `cc-tui new <name> -g <goal>` | → pending |
+| `cc-tui start <name>` | pending → in_progress |
+| `cc-tui complete <name>` | → completed |
+| `cc-tui block <name>` | → blocked |
+| `cc-tui abandon <name>` | → abandoned |
+| `cc-tui pending <name>` | Reset to pending |
+| `cc-tui scope <name> <text>` | Set scope |
 | `cc-tui tag <name> <tags...>` | Replace tags |
+| `cc-tui attach <name> <sid>` | Link a session_id |
 
-### Setup
+### Lifecycle
+
+| Command | |
+|---|---|
+| `cc-tui resume <name>` | Spawn claude. --resume if session_id set, -n <name> |
+| `cc-tui trash <name>` | Soft-delete (recoverable) |
+| `cc-tui recover <name>` | trashed → in_progress |
+| `cc-tui clean <name>` | Permanent delete. Irreversible |
+| `cc-tui clean-all` | Delete ALL trashed. Irreversible |
+
+### Statuses
+
+```
+pending      — planned, not started yet
+in_progress  — actively working on (max 1 per workspace)
+completed    — finished successfully
+blocked      — waiting on a dependency
+abandoned    — no longer relevant
+trashed      — soft-deleted, recoverable
+```
+
+## Session Detail Files
+
+Sessions have markdown detail files at `.claude/sessions/<name>.md`. Copy the template:
 
 ```bash
-cc-tui setup   # Install session tracking globally (run once)
+cp .claude/session-detail-template.md .claude/sessions/<name>.md
 ```
 
-## Keybindings
+Token-efficient reading: `cc-tui show <name>` lists section headlines with line counts. Use `--section <name>` to pull just one section.
 
-### Global
+## How Resume Works
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+Q` | Quit cc-tui |
-| `Tab` | Switch focus between sidebar and Claude PTY |
-| `Ctrl+N` | Create new session (opens name prompt) |
-
-### Sidebar (when focused)
-
-| Key | Action |
-|-----|--------|
-| `↑` / `↓` / `j` / `k` | Navigate session list |
-| `Enter` | Resume selected session in PTY |
-| `Enter` on 🗑 | Recover trashed session |
-| `d` | Trash selected session (soft-delete, recoverable) |
-| `D` (Shift+D) | Permanently clean selected session |
-| `C` (Shift+C) | Clean all trashed sessions permanently |
-| `Space` | Switch focus to PTY |
-
-### PTY (when focused)
-
-All keystrokes pass through to Claude Code. Standard terminal input.
-
-### Input mode (new session prompt)
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Confirm session name |
-| `Esc` | Cancel |
-
-## Session Lifecycle
-
-```
-  Ctrl+N ──→ Pending ──→ InProgress (linked to live cds session)
-                  │
-                  ├── Enter ──→ resume via `claude --resume <id>`
-                  │
-                  ├── d ──→ Trashed (hidden, recoverable)
-                  │         ├── Enter ──→ InProgress (recover)
-                  │         └── D ──→ Clean (permanent delete)
-                  │
-                  └── D ──→ Clean (permanent delete, skips trash)
-```
-
-### What "Clean" deletes
-
-Permanently removes all traces of a session:
-- Transcript file: `~/.claude/projects/<slug>/<session-id>.jsonl`
-- Session directory: `~/.claude/projects/<slug>/<session-id>/`
-- Session files: `~/.claude/sessions/<pid>.json` containing that session ID
-- Registry entry: removed from `.claude/sessions.json`
-
-### What "Trash" keeps
-
-Only marks the registry entry as `Trashed`. All files are preserved. Recover at any time.
+`cc-tui resume <name>` spawns `claude -n <name>` (with `--resume <id>` if session_id is set). It polls `~/.claude/sessions/<pid>.json` at startup and harvests the session_id before Claude exits — Claude v2.1+ deletes the session file on graceful exit, so harvesting happens while the process is alive.
 
 ## Data Sources
 
 | Path | Use |
 |------|-----|
-| `~/.claude/sessions/<pid>.json` | Live session status |
+| `<workspace>/.claude/sessions.json` | Canonical session registry |
+| `~/.claude/sessions/<pid>.json` | Live session status (harvested on spawn) |
 | `~/.claude/projects/<slug>/<id>.jsonl` | Session transcripts |
-| `<workspace>/.claude/sessions.json` | Workspace session registry |
-| `~/.claude/sessions.json` | Global session overview |
-| `~/.claude/tasks/<id>/*.json` | Task dashboard |
+| `<workspace>/.claude/sessions/<name>.md` | Session detail files |
 
-## Status
+## Agent Integration
 
-Phase 4 (sidebar + session management + trash/clean). PTY embedding stable, session resume working, trash/clean implemented.
+Agents use the `/session-manager` skill (installed by `cc-tui setup`). It enforces session tracking protocol: create entries, update status, maintain detail files.
+
+## Tech
+
+Rust + clap + serde_json. Reads Claude Code's native session files — no PTY parsing, no transcript parsing.
