@@ -45,14 +45,33 @@ ccsm show <name>         # registry fields + detail file section headlines
    ```bash
    ccsm sequence -q new <name> -q start <name> -q scope <name> "<approach>" -q tag <name> <tag1> <tag2>
    # `new` auto-creates .claude/sessions/<name>.md from template.
-   # Edit the detail file NOW — fill remaining sections before starting work.
    ```
+
+5. **IMMEDIATELY fill the detail file.** `ccsm new` creates a template — Scope/Plan and Tags will say `(fill in)`. You MUST edit these NOW:
+   ```bash
+   # Fill Scope/Plan with the concrete approach
+   ccsm scope <name> "approach, constraints, what's in/out — be specific"
+   # Fill Tags
+   ccsm tag <name> <tag1> <tag2> ...
+   ```
+   Do NOT skip this. An empty detail file means the next agent to resume this session has no plan to follow.
 
 **If this is an EXISTING session (has scope, detail file, maybe pids):**
 
 1. `ccsm show <name>` — registry fields + section headlines with line counts
 2. `ccsm show <name> --section progress-log` — pull just the progress log
-3. **Ask the human:** "This session is [status]. What do you need to continue?"
+
+3. **Check the detail file is actually filled.** Pull Scope/Plan and Tags:
+   ```bash
+   ccsm show <name> --section scope-plan
+   ccsm show <name> --section tags
+   ```
+   If either says `(fill in` or is empty, the detail file is still a template. **STOP and say:**
+   > "This session's detail file is an empty template — the registry has a goal but no plan. Want me to flesh out the plan before we start?"
+   - If yes: design the plan, fill Scope/Plan + Tags, log a progress note. Then continue.
+   - If no: proceed with just the registry goal as context.
+
+4. **Ask the human:** "This session is [status]. What do you need to continue?"
 
 ### Context budget rules
 
@@ -296,6 +315,191 @@ ccsm list --active
     ├─→ Depends on?    → NOTE in scope. Check status before claiming done.
     └─→ No overlap?    → Create entry. Proceed.
 ```
+
+## 🔴 Scope-Gate Protocol (MANDATORY)
+
+The CLAUDE.md already says: *"NEVER execute work outside the current session's scope."* This section turns that rule into an **interactive gate** — when the human asks for off-scope work, you MUST pause and offer a structured fork. Never silently drift.
+
+### What's "in scope"?
+
+Work is **in scope** if it directly advances the session's stated `goal` and fits within the `scope` field. The goal is your compass. When uncertain, ask: "Does this move us toward `<goal>`?" If no, the gate triggers.
+
+### What definitely triggers the gate
+
+| Situation | Example |
+|-----------|---------|
+| New feature unrelated to goal | Human: "Add session export to CSV" while session goal is "fix PTY resize bug" |
+| Infrastructure change not in scope | Human: "Rewrite the lockfile module" while session goal is "add archive command" |
+| Cross-cutting concern that needs its own session | Human: "Add structured logging everywhere" during a focused bugfix session |
+| Work on a different project subsystem | Human: "Refactor the sidebar renderer" while session is about the `sequence` subcommand |
+
+### What does NOT trigger the gate
+
+- Clarifying questions about the current work
+- Minor approach adjustments that stay within scope
+- Things the human explicitly says are part of the current work
+- Trivial one-liners that take under 2 minutes (`ccsm note` is enough)
+
+### The Gate Pattern
+
+When you detect an out-of-scope request, follow this exact pattern:
+
+**Step 1 — Flag** (name the mismatch)
+
+> "This isn't in the current session plan. `scope-gate-protocol`'s goal is `<goal>`, and this request is about `<different thing>`."
+
+**Step 2 — Offer** (exactly 3 options, let the human choose)
+
+> "Options:
+> **(1)** Create a pending session for it — we'll track it and pick it up later.
+> **(2)** Update the current scope to include it — expand what this session covers.
+> **(3)** Handle it as a quick aside — if it's trivial enough to do in under 2 minutes."
+
+**Step 3 — Execute** based on human choice:
+
+*Option 1 (new pending session):*
+```bash
+ccsm new <name> -g "<goal>"
+ccsm scope <name> "<approach>"
+ccsm tag <name> scope-gate <relevant-tags>
+# Then return to current session work.
+```
+
+*Option 2 (expand current scope):*
+```bash
+ccsm scope <current-session> "<original scope> + <what's being added>"
+ccsm note <current-session> "SCOPE-GATE: expanded scope to include <thing>"
+# Proceed with the now-in-scope work.
+```
+
+*Option 3 (quick aside):*
+Do the thing immediately. Then:
+```bash
+ccsm note <current-session> "ASIDE: <one-liner about what was done>"
+```
+
+### The hard rule
+
+**Never** start off-scope work without triggering the gate. If in doubt, trigger it. A false positive costs one exchange; silent scope drift costs the session's coherence and wastes future resume attempts.
+
+### Scope-Gate vs. Proactive Ideation
+
+| Protocol | Trigger | Who initiates |
+|----------|---------|--------------|
+| **Scope-Gate** | Human makes an out-of-scope request | Human → Agent reacts |
+| **Proactive Ideation** | Agent notices something during work | Agent → Human reacts |
+
+They are complementary. Scope-gate creates sessions reactively; ideation creates them proactively.
+
+## 🔴 Proactive Ideation Dashboard (MANDATORY)
+
+The session registry is a **collective brain**. During work, you will discover things worth tracking: tech debt, improvement ideas, missing features, architectural smells. Capture these as **pending sessions** before they evaporate.
+
+This section governs when and how you proactively offer to create sessions. See the comparison table in the Scope-Gate Protocol section above for how these protocols differ.
+
+### When to Offer — The 5 Triggers
+
+You **MUST** consider offering when you encounter **any** of these during work:
+
+| # | Trigger | Example |
+|---|---------|---------|
+| 1 | **Friction** — a workaround, brittle code, or repeated manual step | "I had to manually export the widget after every rebuild" |
+| 2 | **Gap** — something the project clearly needs is absent | "There's no command to bulk-tag sessions" |
+| 3 | **Tech debt** — a TODO comment, a hack, an unfixed edge case, dead code | "This parser panics on edge cases; see comment on line 142" |
+| 4 | **Architecture smell** — a design pattern would simplify multiple areas | "Three modules implement the same matching logic" |
+| 5 | **End-Gate residue** — during Q3 ("What's LEFT?"), a deferred item that warrants its own session | "The END-GATE listed OSC edge cases — that's a standalone session" |
+
+You are **NOT required** to offer for:
+- Trivial one-liner fixes you can do immediately (`ccsm note` is enough)
+- Items already tracked as a pending session
+- Vague feelings without a concrete, specific observation
+
+### The 3 Quality Gates
+
+Every candidate MUST pass all three gates. If any gate fails, do NOT offer.
+
+**Gate 1 — Specificity.** Can you name the exact thing and what work is needed?
+
+```
+PASS: "The config parser ignores TOML tables — a session to add table support"
+FAIL: "This code feels messy" (what specifically? what work?)
+```
+
+**Gate 2 — Worth-a-Session.** Would someone reading the goal/scope understand what to do and why it matters? The work should represent at least 15-30 minutes.
+
+```
+PASS: A future developer could pick up the session and start working immediately.
+FAIL: A two-minute fix better handled as `ccsm note <current-session>` or done now.
+```
+
+**Gate 3 — Not-Already-Tracked.** Verify the registry before offering:
+
+```bash
+ccsm list --status pending   # is this already captured?
+```
+
+If a pending session covers this ground, **skip the offer**. Instead, enrich that session:
+
+```bash
+ccsm note <existing-pending-name> "IDEATION: also noticed <finding>"
+```
+
+### The Offer Pattern
+
+When a candidate passes all three gates, follow this exact pattern. **Never create the session unilaterally.**
+
+**Phase 1 — Notice** (one sentence)
+
+> "I noticed that <specific observation>."
+
+Example: "I noticed the sidebar refreshes the entire list on every 2s poll instead of doing a targeted update of changed entries."
+
+**Phase 2 — Diagnose** (one sentence naming the impact)
+
+> "This means <why it matters>."
+
+Example: "This means every 2s the UI flickers on large registries and wastes CPU redrawing unchanged rows."
+
+**Phase 3 — Propose** (one sentence with a clear yes/no fork)
+
+> "Want me to create a pending session for <this>?"
+
+If yes: create the session with goal and scope.
+
+```bash
+ccsm new <name> -g "<goal>"
+ccsm scope <name> "..."
+ccsm tag <name> ideation <tags...>
+```
+
+If no: no pressure. Log it so it doesn't vanish:
+
+```bash
+ccsm note <current-session> "IDEA (not tracked): <observation>"
+```
+
+You do NOT reopen the topic unless the human does.
+
+### Bundling Rule
+
+- **Bundle related items** into one pending session. If two observations share the same module or category, group them.
+- **Max 1 new pending session per agent session** for unrelated topics.
+- If you discover a genuinely independent idea after already creating one, log it instead: `ccsm note <current-session> "IDEA (deferred): <observation>"`
+
+| If items share... | Bundle into one session named... |
+|-------------------|----------------------------------|
+| The same module | `<module>-improvements` |
+| The same category (all debt, all gaps) | `<category>-audit` |
+| A dependency chain | An umbrella session with dependencies |
+
+### Counter-Indications
+
+- ❌ **Do NOT offer** during the human's first interaction with a new session — they haven't seen the problem space yet
+- ❌ **Do NOT offer** when mid-task with the human actively directing you — finish first, then mention at the next natural pause
+- ❌ **Do NOT offer** for "this would be nice" without articulating why it matters (fails specificity gate)
+- ❌ **Do NOT create the session unilaterally** — always ask first
+- ❌ **Do NOT re-offer** on a topic the human declined — accept the answer
+- ❌ **Do NOT offer** more than one idea per natural break point — bundle or defer
 
 ## Anti-Patterns
 

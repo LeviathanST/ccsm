@@ -1,5 +1,5 @@
 {
-  "updated": "day20619T08:19:59Z",
+  "updated": "day20620T10:46:33Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -18,67 +18,6 @@
     },
     {
       "session_id": "",
-      "name": "phase-4-task-dashboard",
-      "goal": "Live task dashboard from ~/.claude/tasks/",
-      "scope": "Read task files, render task list with status. ~2h.",
-      "status": "in_progress",
-      "pids": [],
-      "tags": [
-        "tasks",
-        "dashboard",
-        "phase-4"
-      ],
-      "started": "",
-      "completed": ""
-    },
-    {
-      "session_id": "",
-      "name": "phase-5-hook-bridges",
-      "goal": "Hook bridges: events -> file -> TUI",
-      "scope": "~2h.",
-      "status": "pending",
-      "pids": [],
-      "tags": [
-        "hooks",
-        "bridges",
-        "phase-5"
-      ],
-      "started": "",
-      "completed": ""
-    },
-    {
-      "session_id": "",
-      "name": "phase-6-token-dashboard",
-      "goal": "Token dashboard from stats-cache.json",
-      "scope": "~1h.",
-      "status": "pending",
-      "pids": [],
-      "tags": [
-        "tokens",
-        "dashboard",
-        "phase-6"
-      ],
-      "started": "",
-      "completed": ""
-    },
-    {
-      "session_id": "",
-      "name": "phase-7-polish",
-      "goal": "Polish: themes, mouse, resize, scrollback",
-      "scope": "~2h.",
-      "status": "pending",
-      "pids": [],
-      "tags": [
-        "polish",
-        "themes",
-        "mouse",
-        "phase-7"
-      ],
-      "started": "",
-      "completed": ""
-    },
-    {
-      "session_id": "2a6f4cc6-5178-49fc-a718-5e9fb79ba0c8",
       "name": "test",
       "goal": "",
       "scope": "",
@@ -89,7 +28,7 @@
       "completed": "day20618T12:25:48Z"
     },
     {
-      "session_id": "a2836040-60fc-4c92-990f-7cbffd7a3d17",
+      "session_id": "",
       "name": "Session picking proble from Ascendra project",
       "goal": "",
       "scope": "",
@@ -100,7 +39,7 @@
       "completed": "day20618T13:58:41Z"
     },
     {
-      "session_id": "3bd6fcee-e9b6-4049-aeb6-d37a6d76e6fc",
+      "session_id": "",
       "name": "sidebar-enhancement",
       "goal": "",
       "scope": "",
@@ -111,7 +50,7 @@
       "completed": "day20618T15:44:54Z"
     },
     {
-      "session_id": "b429aeff-e334-4bd3-a24b-010089ab6ed1",
+      "session_id": "",
       "name": "Claude Code panel scrollable",
       "goal": "",
       "scope": "",
@@ -122,39 +61,78 @@
       "completed": "day20618T15:54:45Z"
     },
     {
-      "session_id": "8d17ed11-71c5-46ed-946b-aa492c44d3a8",
+      "session_id": "",
       "name": "test1",
       "goal": "test",
       "scope": "",
-      "status": "in_progress",
+      "status": "completed",
       "pids": [],
       "tags": [],
       "started": "day20619T08:17Z",
-      "completed": ""
+      "completed": "day20620T05:18:49Z"
     },
     {
-      "session_id": "",
-      "name": "resource leak checking",
-      "goal": "",
+      "session_id": "af0c0ed3-aa2a-4ad5-829e-df17994e51c8",
+      "name": "fix-write-race",
+      "goal": "cc-tui mutations lose state when chained with && in a single Bash call",
       "scope": "",
       "status": "completed",
-      "pids": [
-        777682
-      ],
+      "pids": [],
       "tags": [],
-      "started": "",
-      "completed": "day20619T08:03:17Z"
+      "started": "day20620T08:47Z",
+      "completed": "day20620T09:02:56Z"
     },
     {
       "session_id": "",
-      "name": "test-harvest",
-      "goal": "test direct pid read harvest",
-      "scope": "",
+      "name": "session-scope-awareness",
+      "goal": "Agents scan existing sessions before creating new ones, detect overlaps, update existing session scope when extending",
+      "scope": "When setting up a new session, agents must scan ccsm list --active and ccsm list --summary for related work. If an existing session handles a related topic but the new work extends it, agents should offer to update that session's scope instead of creating a duplicate. This prevents parallel duplicate sessions and keeps scope documentation current.",
       "status": "pending",
       "pids": [],
-      "tags": [],
+      "tags": [
+        "agent-workflow",
+        "scope",
+        "detection",
+        "dedup"
+      ],
       "started": "",
       "completed": ""
+    },
+    {
+      "session_id": "4e8b0665-e501-4347-83de-4267779e11e3",
+      "name": "scope-gate-protocol",
+      "goal": "Agents flag out-of-scope requests and offer to create pending sessions or update current scope",
+      "scope": "Insert a dedicated Scope-Gate Protocol section into session-manager SKILL.md between Team Awareness and Proactive Ideation Dashboard. Defines what triggers the gate (new feature, infra change, cross-cutting concern, different subsystem), what doesn't (clarifying questions, minor adjustments, explicit inclusions, quick one-liners), and a 3-step gate pattern: Flag → Offer (3 options: pending session, expand scope, quick aside) → Execute. Moves the comparison table from Proactive Ideation into this section since the gate is defined first. No Rust code changes.",
+      "status": "in_progress",
+      "pids": [
+        3297558
+      ],
+      "tags": [
+        "agent-workflow",
+        "scope",
+        "discipline",
+        "gate"
+      ],
+      "started": "day20620T10:41Z",
+      "completed": ""
+    },
+    {
+      "session_id": "c64d8e0f-18b6-4a4d-a7e7-361b4b9438da",
+      "name": "proactive-ideation-dashboard",
+      "goal": "Agents proactively offer to create pending sessions for ideas, tech debt, and improvements discovered during work",
+      "scope": "During work, agents naturally discover tech debt, improvement ideas, missing features, and architectural smells. Instead of letting these evaporate, agents should acknowledge the session registry as an idea dashboard and proactively ask: 'I noticed X could be improved. It's out of scope for now but worth tracking. Want me to create a pending session?' This turns ccsm into a collective brain that accumulates institutional knowledge automatically.",
+      "status": "completed",
+      "pids": [
+        2753014
+      ],
+      "tags": [
+        "agent-workflow",
+        "ideation",
+        "techdebt",
+        "dashboard"
+      ],
+      "started": "day20620T09:02Z",
+      "completed": "day20620T10:31:52Z"
     }
   ]
 }

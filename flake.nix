@@ -1,5 +1,5 @@
 {
-  description = "cc-tui — TUI Dashboard Wrapper for Claude Code";
+  description = "cc-tui — Session Registry CLI for Claude Code";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -14,14 +14,11 @@
       {
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
-            zig
-            cargo
-            rustc
-            pkg-config
+            # Pure Rust — no native build deps needed
           ];
 
           shellHook = ''
-            echo "🦀 cc-tui dev shell — zig $(zig version), rustc $(rustc --version)"
+            echo "🦀 cc-tui dev shell"
           '';
         };
       });

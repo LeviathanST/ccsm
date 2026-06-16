@@ -131,8 +131,6 @@ ccsm complete <name>
 - **NEVER** touch `session_id`, `pids`, or `started` — ccsm manages those
 - **ALWAYS** create a detail file for new sessions
 - **ALWAYS** scan `ccsm list --active` before starting new work
-- **NEVER** execute work outside the current session's scope. If a task doesn't advance the session's `goal`, stop and tell the user. Open a new session or explicitly `ccsm scope` the current one BEFORE doing off-scope work.
-
 ## CLI Commands
 
 ### Query (token-efficient, agent-optimized)
