@@ -460,6 +460,10 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
                     if path.exists() {
                         Some(reg.sessions[i].session_id.clone())
                     } else {
+                        eprintln!(
+                            "warning: transcript not found for session_id '{}' — starting fresh",
+                            &reg.sessions[i].session_id[..reg.sessions[i].session_id.len().min(8)]
+                        );
                         reg.sessions[i].session_id.clear();
                         reg.sessions[i].pids.clear();
                         None
@@ -470,18 +474,27 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
                 }
             }
             None => {
-                reg.sessions.push(crate::registry::WorkspaceSession {
-                    session_id: String::new(),
-                    name: name.to_string(),
-                    goal: String::new(),
-                    scope: String::new(),
-                    status: crate::registry::SessionStatus::InProgress,
-                    pids: vec![],
-                    tags: vec![],
-                    started: String::new(),
-                    completed: String::new(),
-                });
-                None
+                // Session not found — error with suggestions instead of
+                // silently creating a new entry (which creates garbage
+                // entries on typos like "innventory" vs "inventory").
+                let similar: Vec<&str> = reg
+                    .sessions
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .filter(|n| edit_distance(n, name) <= 3)
+                    .collect();
+                if similar.is_empty() {
+                    anyhow::bail!(
+                        "no session named '{}'. Use `ccsm new {} -g \"...\"` to create one.",
+                        name, name
+                    );
+                } else {
+                    anyhow::bail!(
+                        "no session named '{}'. Did you mean: {}?",
+                        name,
+                        similar.join(", ")
+                    );
+                }
             }
         };
 
@@ -867,6 +880,23 @@ fn days_to_date(mut days: u64) -> (u32, u32, u32) {
 
 fn is_leap(y: u32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
+/// Simple Levenshtein distance — used to suggest corrections for typos.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev = (0..=b.len()).collect::<Vec<_>>();
+    let mut curr = vec![0; b.len() + 1];
+    for i in 1..=a.len() {
+        curr[0] = i;
+        for j in 1..=b.len() {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
 }
 
 /// Insert `new_entry` into the Progress Log section of `contents`.
