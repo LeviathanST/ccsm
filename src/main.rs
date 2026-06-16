@@ -7,6 +7,7 @@ mod session;
 
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 // ── CLI (clap) ──────────────────────────────────────────────────────
@@ -80,7 +81,11 @@ enum Commands {
     /// Manually link a Claude session_id. Auto-managed by `resume`.
     Attach {
         name: String,
-        session_id: String,
+        /// Session UUID (from ~/.claude/sessions/<pid>.json). Omit if using --pid.
+        session_id: Option<String>,
+        /// Harvest session_id from a live session file by PID.
+        #[arg(long)]
+        pid: Option<u32>,
     },
     /// Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit
     Resume { name: String },
@@ -139,7 +144,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Pending { name } => run_pending(&name),
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
-        Commands::Attach { name, session_id } => run_attach(&name, &session_id),
+        Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
         Commands::Resume { name } => run_resume(&name, &workspace_path(), &home),
         Commands::Trash { name } => run_trash(&name),
         Commands::Recover { name } => run_recover(&name),
@@ -296,9 +301,87 @@ fn now_iso_ts() -> String {
 
 // ── Mutation commands ───────────────────────────────────────────────────
 
-/// `ccsm attach <name> <session-id>` — link a Claude session_id to an entry.
-fn run_attach(name: &str, session_id: &str) -> anyhow::Result<()> {
+/// `ccsm attach <name> [session-id] [--pid <pid>]` — link a Claude session_id to an entry.
+///
+/// If neither session-id nor --pid is given, auto-discovers the most recently
+/// updated live Claude session in this workspace.
+fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &PathBuf) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
+
+    let resolved_sid = match (session_id.filter(|s| !s.is_empty()), pid) {
+        (Some(sid), _) => {
+            validate_session_id(sid)?;
+            sid.to_string()
+        }
+        (_, Some(p)) => harvest_from_pid(home, p)?,
+        _ => {
+            // Auto-discover: prefer name match in session file, fall back to most recent
+            let sessions = crate::session::load_all(
+                &home.join(".claude").join("sessions"),
+                Some(&workspace),
+            )?;
+            match sessions.as_slice() {
+                [] => anyhow::bail!(
+                    "no live Claude sessions found in this workspace.\n\
+                     Is claude running? Start it first, then `ccsm attach {}`.",
+                    name
+                ),
+                [s] => {
+                    if s.session_id.is_empty() {
+                        anyhow::bail!(
+                            "session file for PID {} has no sessionId yet — wait for Claude to finish starting",
+                            s.pid
+                        );
+                    }
+                    eprintln!("auto-detected PID {} ({})", s.pid, s.display_name());
+                    s.session_id.clone()
+                }
+                multiple => {
+                    // Try exact name match in session file (from /rename)
+                    let by_name: Vec<_> = multiple
+                        .iter()
+                        .filter(|s| s.name == name)
+                        .collect();
+                    match by_name.as_slice() {
+                        [s] => {
+                            eprintln!("auto-detected PID {} (name match: {})", s.pid, s.display_name());
+                            s.session_id.clone()
+                        }
+                        [] => {
+                            eprintln!("multiple live sessions in this workspace (none named '{}'):", name);
+                            for s in multiple {
+                                eprintln!(
+                                    "  pid {}  {:16}  {}  {}",
+                                    s.pid,
+                                    s.display_name(),
+                                    s.status,
+                                    &s.session_id[..s.session_id.len().min(8)],
+                                );
+                            }
+                            anyhow::bail!("pick one with --pid <pid>.");
+                        }
+                        _ => {
+                            eprintln!("multiple sessions named '{}' — picking most recent:", name);
+                            let s = &by_name[0];
+                            eprintln!("  pid {}  {}  {}", s.pid, s.status, &s.session_id[..s.session_id.len().min(8)]);
+                            s.session_id.clone()
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    // Verify transcript exists
+    let slug = crate::registry::project_slug(&workspace);
+    let transcript = home.join(".claude").join("projects").join(&slug).join(format!("{resolved_sid}.jsonl"));
+    if !transcript.exists() {
+        eprintln!(
+            "warning: transcript not found at {}\n  The session_id may be from a different workspace.",
+            transcript.display(),
+        );
+    }
+
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
     let entry = reg
         .sessions
@@ -306,11 +389,52 @@ fn run_attach(name: &str, session_id: &str) -> anyhow::Result<()> {
         .rev()
         .find(|s| s.name == name)
         .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
-    entry.session_id = session_id.to_string();
+    entry.session_id = resolved_sid.clone();
     reg.updated = now_iso_ts();
     reg.save(&workspace)?;
-    println!("attached    {}  ← session {}", name, &session_id[..session_id.len().min(8)]);
+    println!("attached    {}  ← session {}", name, &resolved_sid[..resolved_sid.len().min(8)]);
     Ok(())
+}
+
+fn harvest_from_pid(home: &PathBuf, pid: u32) -> anyhow::Result<String> {
+    let session_file = home.join(".claude").join("sessions").join(format!("{pid}.json"));
+    if !session_file.exists() {
+        anyhow::bail!(
+            "no session file at {}\n  Is PID {} running?",
+            session_file.display(), pid
+        );
+    }
+    let contents = std::fs::read_to_string(&session_file)
+        .context("reading session file")?;
+    let s: crate::session::Session = serde_json::from_str(&contents)
+        .context("parsing session file")?;
+    if s.session_id.is_empty() {
+        anyhow::bail!("session file for PID {} has no sessionId yet", pid);
+    }
+    Ok(s.session_id)
+}
+
+/// Reject session_ids that don't look like UUIDs.
+fn validate_session_id(sid: &str) -> anyhow::Result<()> {
+    // UUID format: 8-4-4-4-12 hex digits (e.g. f493397b-456a-426d-92e1-4d5f15da0311)
+    let parts: Vec<&str> = sid.split('-').collect();
+    if parts.len() == 5
+        && parts[0].len() == 8
+        && parts[1].len() == 4
+        && parts[2].len() == 4
+        && parts[3].len() == 4
+        && parts[4].len() == 12
+        && sid.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "'{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
+             If you renamed the session in the TUI, the name changed but the UUID didn't.\n\
+             Use --pid <pid> instead: ccsm attach {} --pid <pid>",
+            sid, sid
+        );
+    }
 }
 
 /// `ccsm trash <name>` — soft-delete: move to Trashed status.

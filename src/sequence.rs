@@ -88,6 +88,7 @@ impl SeqOp {
             }
             "attach" => {
                 ensure_exact(args, 2, "attach", "<name> <session-id>")?;
+                validate_uuid(&args[1])?;
                 Ok(Self::Attach {
                     name: args[0].clone(),
                     session_id: args[1].clone(),
@@ -223,6 +224,27 @@ pub(crate) fn apply_op(
     }
 }
 
+/// Reject strings that don't look like UUIDs (8-4-4-4-12 hex).
+fn validate_uuid(s: &str) -> Result<()> {
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() == 5
+        && parts[0].len() == 8
+        && parts[1].len() == 4
+        && parts[2].len() == 4
+        && parts[3].len() == 4
+        && parts[4].len() == 12
+        && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "'{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
+             Use --pid <pid> instead: ccsm attach <name> --pid <pid>",
+            s
+        );
+    }
+}
+
 fn get_mut<'a>(
     sessions: &'a mut Vec<WorkspaceSession>,
     name: &str,
@@ -340,11 +362,17 @@ mod tests {
 
     #[test]
     fn parse_attach() {
-        let op = SeqOp::parse(&tokens("attach foo abc12345-6789")).unwrap();
+        let op = SeqOp::parse(&tokens("attach foo f493397b-456a-426d-92e1-4d5f15da0311")).unwrap();
         assert_eq!(op, SeqOp::Attach {
             name: "foo".into(),
-            session_id: "abc12345-6789".into(),
+            session_id: "f493397b-456a-426d-92e1-4d5f15da0311".into(),
         });
+    }
+
+    #[test]
+    fn parse_attach_rejects_non_uuid() {
+        let err = SeqOp::parse(&tokens("attach foo smith-system")).unwrap_err().to_string();
+        assert!(err.contains("does not look like a session UUID"), "got: {}", err);
     }
 
     #[test]
