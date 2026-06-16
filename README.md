@@ -36,6 +36,7 @@ ccsm setup
 | `ccsm scope <name> <text>` | Set scope |
 | `ccsm tag <name> <tags...>` | Replace tags |
 | `ccsm attach <name> <sid>` | Link a session_id |
+| `ccsm note <name> <text>` | Append to progress log |
 | `ccsm sequence -q <cmd> <args...> -q <cmd> ...` | Batch mutations in a single lock/save |
 
 ### Lifecycle

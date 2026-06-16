@@ -9,14 +9,15 @@ argument-hint: "<start|status|complete|list> — manage your session entry"
 
 # Session Manager — ccsm Session Registry
 
-You are working on **ccsm**, a CLI session registry for Claude Code. This project has a session registry at `.claude/sessions.json` that tracks every work session. **You MUST maintain it.**
+You are working on **ccsm**, a CLI session registry and workflow harness for Claude Code. This project has a session registry at `.claude/sessions.json` that tracks every work session. **You MUST maintain it.**
 
 ## Quick Reference
 
 ```
 On session START  →  read .claude/sessions.json, create/claim entry (status: pending)
 On first ACTION   →  update status to in_progress, fill goal + scope if missing
-On session END    →  update status to completed / blocked / abandoned
+After EVERY change →  ccsm note <name> "<what you did and why>"
+On session END    →  END-GATE → ccsm complete
 BEFORE asking     →  check if you even know what session you're in
 ```
 
@@ -42,7 +43,6 @@ ccsm show <name>         # registry fields + detail file section headlines
 3. **Ask the human:** "What's the goal? Why now? How do you see it working?"
 4. Synthesize into goal + scope, create entry:
    ```bash
-   # Use sequence to create and configure in one command:
    ccsm sequence -q new <name> -q start <name> -q scope <name> "<approach>" -q tag <name> <tag1> <tag2>
    # `new` auto-creates .claude/sessions/<name>.md from template.
    # Edit the detail file NOW — fill remaining sections before starting work.
@@ -51,7 +51,7 @@ ccsm show <name>         # registry fields + detail file section headlines
 **If this is an EXISTING session (has scope, detail file, maybe pids):**
 
 1. `ccsm show <name>` — registry fields + section headlines with line counts
-2. `ccsm show <name> --section progress-log` — pull just what you need
+2. `ccsm show <name> --section progress-log` — pull just the progress log
 3. **Ask the human:** "This session is [status]. What do you need to continue?"
 
 ### Context budget rules
@@ -60,6 +60,92 @@ ccsm show <name>         # registry fields + detail file section headlines
 - **`ccsm show <name>`** — ~200 tokens, shows registry + section headlines
 - **`ccsm show <name> --section <s>`** — pull one section, save tokens
 - **Detail files are for deep work** — read only YOUR session's file + explicit dependencies
+
+## 🔴 The 5 Laws of Session Mutation
+
+Every field change has rules. Follow them.
+
+### 1. Goal
+
+| CAN change | CANNOT change |
+|------------|---------------|
+| Human redirects you | "I found a more interesting problem" |
+| Initial goal was too vague | You're bored and want to pivot |
+| Scope shift forces goal change | Without human approval |
+
+**Must document:** `ccsm note <name> "GOAL: <old> → <new>. Reason: <why>"`
+
+### 2. Scope
+
+| CAN change | CANNOT change |
+|------------|---------------|
+| New constraint discovered | "While I'm here, I'll also refactor X" |
+| Something proved infeasible | Scope creep without human approval |
+| Human adds/removes items | Gold-plating |
+
+**Must document:** `ccsm note <name> "SCOPE: changed <what>. Deferred: <what's pushed out>"`
+
+### 3. Status
+
+| CAN change | CANNOT change |
+|------------|---------------|
+| Clear boundary crossed (started/done/blocked/abandoned) | Status ping-pong (complete→in_progress→complete) |
+| Blocked by specific, named dependency | "Blocked because it's hard" |
+| Abandoned with clear rationale | Abandoned because you lost interest |
+
+**Must document:**
+- Blocked: `ccsm note <name> "BLOCKED: <specific blocker>. Resolution: <what needs to happen>"`
+- Abandoned: `ccsm note <name> "ABANDONED: <why>. Alternative: <what should happen instead>"`
+
+### 4. Tags
+
+| CAN change | CANNOT change |
+|------------|---------------|
+| Classification changes | Tag spam (5+ is a smell) |
+| Priority shifts | Tags that duplicate the goal text |
+
+Not mandatory to note, but do it if the tag change represents a significant reclassification.
+
+### 5. Progress Log — MANDATORY
+
+**You MUST `ccsm note` after ANY non-trivial work:**
+- Code written or changed
+- Decision made (architecture, tool choice, approach)
+- Roadblock hit
+- Milestone reached
+- Dependency added/removed
+
+```bash
+ccsm note <name> "<what you did and why>"
+```
+
+The progress log IS the audit trail. If you did something, log it. **Never skip this.**
+
+## 🔴 End-Gate Protocol (BEFORE `ccsm complete`)
+
+Before marking a session complete, you MUST answer these three questions via `ccsm note`:
+
+```
+1. WHAT was built — vs. what the scope promised?
+2. What was explicitly NOT done — what's deferred, cut, or out of scope?
+3. What's LEFT — technical debt, follow-up sessions, open questions?
+```
+
+Example:
+```bash
+ccsm note my-feature "END-GATE: built — PTY embedding with fixed-grid ANSI rendering (matches scope). deferred — F-key passthrough (needs separate session). left — vt100 parser has edge cases with OSC sequences."
+```
+
+**You cannot `ccsm complete` without an END-GATE note.**
+
+## Session Lifecycle
+
+```
+NEW → start → (work → note → work → note → ...) → END-GATE → complete
+                                                       ↓
+                                                   blocked/abandoned
+                                                   (must note why)
+```
 
 ## CLI Commands
 
@@ -89,6 +175,7 @@ ccsm show <name>         # registry fields + detail file section headlines
 | `ccsm tag <name> <tags...>` | Replace tags |
 | `ccsm attach <name> <sid>` | Manually link a Claude session_id |
 | `ccsm resume <name>` | Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit |
+| `ccsm note <name> <text>` | Append timestamped entry to detail file Progress Log |
 | `ccsm sequence -q <cmd> <args...> ...` | Batch mutations under a single lock/save. Faster than `&&` chaining |
 
 ### Lifecycle (trash/clean)
@@ -147,7 +234,7 @@ trashed      — soft-deleted, recoverable with `ccsm recover <name>`
 
 ## Session Detail Files
 
-Detail files live at `.claude/sessions/<name>.md`. `ccsm new` auto-creates them from the template with placeholders — your job is to **fill them in**, not create them.
+Detail files live at `.claude/sessions/<name>.md`. `ccsm new` auto-creates them from the template — your job is to **fill them in**, not create them.
 
 ```bash
 ccsm show <name>          # check what's already filled
@@ -169,10 +256,10 @@ Sections: `goal`, `scope-plan` (or `scope / plan`), `tags`, `live-session-data`,
 |---|---|
 | Session created | Copy template, fill ALL sections |
 | Status changes | Update status badge line |
-| Work done | Append to Progress Log |
+| ANY work done | `ccsm note <name> "<what + why>"` |
 | New dependency | Add to Dependencies |
 | Discovery | Add to Notes |
-| Session completed | Final update: status, completed date, summary |
+| Session completed | END-GATE note first, then `ccsm complete` |
 
 ## How Resume Works
 
@@ -214,6 +301,10 @@ ccsm list --active
 
 - ❌ **Touch `session_id` or `pids`** — ccsm manages these
 - ❌ **Leave name/goal/scope empty** — blank labels help no one
+- ❌ **Skip the progress log** — `ccsm note` after every change. Never miss it.
+- ❌ **Complete without END-GATE** — the three questions are mandatory.
+- ❌ **Change goal/scope without documenting why** — the 5 Laws require rationale.
+- ❌ **Status ping-pong** — complete↔in_progress without a real reason.
 - ❌ **Read the full detail file blindly** — use `--section` to pull what you need
 - ❌ **Parse JSONL transcripts** — ccsm uses `claude --resume`, not transcript parsing
 - ❌ **Use `jq`/`cat` for reading** — CLI commands are token-optimized and consistent across agents

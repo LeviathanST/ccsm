@@ -96,6 +96,12 @@ enum Commands {
         #[arg(num_args = 1.., required = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Append a timestamped entry to the session detail file's Progress Log
+    Note {
+        name: String,
+        #[arg(num_args = 1..)]
+        text: Vec<String>,
+    },
     /// Install session tracking into global CLAUDE.md + skills (run once)
     Setup,
 }
@@ -124,6 +130,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path()),
         Commands::CleanAll => run_clean_all(&home, &workspace_path()),
         Commands::Sequence { args } => run_sequence(&args),
+        Commands::Note { name, text } => run_note(&name, &text.join(" ")),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into())),
     }
 }
@@ -776,6 +783,141 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+// ── Note subcommand ────────────────────────────────────────────────────
+
+/// Append a timestamped entry to `.claude/sessions/<name>.md` Progress Log.
+fn run_note(name: &str, text: &str) -> anyhow::Result<()> {
+    let text = text.trim();
+    if text.is_empty() {
+        anyhow::bail!("note text is required. Usage: ccsm note <name> <text>");
+    }
+
+    let workspace = std::env::current_dir()?;
+
+    // Verify session exists in registry
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    if !reg.sessions.iter().any(|s| s.name == name) {
+        anyhow::bail!("no session named '{}'", name);
+    }
+
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", name));
+
+    if !detail_path.exists() {
+        anyhow::bail!(
+            "no detail file for '{}'. Create one:\n  cp .claude/session-detail-template.md .claude/sessions/{}.md",
+            name, name
+        );
+    }
+
+    let contents = std::fs::read_to_string(&detail_path)?;
+    let ts = note_timestamp();
+    let new_entry = format!("- [{}] {}\n", ts, text);
+
+    let new_contents = insert_note(&contents, &new_entry);
+    std::fs::write(&detail_path, new_contents)?;
+
+    println!("noted       {}  ← [{}] {}", name, ts, text);
+    Ok(())
+}
+
+/// Simple UTC timestamp: `YYYY-MM-DD HH:MMZ` without external date crates.
+fn note_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let secs_per_day: u64 = 86400;
+    let days = secs / secs_per_day;
+    let day_secs = secs % secs_per_day;
+    let hours = day_secs / 3600;
+    let mins = (day_secs % 3600) / 60;
+
+    let (y, m, d) = days_to_date(days);
+    format!("{:04}-{:02}-{:02} {:02}:{:02}Z", y, m, d, hours, mins)
+}
+
+/// Convert days since 1970-01-01 to (year, month, day).
+fn days_to_date(mut days: u64) -> (u32, u32, u32) {
+    let mut year: u32 = 1970;
+    loop {
+        let diy: u64 = if is_leap(year) { 366 } else { 365 };
+        if days < diy { break; }
+        days -= diy;
+        year += 1;
+    }
+    let mdays: [u64; 12] = if is_leap(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month: u32 = 1;
+    for &md in &mdays {
+        if days < md { break; }
+        days -= md;
+        month += 1;
+    }
+    (year, month, (days + 1) as u32)
+}
+
+fn is_leap(y: u32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
+/// Insert `new_entry` into the Progress Log section of `contents`.
+/// Prepends (newest at top) — inserts right after the `## Progress Log`
+/// header, past any blank lines or HTML comments.
+fn insert_note(contents: &str, new_entry: &str) -> String {
+    let lines: Vec<&str> = contents.lines().collect();
+
+    if let Some(hdr) = lines.iter().position(|l| l.trim() == "## Progress Log") {
+        // Find insertion point: skip past blank lines and HTML comments
+        let mut ins = hdr + 1;
+        let mut comment = false;
+        while ins < lines.len() {
+            let t = lines[ins].trim();
+            if t.is_empty() {
+                ins += 1;
+            } else if t.starts_with("<!--") {
+                comment = true;
+                ins += 1;
+            } else if comment && (t == "-->" || t.ends_with("-->")) {
+                comment = false;
+                ins += 1;
+            } else if comment {
+                ins += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut out = String::with_capacity(contents.len() + new_entry.len() + 2);
+        for i in 0..ins {
+            out.push_str(lines[i]);
+            out.push('\n');
+        }
+        out.push_str(new_entry);
+        if ins < lines.len() { out.push('\n'); }
+        for i in ins..lines.len() {
+            out.push_str(lines[i]);
+            out.push('\n');
+        }
+        out
+    } else {
+        // No Progress Log section — append one
+        let mut out = contents.to_string();
+        if !out.ends_with('\n') { out.push('\n'); }
+        out.push('\n');
+        out.push_str("## Progress Log\n\n");
+        out.push_str(new_entry);
+        out.push('\n');
+        out
+    }
 }
 
 // ── Setup subcommand ──────────────────────────────────────────────────

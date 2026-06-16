@@ -159,6 +159,7 @@ ccsm scope     <name> <text>     # set scope
 ccsm tag       <name> <tags...>  # replace tags
 ccsm attach    <name> <sid>      # link session_id
 ccsm resume    <name>            # spawn claude (--resume if session_id exists)
+ccsm note      <name> <text>     # append timestamped entry to progress log
 ```
 
 ### Batch (single lock/save cycle)
