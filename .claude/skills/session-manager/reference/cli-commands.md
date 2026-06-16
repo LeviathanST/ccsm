@@ -30,6 +30,8 @@
 | `ccsm note <name> <text>` | Append timestamped entry to detail file Progress Log |
 | `ccsm note <name> --cross <src> <text>` | Cross-session note: prepends `CROSS-SESSION [src]:` |
 | `ccsm sequence -q <cmd> <args...> ...` | Batch mutations under a single lock/save. Faster than `&&` chaining |
+| `ccsm completions <shell>` | Generate shell completion script to stdout. bash, fish, or zsh |
+| `ccsm setup` | Install session tracking into global CLAUDE.md + skills (run once) |
 
 ## Lifecycle (trash/clean)
 
