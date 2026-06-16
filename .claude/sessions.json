@@ -1,5 +1,5 @@
 {
-  "updated": "day20620T14:12:24Z",
+  "updated": "day20620T14:45:34Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -88,9 +88,7 @@
       "goal": "Agents scan existing sessions before creating new ones, detect overlaps, update existing session scope when extending",
       "scope": "Add Cross-Session Teammate Awareness to the session-manager SKILL.md: Rust flags (--verbose, --cross) + SKILL.md protocol with 3 coordination patterns (Dependency, Redundancy, Related Work). In: CLI flags, SKILL.md protocol. Out: sequence support for --cross, NLP overlap detection, cross-workspace awareness.",
       "status": "completed",
-      "pids": [
-        109718
-      ],
+      "pids": [],
       "tags": [
         "agent-workflow",
         "cross-session",
@@ -98,8 +96,8 @@
         "coordination",
         "protocol"
       ],
-      "started": "day20620T13:44Z",
-      "completed": "day20620T11:39:53Z"
+      "started": "day20620T14:30Z",
+      "completed": "day20620T14:39:09Z"
     },
     {
       "session_id": "4e8b0665-e501-4347-83de-4267779e11e3",
@@ -134,12 +132,14 @@
       "completed": "day20620T10:31:52Z"
     },
     {
-      "session_id": "",
+      "session_id": "9b16bdf6-3d54-46ae-bd29-d50edf1b8e1f",
       "name": "ccsm-audit-and-vision",
       "goal": "-g Audit ccsm stability, identify gaps, and decide next-phase vision",
       "scope": "Stability audit of ccsm codebase + vision planning for next phase. Audit: test coverage, error handling, main.rs monolith risk, CLI surface consistency, registry edge cases, binary naming (cc-tui vs ccsm), session lifecycle bugs. Vision: what's the product? what's missing? what should v0.6/v1.0 look like? Output: structured assessment + prioritized backlog of sessions.",
-      "status": "pending",
-      "pids": [],
+      "status": "in_progress",
+      "pids": [
+        424194
+      ],
       "tags": [
         "audit",
         "vision",
@@ -147,7 +147,7 @@
         "roadmap",
         "stability"
       ],
-      "started": "",
+      "started": "day20620T14:45Z",
       "completed": ""
     },
     {
