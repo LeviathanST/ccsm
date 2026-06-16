@@ -437,7 +437,7 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
     let now = now_iso_ts();
 
     // ── Phase 1: Promote entry, demote others (locked) ──────────────
-    let sid = {
+    let (sid, fresh) = {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
 
         for e in reg.sessions.iter_mut() {
@@ -449,7 +449,7 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
             }
         }
 
-        let sid = match reg.sessions.iter().rev().position(|e| e.name == name) {
+        let (sid, is_fresh) = match reg.sessions.iter().rev().position(|e| e.name == name) {
             Some(pos) => {
                 let i = reg.sessions.len() - 1 - pos;
                 reg.sessions[i].status = crate::registry::SessionStatus::InProgress;
@@ -458,25 +458,25 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
                     let path = home.join(".claude").join("projects")
                         .join(&slug).join(format!("{}.jsonl", reg.sessions[i].session_id));
                     if path.exists() {
-                        Some(reg.sessions[i].session_id.clone())
+                        (Some(reg.sessions[i].session_id.clone()), false)
                     } else {
-                        eprintln!(
-                            "warning: transcript not found for session_id '{}' — starting fresh",
-                            &reg.sessions[i].session_id[..reg.sessions[i].session_id.len().min(8)]
+                        // session_id exists but transcript is gone — corrupted state.
+                        // Don't silently fall back to fresh; let the user decide.
+                        anyhow::bail!(
+                            "session '{}' has session_id '{}' but transcript not found at:\n  {}\n\
+                             The transcript may have been deleted or cleaned.\n\
+                             To start fresh: ccsm pending {}  (clears session_id, then resume)",
+                            name,
+                            &reg.sessions[i].session_id[..reg.sessions[i].session_id.len().min(8)],
+                            path.display(),
+                            name,
                         );
-                        reg.sessions[i].session_id.clear();
-                        reg.sessions[i].pids.clear();
-                        None
                     }
                 } else {
-                    reg.sessions[i].pids.clear();
-                    None
+                    (None, false)
                 }
             }
             None => {
-                // Session not found — error with suggestions instead of
-                // silently creating a new entry (which creates garbage
-                // entries on typos like "innventory" vs "inventory").
                 let similar: Vec<&str> = reg
                     .sessions
                     .iter()
@@ -500,7 +500,7 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
 
         reg.updated = now.clone();
         reg.save(workspace)?;
-        sid
+        (sid, is_fresh)
     }; // lock released
 
     // ── Phase 2: Spawn claude (no lock) ─────────────────────────────
@@ -509,8 +509,10 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
     if let Some(ref id) = sid {
         cmd.arg("--resume").arg(id);
         println!("resuming    {}  ← claude --resume {}", name, &id[..id.len().min(8)]);
-    } else {
+    } else if fresh {
         println!("starting    {}  ← claude (fresh)", name);
+    } else {
+        println!("starting    {}  ← claude (new session)", name);
     }
     cmd.arg("-n").arg(name);
 
@@ -520,8 +522,12 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
     // ── Phase 3: Write pid to registry (locked) ─────────────────────
     {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            entry.pids = vec![child_pid];
+        match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+            Some(entry) => entry.pids = vec![child_pid],
+            None => anyhow::bail!(
+                "internal error: session '{}' vanished from registry between Phase 1 and Phase 3",
+                name
+            ),
         }
         reg.updated = now_iso_ts();
         reg.save(workspace)?;
@@ -529,19 +535,36 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
 
     // ── Phase 4: Poll for session file, harvest session_id ──────────
     let session_file = home.join(".claude").join("sessions").join(format!("{child_pid}.json"));
+    let mut found = false;
     for _ in 0..50 {
         if session_file.exists() {
+            found = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if !found {
+        anyhow::bail!(
+            "claude did not write a session file at {} within 5s.\n\
+             Claude may have failed to start. Check for errors above.",
+            session_file.display(),
+        );
     }
 
     // ── Phase 5: Harvest session_id + started (locked) ──────────────
     {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            if let Ok(contents) = std::fs::read_to_string(&session_file) {
-                if let Ok(s) = serde_json::from_str::<crate::session::Session>(&contents) {
+        let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+            Some(e) => e,
+            None => anyhow::bail!(
+                "internal error: session '{}' vanished from registry between Phase 1 and Phase 5",
+                name
+            ),
+        };
+
+        match std::fs::read_to_string(&session_file) {
+            Ok(contents) => match serde_json::from_str::<crate::session::Session>(&contents) {
+                Ok(s) => {
                     if entry.session_id.is_empty() {
                         entry.session_id = s.session_id;
                     }
@@ -550,6 +573,20 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
                     }
                     reg.updated = now_iso_ts();
                 }
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to parse session file {}: {}. \
+                         Session tracking may be incomplete.",
+                        session_file.display(), e
+                    );
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to read session file {}: {}. \
+                     Session tracking may be incomplete.",
+                    session_file.display(), e
+                );
             }
         }
         reg.save(workspace)?;
@@ -561,9 +598,18 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
     // ── Phase 7: Clear stale pids (locked) ──────────────────────────
     {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            entry.pids.clear();
-            reg.updated = now_iso_ts();
+        match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+            Some(entry) => {
+                entry.pids.clear();
+                reg.updated = now_iso_ts();
+            }
+            None => {
+                eprintln!(
+                    "warning: session '{}' not found in registry at cleanup — \
+                     may have been removed while claude was running",
+                    name
+                );
+            }
         }
         reg.save(workspace)?;
     }
