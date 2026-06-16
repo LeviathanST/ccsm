@@ -1,6 +1,6 @@
 # Session: ccsm-completions
 
-> **in_progress** | started {{started}} | completed {{completed}} | {{pid_count}} pids
+> **completed** | started (inline) | completed day20620T14:12Z | 0 pids
 
 ## Goal
 
@@ -32,6 +32,8 @@ cli, dx, shell, completions
 | waitingFor | `(none)` |
 
 ## Progress Log
+
+- [2026-06-16 14:12Z] END-GATE: built — (1) ccsm completions subcommand for bash/fish/zsh via clap_complete, zero-maintenance shell completion. (2) Removed auto-demotion from ccsm resume — multiple in_progress now allowed, doctor warns at 20+. (3) Stripped max-1-per-workspace from all docs. deferred — TUI picker (separate session), enabling completions in user's shell config (manual step). left — nothing, shipped and verified.
 
 - [2026-06-16 14:06Z] Rust: added ccsm completions subcommand (bash/fish/zsh via clap_complete) + removed auto-demotion from ccsm resume. Multiple in_progress now allowed. Doctor warns at 20+ (hype mode). Stripped all 'max 1 per workspace' from docs.
 

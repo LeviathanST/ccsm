@@ -1,5 +1,5 @@
 {
-  "updated": "day20620T13:35:50Z",
+  "updated": "day20620T14:12:24Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -89,7 +89,7 @@
       "scope": "Add Cross-Session Teammate Awareness to the session-manager SKILL.md: Rust flags (--verbose, --cross) + SKILL.md protocol with 3 coordination patterns (Dependency, Redundancy, Related Work). In: CLI flags, SKILL.md protocol. Out: sequence support for --cross, NLP overlap detection, cross-workspace awareness.",
       "status": "completed",
       "pids": [
-        3396387
+        109718
       ],
       "tags": [
         "agent-workflow",
@@ -98,7 +98,7 @@
         "coordination",
         "protocol"
       ],
-      "started": "day20620T10:59Z",
+      "started": "day20620T13:44Z",
       "completed": "day20620T11:39:53Z"
     },
     {
@@ -123,16 +123,14 @@
       "goal": "Agents proactively offer to create pending sessions for ideas, tech debt, and improvements discovered during work",
       "scope": "During work, agents naturally discover tech debt, improvement ideas, missing features, and architectural smells. Instead of letting these evaporate, agents should acknowledge the session registry as an idea dashboard and proactively ask: 'I noticed X could be improved. It's out of scope for now but worth tracking. Want me to create a pending session?' This turns ccsm into a collective brain that accumulates institutional knowledge automatically.",
       "status": "completed",
-      "pids": [
-        2753014
-      ],
+      "pids": [],
       "tags": [
         "agent-workflow",
         "ideation",
         "techdebt",
         "dashboard"
       ],
-      "started": "day20620T09:02Z",
+      "started": "day20620T13:43Z",
       "completed": "day20620T10:31:52Z"
     },
     {
@@ -140,7 +138,7 @@
       "name": "ccsm-audit-and-vision",
       "goal": "-g Audit ccsm stability, identify gaps, and decide next-phase vision",
       "scope": "Stability audit of ccsm codebase + vision planning for next phase. Audit: test coverage, error handling, main.rs monolith risk, CLI surface consistency, registry edge cases, binary naming (cc-tui vs ccsm), session lifecycle bugs. Vision: what's the product? what's missing? what should v0.6/v1.0 look like? Output: structured assessment + prioritized backlog of sessions.",
-      "status": "in_progress",
+      "status": "pending",
       "pids": [],
       "tags": [
         "audit",
@@ -151,6 +149,22 @@
       ],
       "started": "",
       "completed": ""
+    },
+    {
+      "session_id": "",
+      "name": "ccsm-completions",
+      "goal": "-g Add shell completion generation to ccsm CLI via clap_complete",
+      "scope": "Add 'ccsm completions <shell>' subcommand that generates shell completion scripts for bash/fish/zsh using the clap_complete crate. Add --force flag to ccsm resume to prevent accidental session swaps (refuse if another session is in_progress, require explicit --force to demote). In scope: clap_complete integration, completions subcommand, setup integration, resume --force guard. Out of scope: TUI command picker (separate session).",
+      "status": "completed",
+      "pids": [],
+      "tags": [
+        "cli",
+        "dx",
+        "shell",
+        "completions"
+      ],
+      "started": "",
+      "completed": "day20620T14:12:24Z"
     }
   ]
 }
