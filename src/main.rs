@@ -477,11 +477,19 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
                 }
             }
             None => {
+                // Collect session names that are plausible typos:
+                // - query is a substring of the session name, OR
+                // - edit distance ≤ 2 AND query is at least 4 chars (real word)
                 let similar: Vec<&str> = reg
                     .sessions
                     .iter()
                     .map(|s| s.name.as_str())
-                    .filter(|n| edit_distance(n, name) <= 3)
+                    .filter(|n| {
+                        n.contains(name)
+                            || (name.len() >= 4 && edit_distance(n, name) <= 2)
+                            || edit_distance(n, name) <= 1
+                    })
+                    .take(5) // cap suggestions to avoid flooding the terminal
                     .collect();
                 if similar.is_empty() {
                     anyhow::bail!(
