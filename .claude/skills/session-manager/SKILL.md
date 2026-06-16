@@ -17,7 +17,7 @@ You are working on **ccsm**, a CLI session registry and workflow harness for Cla
 On session START  →  read .claude/sessions.json, create/claim entry (status: pending)
 On first ACTION   →  update status to in_progress, fill goal + scope if missing
 After EVERY change →  ccsm note <name> "<what you did and why>"
-On session END    →  END-GATE → ccsm complete
+On session END    →  pre-flight checklist → END-GATE → ccsm complete
 BEFORE asking     →  check if you even know what session you're in
 ```
 

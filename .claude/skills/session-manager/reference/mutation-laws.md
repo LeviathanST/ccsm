@@ -62,6 +62,30 @@ The progress log IS the audit trail. If you did something, log it. **Never skip 
 
 # End-Gate Protocol (BEFORE `ccsm complete`)
 
+## 🔴 Pre-Flight Checklist (VERIFY FIRST)
+
+Before you even think about the narrative questions, **inspect the detail file with your own eyes.** Typing the END-GATE narrative without looking at the artifact is the #1 failure mode.
+
+Read the detail file and verify every item:
+
+```
+☐ Status badge (line ~3): matches registry status (completed) and has real timestamps
+☐ Live Session Data table: every field filled — no `(auto — ccsm manages)`, no `{{...}}`
+☐ Scope/Plan section: no `(fill in` residue
+☐ Tags section: no `(fill in` residue
+☐ Dependencies section: current — not stale "(none)" if cross-session notes were added
+☐ Notes section: key decisions and discoveries captured
+```
+
+**Check your work:**
+```bash
+ccsm doctor    # any "template residue" or "empty scope" warnings for this session? FIX THEM.
+```
+
+If ANY checkbox fails: fix the detail file BEFORE writing the END-GATE note. An END-GATE on a template is a lie.
+
+## The Three Questions (only after pre-flight passes)
+
 Before marking a session complete, you MUST answer these three questions via `ccsm note`:
 
 ```
@@ -75,4 +99,4 @@ Example:
 ccsm note my-feature "END-GATE: built — PTY embedding with fixed-grid ANSI rendering (matches scope). deferred — F-key passthrough (needs separate session). left — vt100 parser has edge cases with OSC sequences."
 ```
 
-**You cannot `ccsm complete` without an END-GATE note.**
+**You cannot `ccsm complete` without a passing pre-flight AND an END-GATE note.**

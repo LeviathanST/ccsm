@@ -1204,6 +1204,37 @@ fn run_doctor(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
             session_issues += 1;
         }
 
+        // 6. Template residue in detail file
+        if detail.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&detail) {
+                let mut residue: Vec<&str> = Vec::new();
+                for line in contents.lines() {
+                    let trimmed = line.trim();
+                    // Skip HTML comments (template instructions)
+                    if trimmed.starts_with("<!--") || trimmed.starts_with("-->") || trimmed == "-->" {
+                        continue;
+                    }
+                    if trimmed.contains("(fill in") {
+                        residue.push("(fill in)");
+                    }
+                    if trimmed.contains("{{") && trimmed.contains("}}") {
+                        residue.push("{{placeholder}}");
+                    }
+                }
+                if !residue.is_empty() {
+                    residue.dedup();
+                    warnings.push(format!(
+                        "  template residue  {}\n    detail file has unfilled {} — status is {}\n    → edit .claude/sessions/{}.md and fill the placeholder sections",
+                        s.name,
+                        residue.join(", "),
+                        s.status,
+                        s.name,
+                    ));
+                    session_issues += 1;
+                }
+            }
+        }
+
         if session_issues == 0 {
             healthy += 1;
         }
