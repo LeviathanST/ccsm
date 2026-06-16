@@ -3,7 +3,7 @@ use crate::registry::{SessionStatus, WorkspaceRegistry, WorkspaceSession};
 
 // ── SeqOp: a single batched mutation ────────────────────────────────
 
-/// One operation in a `cc-tui sequence` batch.
+/// One operation in a `ccsm sequence` batch.
 ///
 /// Each variant maps to the corresponding standalone subcommand,
 /// but operates on an already-loaded `WorkspaceRegistry` in memory
@@ -205,7 +205,7 @@ pub(crate) fn apply_op(
             let s = get_mut(&mut reg.sessions, name)?;
             s.status = SessionStatus::Trashed;
             Ok(vec![format!(
-                "trashed     {}  ← soft-deleted (recover with `cc-tui recover {}`)",
+                "trashed     {}  ← soft-deleted (recover with `ccsm recover {}`)",
                 name, name
             )])
         }

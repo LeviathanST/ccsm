@@ -196,7 +196,7 @@ impl WorkspaceRegistry {
 
     /// Load with an exclusive lock held for the lifetime of the returned `LockFile`.
     /// Use this for every read-modify-write cycle to prevent races between
-    /// chained `cc-tui` mutation commands.
+    /// chained `ccsm` mutation commands.
     pub fn load_locked(repo_path: &PathBuf) -> Result<(Self, LockFile)> {
         let lock = LockFile::acquire(repo_path)?;
         let reg = Self::load(repo_path)?;
@@ -308,7 +308,7 @@ impl WorkspaceRegistry {
         }
     }
 
-    /// Default seed entries for cc-tui's own workspace.
+    /// Default seed entries for ccsm's own workspace.
     /// Each project should define its own seed based on its build plan.
     pub fn default_seed() -> Vec<WorkspaceSession> {
         vec![
@@ -373,7 +373,7 @@ impl WorkspaceRegistry {
 /// Advisory exclusive lock on `.claude/sessions.json.lock`.
 ///
 /// Acquired before reading the registry and held until dropped —
-/// this prevents the read-modify-write race when multiple `cc-tui`
+/// this prevents the read-modify-write race when multiple `ccsm`
 /// mutation commands are chained with `&&` in a single shell call.
 ///
 /// The OS releases the lock automatically if the process exits,
