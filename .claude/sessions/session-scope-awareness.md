@@ -1,6 +1,6 @@
 # Session: session-scope-awareness
 
-> **pending** | started {{started}} | completed {{completed}} | {{pid_count}} pids
+> **completed** | started day20620T10:59Z | completed day20620T11:39Z | 1 pid
 
 ## Goal
 
@@ -26,11 +26,11 @@ agent-workflow, cross-session, teammate-awareness, coordination, protocol
 
 | Field | Value |
 |---|---|
-| session_id | `(auto — ccsm manages)` |
+| session_id | `a687c2b7-6b8f-4783-a851-44af2466a995` |
 | cwd | `/home/leviathanst/workspaces/cc-tui` |
-| pids | (auto — ccsm manages) |
-| kind | `(auto)` |
-| version | `(auto)` |
+| pids | 3396387 |
+| kind | `claude` |
+| version | `2.x` |
 | waitingFor | `(none)` |
 
 ## Progress Log
@@ -60,4 +60,8 @@ agent-workflow, cross-session, teammate-awareness, coordination, protocol
 
 ## Notes
 
-<!-- Free-form: decisions, discoveries, gotchas, links -->
+- Cross-Session Teammate Awareness is the 4th mandatory protocol — horizontal coordination across peer sessions
+- SKILL.md modular split: agents read 106-line router on default load, pull protocol/reference files on trigger
+- `ccsm note --cross` uses `CROSS-SESSION [source]:` prefix — greppable, auto-formatted
+- `ccsm list --active --verbose` is the designated teammate scan command (~80 tokens)
+- The lock file panic (clean-all/archive-all duplicate alias) was a pre-existing debug-build bug
