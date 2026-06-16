@@ -160,6 +160,9 @@ ccsm tag       <name> <tags...>  # replace tags
 ccsm attach    <name> <sid>      # link session_id
 ccsm resume    <name>            # spawn claude (--resume if session_id exists)
 ccsm note      <name> <text>     # append timestamped entry to progress log
+ccsm archive   <name>            # delete transcript, keep entry as work log
+ccsm archive-all                 # archive all completed sessions
+ccsm doctor                      # scan for health issues + cleanup hints
 ```
 
 ### Batch (single lock/save cycle)

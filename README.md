@@ -48,6 +48,9 @@ ccsm setup
 | `ccsm recover <name>` | trashed → in_progress |
 | `ccsm clean <name>` | Permanent delete. Irreversible |
 | `ccsm clean-all` | Delete ALL trashed. Irreversible |
+| `ccsm archive <name>` | Delete transcript, keep entry as work log |
+| `ccsm archive-all` | Archive all completed sessions with transcripts |
+| `ccsm doctor` | Scan for health issues + cleanup hints |
 
 ### Statuses
 

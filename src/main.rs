@@ -90,6 +90,13 @@ enum Commands {
     /// Permanently delete ALL trashed entries. Irreversible.
     #[command(visible_alias = "clean-all")]
     CleanAll,
+    /// Archive transcript + session files, keep registry entry as work log
+    Archive { name: String },
+    /// Archive all completed sessions that still have transcripts
+    #[command(visible_alias = "archive-all")]
+    ArchiveAll,
+    /// Scan for health issues: orphaned IDs, dead PIDs, empty fields, cleanup candidates
+    Doctor,
     /// Run multiple mutations in a single lock/load/save cycle.
     /// Each -q starts an operation: -q start foo -q scope foo text -q complete foo
     Sequence {
@@ -129,6 +136,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Recover { name } => run_recover(&name),
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path()),
         Commands::CleanAll => run_clean_all(&home, &workspace_path()),
+        Commands::Archive { name } => run_archive(&name, &home, &workspace_path()),
+        Commands::ArchiveAll => run_archive_all(&home, &workspace_path()),
+        Commands::Doctor => run_doctor(&home, &workspace_path()),
         Commands::Sequence { args } => run_sequence(&args),
         Commands::Note { name, text } => run_note(&name, &text.join(" ")),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into())),
@@ -354,13 +364,105 @@ fn run_clean_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `ccsm archive <name>` — delete transcript + session files, keep registry entry.
+fn run_archive(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+    let sid = reg.sessions.iter().rev()
+        .find(|s| s.name == name)
+        .map(|s| s.session_id.clone())
+        .unwrap_or_default();
+
+    if !reg.sessions.iter().any(|s| s.name == name) {
+        anyhow::bail!("no session named '{}'", name);
+    }
+
+    // Check not active
+    if let Some(s) = reg.sessions.iter().find(|s| s.name == name) {
+        if s.status == crate::registry::SessionStatus::InProgress {
+            anyhow::bail!(
+                "cannot archive active session '{}'. Complete or abandon it first.",
+                name
+            );
+        }
+    }
+
+    let freed = reg.archive(&sid, name, home, workspace);
+    reg.updated = now_iso_ts();
+    reg.save(workspace)?;
+
+    if freed > 0 {
+        println!("archived    {}  ← freed {} MB", name, freed / 1_000_000);
+    } else {
+        println!("archived    {}  ← already archived (no transcript)", name);
+    }
+    Ok(())
+}
+
+/// `ccsm archive-all` — archive all completed sessions with transcripts.
+fn run_archive_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+    let candidates: Vec<(String, String)> = reg
+        .sessions
+        .iter()
+        .filter(|s| s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty())
+        .map(|s| (s.session_id.clone(), s.name.clone()))
+        .collect();
+
+    if candidates.is_empty() {
+        println!("(no completed sessions with transcripts to archive)");
+        return Ok(());
+    }
+
+    let mut total_freed: u64 = 0;
+    for (sid, name) in &candidates {
+        total_freed += reg.archive(sid, name, home, workspace);
+    }
+    reg.updated = now_iso_ts();
+    reg.save(workspace)?;
+
+    println!(
+        "archived    {} session{}  ← freed {} MB",
+        candidates.len(),
+        if candidates.len() == 1 { "" } else { "s" },
+        total_freed / 1_000_000,
+    );
+    Ok(())
+}
+
 /// `ccsm new <name> [goal]` — create a new session entry.
 fn run_new(name: &str, goal: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+
+    // Exact duplicate
     if reg.sessions.iter().any(|s| s.name == name) {
         anyhow::bail!("session '{}' already exists", name);
     }
+
+    // Fuzzy duplicate — catch typos before creating garbage
+    let similar: Vec<&str> = reg
+        .sessions
+        .iter()
+        .map(|s| s.name.as_str())
+        .filter(|n| {
+            // Substring: only flag if the overlap is significant (≥40% of longer name)
+            let shorter = n.len().min(name.len());
+            let longer = n.len().max(name.len());
+            let significant_overlap = shorter >= 4 && (shorter as f64 / longer as f64) >= 0.4;
+            (significant_overlap && (n.contains(name) || name.contains(*n)))
+                || (name.len() >= 4 && edit_distance(n, name) <= 2)
+                || edit_distance(n, name) <= 1
+        })
+        .take(3)
+        .collect();
+    if !similar.is_empty() {
+        anyhow::bail!(
+            "session '{}' looks similar to existing: {}. Use `ccsm resume <name>` to continue an existing session, or choose a more distinct name.",
+            name,
+            similar.join(", "),
+        );
+    }
+
     reg.sessions.push(crate::registry::WorkspaceSession {
         session_id: String::new(),
         name: name.to_string(),
@@ -1002,6 +1104,158 @@ fn insert_note(contents: &str, new_entry: &str) -> String {
         out.push('\n');
         out
     }
+}
+
+// ── Doctor subcommand ──────────────────────────────────────────────────
+
+/// `ccsm doctor` — scan session registry and filesystem for health issues.
+fn run_doctor(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+    let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+    let slug = crate::registry::project_slug(workspace);
+    let proj_dir = home.join(".claude").join("projects").join(&slug);
+    let lock_path = workspace.join(".claude").join("sessions.json.lock");
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut infos: Vec<String> = Vec::new();
+    let mut tips: Vec<String> = Vec::new();
+    let mut healthy = 0usize;
+
+    let in_progress_count = reg.sessions.iter()
+        .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+        .count();
+
+    for s in &reg.sessions {
+        let mut session_issues = 0usize;
+
+        // 1. Orphaned session_id (non-empty but transcript missing)
+        if !s.session_id.is_empty() {
+            let transcript = proj_dir.join(format!("{}.jsonl", s.session_id));
+            if !transcript.exists() {
+                warnings.push(format!(
+                    "  orphaned session_id  {}\n    session_id {} — transcript not found\n    → ccsm pending {}",
+                    s.name,
+                    &s.session_id[..s.session_id.len().min(8)],
+                    s.name,
+                ));
+                session_issues += 1;
+            }
+        }
+
+        // 2. Dead PIDs
+        for pid in &s.pids {
+            let proc_path = std::path::PathBuf::from(format!("/proc/{pid}"));
+            if !proc_path.exists() {
+                infos.push(format!(
+                    "  dead pid  {}\n    pid {} is no longer running (auto-cleaned on next resume)",
+                    s.name, pid,
+                ));
+                session_issues += 1;
+            }
+        }
+
+        // 3. Empty goal
+        if s.goal.is_empty() && s.status != crate::registry::SessionStatus::Pending {
+            warnings.push(format!(
+                "  empty goal  {}\n    status is {} but goal is empty\n    → edit .claude/sessions/{}.md",
+                s.name, s.status, s.name,
+            ));
+            session_issues += 1;
+        }
+
+        // 4. Empty scope on completed sessions
+        if s.scope.is_empty() && s.status == crate::registry::SessionStatus::Completed {
+            infos.push(format!(
+                "  empty scope  {}\n    completed but no scope documented\n    → ccsm scope {} \"<approach>\"",
+                s.name, s.name,
+            ));
+            session_issues += 1;
+        }
+
+        // 5. Missing detail file
+        let detail = workspace.join(".claude").join("sessions").join(format!("{}.md", s.name));
+        if !detail.exists() && !s.name.is_empty() {
+            infos.push(format!(
+                "  no detail file  {}\n    → cp .claude/session-detail-template.md .claude/sessions/{}.md",
+                s.name, s.name,
+            ));
+            session_issues += 1;
+        }
+
+        if session_issues == 0 {
+            healthy += 1;
+        }
+    }
+
+    // 6. Multiple in_progress — tip, not error
+    if in_progress_count >= 3 {
+        tips.push(format!(
+            "  {} in_progress sessions — ensure you're not in hype mode and all tasks need to be done",
+            in_progress_count,
+        ));
+    }
+
+    // 7. Stale lock file
+    if lock_path.exists() {
+        infos.push(format!(
+            "  stale lock file  {}\n    → rm {}  (if no ccsm command is running)",
+            lock_path.display(),
+            lock_path.display(),
+        ));
+    }
+
+    // 8. Large transcripts — candidates for archive
+    let mut large: Vec<(String, u64)> = Vec::new();
+    for s in &reg.sessions {
+        if s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty() {
+            let transcript = proj_dir.join(format!("{}.jsonl", s.session_id));
+            if let Ok(meta) = std::fs::metadata(&transcript) {
+                let mb = meta.len() / 1_000_000;
+                if mb > 0 {
+                    large.push((s.name.clone(), mb));
+                }
+            }
+        }
+    }
+    if !large.is_empty() {
+        large.sort_by(|a, b| b.1.cmp(&a.1));
+        let names: Vec<String> = large.iter().map(|(n, mb)| format!("{} ({} MB)", n, mb)).collect();
+        let total: u64 = large.iter().map(|(_, mb)| *mb).sum();
+        if total >= 5 {
+            tips.push(format!(
+                "  {} completed session{} with transcripts: {}\n    → ccsm archive-all to free {} MB",
+                large.len(),
+                if large.len() == 1 { "" } else { "s" },
+                names.join(", "),
+                total,
+            ));
+        }
+    }
+
+    // ── Print results ───────────────────────────────────────────────
+    let any_issues = !warnings.is_empty() || !infos.is_empty() || !tips.is_empty();
+
+    if !warnings.is_empty() {
+        println!("⚠ warnings (should fix)");
+        for w in &warnings { println!("{}", w); }
+        println!();
+    }
+    if !infos.is_empty() {
+        println!("⚡ info");
+        for i in &infos { println!("{}", i); }
+        println!();
+    }
+    if !tips.is_empty() {
+        println!("💡 tips");
+        for t in &tips { println!("{}", t); }
+        println!();
+    }
+    if healthy > 0 && any_issues {
+        println!("✓ {} healthy session{}", healthy, if healthy == 1 { "" } else { "s" });
+    } else if !any_issues {
+        println!("✓ all {} session{} healthy", healthy, if healthy == 1 { "" } else { "s" });
+    }
+
+    Ok(())
 }
 
 // ── Setup subcommand ──────────────────────────────────────────────────
