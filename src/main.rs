@@ -36,6 +36,9 @@ enum Commands {
         /// Filter by status. Pass "help" to see what each status means.
         #[arg(short = 'S', long)]
         status: Option<String>,
+        /// Verbose: show full goal + tags (teammate scan mode)
+        #[arg(short = 'v', long)]
+        verbose: bool,
     },
     /// Show goal, scope, tags, session_id, pids, timestamps for a session
     Show {
@@ -88,12 +91,10 @@ enum Commands {
     /// Permanently delete transcript + session files + entry. Irreversible.
     Clean { name: String },
     /// Permanently delete ALL trashed entries. Irreversible.
-    #[command(visible_alias = "clean-all")]
     CleanAll,
     /// Archive transcript + session files, keep registry entry as work log
     Archive { name: String },
     /// Archive all completed sessions that still have transcripts
-    #[command(visible_alias = "archive-all")]
     ArchiveAll,
     /// Scan for health issues: orphaned IDs, dead PIDs, empty fields, cleanup candidates
     Doctor,
@@ -108,6 +109,9 @@ enum Commands {
         name: String,
         #[arg(num_args = 1..)]
         text: Vec<String>,
+        /// Cross-session note: auto-prepend "CROSS-SESSION [source]: " to the note
+        #[arg(short = 'x', long)]
+        cross: Option<String>,
     },
     /// Install session tracking into global CLAUDE.md + skills (run once)
     Setup,
@@ -120,7 +124,7 @@ fn main() -> anyhow::Result<()> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
 
     match cli.command {
-        Commands::List { active, summary, status } => run_list(active, summary, status.as_deref()),
+        Commands::List { active, summary, status, verbose } => run_list(active, summary, verbose, status.as_deref()),
         Commands::Show { name, section } => run_show(&name, section.as_deref()),
         Commands::New { name, goal } => run_new(&name, goal.as_deref().unwrap_or("")),
         Commands::Start { name } => run_status(&name, "start"),
@@ -140,7 +144,7 @@ fn main() -> anyhow::Result<()> {
         Commands::ArchiveAll => run_archive_all(&home, &workspace_path()),
         Commands::Doctor => run_doctor(&home, &workspace_path()),
         Commands::Sequence { args } => run_sequence(&args),
-        Commands::Note { name, text } => run_note(&name, &text.join(" ")),
+        Commands::Note { name, text, cross } => run_note(&name, &text.join(" "), cross.as_deref()),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into())),
     }
 }
@@ -154,8 +158,8 @@ fn load_workspace_registry() -> anyhow::Result<crate::registry::WorkspaceRegistr
     crate::registry::WorkspaceRegistry::load(&workspace_path())
 }
 
-/// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter.
-fn run_list(active: bool, summary: bool, status_filter: Option<&str>) -> anyhow::Result<()> {
+/// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter / --verbose.
+fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&str>) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let reg = load_workspace_registry()?;
 
@@ -220,13 +224,24 @@ fn run_list(active: bool, summary: bool, status_filter: Option<&str>) -> anyhow:
         if let Some(fs) = filter {
             if s.status != fs { continue; }
         }
-        let goal = if s.goal.is_empty() { "" } else { " — " };
-        let goal_text = if s.goal.len() > 80 {
-            format!("{}{:.77}...", goal, &s.goal)
+        if verbose {
+            // Teammate scan mode: full goal + tags, one line per session
+            let goal = if s.goal.is_empty() { "" } else { " — " };
+            let tags = if s.tags.is_empty() {
+                String::new()
+            } else {
+                format!("  [{}]", s.tags.join(", "))
+            };
+            println!("{:12}  {:30}  {}{}{}", s.status.to_string(), s.name, goal, s.goal, tags);
         } else {
-            format!("{}{}", goal, &s.goal)
-        };
-        println!("{:12}  {:30}  {}", s.status.to_string(), s.name, goal_text.trim());
+            let goal = if s.goal.is_empty() { "" } else { " — " };
+            let goal_text = if s.goal.len() > 80 {
+                format!("{}{:.77}...", goal, &s.goal)
+            } else {
+                format!("{}{}", goal, &s.goal)
+            };
+            println!("{:12}  {:30}  {}", s.status.to_string(), s.name, goal_text.trim());
+        }
         printed += 1;
     }
     if printed == 0 {
@@ -957,7 +972,8 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
 // ── Note subcommand ────────────────────────────────────────────────────
 
 /// Append a timestamped entry to `.claude/sessions/<name>.md` Progress Log.
-fn run_note(name: &str, text: &str) -> anyhow::Result<()> {
+/// With --cross <source>, prepends "CROSS-SESSION [source]: " to the note.
+fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     let text = text.trim();
     if text.is_empty() {
         anyhow::bail!("note text is required. Usage: ccsm note <name> <text>");
@@ -985,12 +1001,19 @@ fn run_note(name: &str, text: &str) -> anyhow::Result<()> {
 
     let contents = std::fs::read_to_string(&detail_path)?;
     let ts = note_timestamp();
-    let new_entry = format!("- [{}] {}\n", ts, text);
+
+    let formatted = match cross {
+        Some(source) => format!("CROSS-SESSION [{}]: {}", source, text),
+        None => text.to_string(),
+    };
+
+    let new_entry = format!("- [{}] {}\n", ts, formatted);
+    let display = if cross.is_some() { &formatted } else { text };
 
     let new_contents = insert_note(&contents, &new_entry);
     std::fs::write(&detail_path, new_contents)?;
 
-    println!("noted       {}  ← [{}] {}", name, ts, text);
+    println!("noted       {}  ← [{}] {}", name, ts, display);
     Ok(())
 }
 
