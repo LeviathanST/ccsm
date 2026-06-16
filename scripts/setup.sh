@@ -49,6 +49,7 @@ ccsm list                  # all sessions
 ccsm list --active          # in_progress + blocked
 ccsm list --summary         # counts only
 ccsm show <name>            # full detail
+ccsm show <name> --section <s>  # extract one section from detail file
 ccsm new <name> -g <goal>  # create entry
 ccsm start <name>           # promote to in_progress
 ccsm complete <name>        # mark done
@@ -57,15 +58,26 @@ ccsm abandon <name>         # mark abandoned
 ccsm pending <name>         # reset to pending
 ccsm scope <name> <text>    # set scope
 ccsm tag <name> <tags...>   # set tags
+ccsm note <name> <text>     # append to progress log
 ccsm attach <name> <sid>    # link session_id
 ccsm resume <name>          # spawn claude (--resume if session_id exists)
+ccsm sequence -q <cmd> <args...> ...  # batch mutations in single lock/save
 ccsm --help                 # full command list
+```
+
+### Session Lifecycle
+```
+NEW → start → (work → note → note → ...) → END-GATE → complete
+                                                 ↓
+                                             blocked/abandoned
 ```
 
 ### Rules
 - Status lifecycle: `pending → in_progress → completed` (or `blocked`/`abandoned`)
 - Only ONE `in_progress` per workspace
 - Use `ccsm` CLI to mutate — never edit JSON directly
+- **`ccsm note <name> <text>` after every non-trivial change** — progress log is mandatory
+- **Before `ccsm complete`:** answer the END-GATE: what was built? what was NOT done? what's left?
 - Use `ccsm attach <name> <session-id>` to link an existing Claude session
 
 ### Team Awareness
