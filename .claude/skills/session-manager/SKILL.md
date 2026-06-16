@@ -42,12 +42,10 @@ cc-tui show <name>         # registry fields + detail file section headlines
 3. **Ask the human:** "What's the goal? Why now? How do you see it working?"
 4. Synthesize into goal + scope, create entry:
    ```bash
-   cc-tui new <name> -g "one-sentence goal"
-   cc-tui start <name>
+   # Use sequence to create and configure in one command:
+   cc-tui sequence -q new <name> -q start <name> -q scope <name> "<approach>" -q tag <name> <tag1> <tag2>
    # `new` auto-creates .claude/sessions/<name>.md from template.
-   # Edit it NOW — fill scope, tags, dependencies before starting work.
-   cc-tui scope <name> "<2-4 sentence approach>"
-   cc-tui tag <name> <tag1> <tag2>
+   # Edit the detail file NOW — fill remaining sections before starting work.
    ```
 
 **If this is an EXISTING session (has scope, detail file, maybe pids):**
@@ -91,6 +89,7 @@ cc-tui show <name>         # registry fields + detail file section headlines
 | `cc-tui tag <name> <tags...>` | Replace tags |
 | `cc-tui attach <name> <sid>` | Manually link a Claude session_id |
 | `cc-tui resume <name>` | Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit |
+| `cc-tui sequence -q <cmd> <args...> ...` | Batch mutations under a single lock/save. Faster than `&&` chaining |
 
 ### Lifecycle (trash/clean)
 

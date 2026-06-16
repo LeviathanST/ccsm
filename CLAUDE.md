@@ -13,17 +13,21 @@ You are Vex, building a CLI session registry and lifecycle manager for Claude Co
 ```
 cc-tui CLI
 ├── src/main.rs          CLI dispatch (clap), all subcommand handlers
-├── src/registry.rs      WorkspaceRegistry — .claude/sessions.json CRUD
+├── src/registry.rs      WorkspaceRegistry — .claude/sessions.json CRUD, LockFile
+├── src/sequence.rs      SeqOp — batch mutations in a single lock/save cycle
 └── src/session.rs       Session — reads ~/.claude/sessions/<pid>.json
 ```
 
 cc-tui manages a per-workspace session registry at `.claude/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `cc-tui resume` command spawns `claude` (with `--resume` if a session_id is linked), captures the child PID, and harvests the session_id from the session file on exit.
+
+Mutations use advisory `flock` via `fs2` on `.claude/sessions.json.lock` — every read-modify-write cycle holds an exclusive lock from read through write, preventing races when commands are chained with `&&`. The `sequence` subcommand batches multiple mutations under a single lock.
 
 ## Tech Stack
 
 - **Rust**
 - **clap** (derive) — CLI argument parsing, auto-generated --help
 - **serde/serde_json** — parse Claude Code's JSON data files
+- **fs2** — cross-platform `flock` advisory file locking
 
 ## Data Sources
 
@@ -73,6 +77,8 @@ Claude Code derives the project directory slug from the absolute path by replaci
 3. **Never parse JSONL transcripts.** Use `claude --resume` for session replay — let Claude handle its own data format.
 4. **`refresh_from_live` harvests session_ids.** After `claude` exits, the session file it wrote at `~/.claude/sessions/<pid>.json` is read to harvest the `sessionId` and save it to the registry entry.
 5. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by cc-tui. Agents use CLI commands, never touch these fields directly.
+6. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.claude/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
+7. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
 
 ## Agent Workflow (MANDATORY)
 
@@ -137,6 +143,7 @@ cc-tui list --active     (-a)               # in_progress + blocked only
 cc-tui list --summary    (-s)               # counts: 2 active | 5 completed | 3 total
 cc-tui list --status X   (-S)               # filter by status
 cc-tui show <name>                          # full detail — goal, scope, tags, pids, timestamps
+cc-tui show <name> --section <s>            # extract one section from detail file
 ```
 
 ### Mutate (never edit JSON directly)
@@ -153,6 +160,14 @@ cc-tui tag       <name> <tags...>  # replace tags
 cc-tui attach    <name> <sid>      # link session_id
 cc-tui resume    <name>            # spawn claude (--resume if session_id exists)
 ```
+
+### Batch (single lock/save cycle)
+
+```
+cc-tui sequence -q new <name> -q start <name> -q scope <name> <text> -q complete <name>
+```
+
+Each `-q` starts an operation group. All mutations run in-memory under one lock, saved once.
 
 ### Meta
 

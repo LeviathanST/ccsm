@@ -36,6 +36,7 @@ cc-tui setup
 | `cc-tui scope <name> <text>` | Set scope |
 | `cc-tui tag <name> <tags...>` | Replace tags |
 | `cc-tui attach <name> <sid>` | Link a session_id |
+| `cc-tui sequence -q <cmd> <args...> -q <cmd> ...` | Batch mutations in a single lock/save |
 
 ### Lifecycle
 
@@ -85,6 +86,20 @@ Token-efficient reading: `cc-tui show <name>` lists section headlines with line 
 
 Agents use the `/session-manager` skill (installed by `cc-tui setup`). It enforces session tracking protocol: create entries, update status, maintain detail files.
 
+## Sequence (Batch Mutations)
+
+Run multiple mutations in a single process, single lock, single save:
+
+```bash
+cc-tui sequence -q new foo -q start foo -q scope foo "multi word" -q tag foo a b -q complete foo
+```
+
+Each `-q` starts an operation group. Faster than `&&` chaining — one JSON parse, one file write, no race window. Supports: `start`, `complete`, `block`, `abandon`, `pending`, `scope`, `tag`, `new`, `trash`, `recover`, `attach`.
+
+## File Locking
+
+Mutations use advisory `flock` on `.claude/sessions.json.lock` — every read-modify-write cycle is atomic across processes. Safe to chain commands with `&&` or run `sequence` alongside standalone mutations.
+
 ## Tech
 
-Rust + clap + serde_json. Reads Claude Code's native session files — no PTY parsing, no transcript parsing.
+Rust + clap + serde_json + fs2. Reads Claude Code's native session files — no PTY parsing, no transcript parsing.
