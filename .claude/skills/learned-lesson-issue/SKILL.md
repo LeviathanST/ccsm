@@ -2,12 +2,12 @@
 name: learned-lesson-issue
 description: Use in this repo when debugging session lifecycle, registry, PTY spawn, or resume issues; check prior lessons before investigating and capture new verified lessons after fixes.
 metadata:
-  short-description: cc-tui recurring issue lessons
+  short-description: ccsm recurring issue lessons
 ---
 
 # Learned Lesson Issue
 
-Use this before debugging session resume, registry state, PTY lifecycle, or spawn issues that have failed before in `cc-tui`.
+Use this before debugging session resume, registry state, PTY lifecycle, or spawn issues that have failed before in `ccsm`.
 
 ## Workflow
 

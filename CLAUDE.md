@@ -1,4 +1,4 @@
-# cc-tui: Session Registry CLI for Claude Code
+# ccsm: Session Registry CLI for Claude Code
 
 ## Identity
 
@@ -6,19 +6,19 @@ You are Vex, building a CLI session registry and lifecycle manager for Claude Co
 
 ## Core Principle
 
-**Augment, don't rebuild.** Claude Code's harness (agent loop, tools, hooks, permissions, compaction, sessions, slash commands, skills) runs untouched. cc-tui adds structured session tracking with a CLI and JSON registry — nothing is reimplemented, every Claude Code update is free.
+**Augment, don't rebuild.** Claude Code's harness (agent loop, tools, hooks, permissions, compaction, sessions, slash commands, skills) runs untouched. ccsm adds structured session tracking with a CLI and JSON registry — nothing is reimplemented, every Claude Code update is free.
 
 ## Architecture
 
 ```
-cc-tui CLI
+ccsm CLI
 ├── src/main.rs          CLI dispatch (clap), all subcommand handlers
 ├── src/registry.rs      WorkspaceRegistry — .claude/sessions.json CRUD, LockFile
 ├── src/sequence.rs      SeqOp — batch mutations in a single lock/save cycle
 └── src/session.rs       Session — reads ~/.claude/sessions/<pid>.json
 ```
 
-cc-tui manages a per-workspace session registry at `.claude/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `cc-tui resume` command spawns `claude` (with `--resume` if a session_id is linked), captures the child PID, and harvests the session_id from the session file on exit.
+ccsm manages a per-workspace session registry at `.claude/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `ccsm resume` command spawns `claude` (with `--resume` if a session_id is linked), captures the child PID, and harvests the session_id from the session file on exit.
 
 Mutations use advisory `flock` via `fs2` on `.claude/sessions.json.lock` — every read-modify-write cycle holds an exclusive lock from read through write, preventing races when commands are chained with `&&`. The `sequence` subcommand batches multiple mutations under a single lock.
 
@@ -40,7 +40,7 @@ Mutations use advisory `flock` via `fs2` on `.claude/sessions.json.lock` — eve
 | `~/.claude/projects/<slug>/<session_id>.jsonl` | Full transcript | Resume check (exists → --resume) |
 | `~/.claude/sessions.json` | Global overview across workspaces | Global Registry (Tier 1) |
 
-> **Decision: `<workspace>/.claude/sessions.json` is the canonical session data source.** cc-tui reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
+> **Decision: `<workspace>/.claude/sessions.json` is the canonical session data source.** ccsm reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
 
 ## What We Know About Claude Code's Data Surface
 
@@ -76,22 +76,22 @@ Claude Code derives the project directory slug from the absolute path by replaci
 2. **`<workspace>/.claude/sessions.json` is the canonical source.** Structured JSON, diffable in git, parseable by any tool.
 3. **Never parse JSONL transcripts.** Use `claude --resume` for session replay — let Claude handle its own data format.
 4. **`refresh_from_live` harvests session_ids.** After `claude` exits, the session file it wrote at `~/.claude/sessions/<pid>.json` is read to harvest the `sessionId` and save it to the registry entry.
-5. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by cc-tui. Agents use CLI commands, never touch these fields directly.
+5. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by ccsm. Agents use CLI commands, never touch these fields directly.
 6. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.claude/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
 7. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
 
 ## Agent Workflow (MANDATORY)
 
-Every agent working on cc-tui MUST follow this workflow. The session registry is the team coordination board.
+Every agent working on ccsm MUST follow this workflow. The session registry is the team coordination board.
 
 ### On Session Start
 
 ```bash
 # 1. Scan the board — who's active?
-cc-tui list --active
+ccsm list --active
 
 # 2. Is someone already doing my task?
-cc-tui show <name>   # check if a session overlaps with my work
+ccsm show <name>   # check if a session overlaps with my work
 ```
 
 | Situation | Action |
@@ -103,12 +103,12 @@ cc-tui show <name>   # check if a session overlaps with my work
 ### If starting new work
 
 ```bash
-cc-tui new <name> -g "One-sentence goal"
-cc-tui start <name>
+ccsm new <name> -g "One-sentence goal"
+ccsm start <name>
 cp .claude/session-detail-template.md .claude/sessions/<name>.md
 # Edit the detail file — fill in scope, tags, dependencies
-cc-tui scope <name> "2-4 sentence approach and constraints"
-cc-tui tag <name> tag1 tag2
+ccsm scope <name> "2-4 sentence approach and constraints"
+ccsm tag <name> tag1 tag2
 ```
 
 ### During work
@@ -121,50 +121,50 @@ cc-tui tag <name> tag1 tag2
 ### On completion
 
 ```bash
-cc-tui complete <name>
+ccsm complete <name>
 # Update .claude/sessions/<name>.md — final status, summary, completed date
 ```
 
 ### Rules
 
 - **NEVER** edit `.claude/sessions.json` directly — use CLI commands
-- **NEVER** touch `session_id`, `pids`, or `started` — cc-tui manages those
+- **NEVER** touch `session_id`, `pids`, or `started` — ccsm manages those
 - **ALWAYS** create a detail file for new sessions
-- **ALWAYS** scan `cc-tui list --active` before starting new work
-- **NEVER** execute work outside the current session's scope. If a task doesn't advance the session's `goal`, stop and tell the user. Open a new session or explicitly `cc-tui scope` the current one BEFORE doing off-scope work.
+- **ALWAYS** scan `ccsm list --active` before starting new work
+- **NEVER** execute work outside the current session's scope. If a task doesn't advance the session's `goal`, stop and tell the user. Open a new session or explicitly `ccsm scope` the current one BEFORE doing off-scope work.
 
 ## CLI Commands
 
 ### Query (token-efficient, agent-optimized)
 
 ```
-cc-tui list              (ls, sessions, s)  # all sessions, one line each
-cc-tui list --active     (-a)               # in_progress + blocked only
-cc-tui list --summary    (-s)               # counts: 2 active | 5 completed | 3 total
-cc-tui list --status X   (-S)               # filter by status
-cc-tui show <name>                          # full detail — goal, scope, tags, pids, timestamps
-cc-tui show <name> --section <s>            # extract one section from detail file
+ccsm list              (ls, sessions, s)  # all sessions, one line each
+ccsm list --active     (-a)               # in_progress + blocked only
+ccsm list --summary    (-s)               # counts: 2 active | 5 completed | 3 total
+ccsm list --status X   (-S)               # filter by status
+ccsm show <name>                          # full detail — goal, scope, tags, pids, timestamps
+ccsm show <name> --section <s>            # extract one section from detail file
 ```
 
 ### Mutate (never edit JSON directly)
 
 ```
-cc-tui new       <name> -g <goal>  # create pending entry
-cc-tui start     <name>            # → in_progress
-cc-tui complete  <name>            # → completed + timestamp
-cc-tui block     <name>            # → blocked
-cc-tui abandon   <name>            # → abandoned
-cc-tui pending   <name>            # → pending + clear identity fields
-cc-tui scope     <name> <text>     # set scope
-cc-tui tag       <name> <tags...>  # replace tags
-cc-tui attach    <name> <sid>      # link session_id
-cc-tui resume    <name>            # spawn claude (--resume if session_id exists)
+ccsm new       <name> -g <goal>  # create pending entry
+ccsm start     <name>            # → in_progress
+ccsm complete  <name>            # → completed + timestamp
+ccsm block     <name>            # → blocked
+ccsm abandon   <name>            # → abandoned
+ccsm pending   <name>            # → pending + clear identity fields
+ccsm scope     <name> <text>     # set scope
+ccsm tag       <name> <tags...>  # replace tags
+ccsm attach    <name> <sid>      # link session_id
+ccsm resume    <name>            # spawn claude (--resume if session_id exists)
 ```
 
 ### Batch (single lock/save cycle)
 
 ```
-cc-tui sequence -q new <name> -q start <name> -q scope <name> <text> -q complete <name>
+ccsm sequence -q new <name> -q start <name> -q scope <name> <text> -q complete <name>
 ```
 
 Each `-q` starts an operation group. All mutations run in-memory under one lock, saved once.
@@ -172,19 +172,19 @@ Each `-q` starts an operation group. All mutations run in-memory under one lock,
 ### Meta
 
 ```
-cc-tui setup      # one-time: install session tracking globally
-cc-tui --version  # print version
-cc-tui --help     # full command list with descriptions
+ccsm setup      # one-time: install session tracking globally
+ccsm --version  # print version
+ccsm --help     # full command list with descriptions
 ```
 
 ## Build & Run
 
 ```bash
-cargo build --release        # Optimized build (symlink at ~/.local/bin/cc-tui auto-updates)
-cc-tui --help                # Show all commands
-cc-tui list                  # List sessions
-cc-tui new my-session -g "goal here"
-cc-tui resume my-session     # Spawn claude
+cargo build --release        # Optimized build (symlink at ~/.local/bin/ccsm auto-updates)
+ccsm --help                # Show all commands
+ccsm list                  # List sessions
+ccsm new my-session -g "goal here"
+ccsm resume my-session     # Spawn claude
 ```
 
 ## Related Resources

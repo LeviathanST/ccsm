@@ -3,10 +3,10 @@
 ## Slug mismatch: transcript "not found" → session_id silently cleared
 
 Symptom:
-User manually sets `session_id` on a registry entry, opens cc-tui, selects the entry — spawns fresh instead of resuming. After opening cc-tui the session_id is empty in sessions.json.
+User manually sets `session_id` on a registry entry, opens ccsm, selects the entry — spawns fresh instead of resuming. After opening ccsm the session_id is empty in sessions.json.
 
 Cause:
-Claude Code's project directory slug replaces ALL non-alphanumeric chars with `-`, but `project_slug()` only replaced `/` with `-`. For `/home/user/my_project`, Claude writes transcripts to `.../projects/-home-user-my-project/` but cc-tui looked in `.../projects/-home-user-my_project/`. Transcript "not found" → `resume_sid = None` → `session_id.clear()`.
+Claude Code's project directory slug replaces ALL non-alphanumeric chars with `-`, but `project_slug()` only replaced `/` with `-`. For `/home/user/my_project`, Claude writes transcripts to `.../projects/-home-user-my-project/` but ccsm looked in `.../projects/-home-user-my_project/`. Transcript "not found" → `resume_sid = None` → `session_id.clear()`.
 
 Fix:
 Replace all non-alphanumeric chars, not just `/`:
@@ -32,7 +32,7 @@ Symptom:
 PIDs accumulating without bound. Duplicate entries with same name. Manually-set session_ids overwritten. Sidebar shows phantom "green" live entries for dead processes.
 
 Cause:
-cc-tui spawned `claude` but didn't record the spawn metadata (pid, session_id). A 70-line polling loop with 3 matching strategies tried to rediscover this from session files on disk. Strategy 3 wrote the live session_id unconditionally on pid match. Strategies never removed stale pids.
+ccsm spawned `claude` but didn't record the spawn metadata (pid, session_id). A 70-line polling loop with 3 matching strategies tried to rediscover this from session files on disk. Strategy 3 wrote the live session_id unconditionally on pid match. Strategies never removed stale pids.
 
 Fix:
 Ripped out `merge_live_sessions`. Replaced with:
@@ -48,7 +48,7 @@ Evidence:
 ## Session ID is user intent: never overwrite non-empty, never clear without confirming transcript gone
 
 Symptom:
-User sets session_id manually, opens cc-tui, it's empty. Reports "it back to the old session id" or "it become ''" after opening the app.
+User sets session_id manually, opens ccsm, it's empty. Reports "it back to the old session id" or "it become ''" after opening the app.
 
 Cause:
 Six independent code paths silently destroyed session_id: the wizard (`create_session_from_wizard`) always cleared it, the sidebar Enter handler cleared it when transcript "not found", Strategy 3 of merge_live_sessions overwrote it, live session entries in sidebar carried old session_id, `find(|e| e.name == name)` matched wrong entry when duplicates existed, and the sidebar showed live entries with same name despite different session_id.
@@ -62,14 +62,14 @@ Five guards applied across all write paths:
 5. Sidebar: hide live session when registry entry with same name has different session_id
 
 Evidence:
-2026-06-14, user manually set `8617c72d-...` on ui-polish entry 3+ times, each time cc-tui cleared it. Fixed by all 5 guards + slug fix (transcript-exists check now passes).
+2026-06-14, user manually set `8617c72d-...` on ui-polish entry 3+ times, each time ccsm cleared it. Fixed by all 5 guards + slug fix (transcript-exists check now passes).
 
 ---
 
 ## PTY exit: SIGHUP preserves state, SIGKILL destroys it
 
 Symptom:
-Non-persistent conversation: user spawns session, works, quits cc-tui, re-opens — session spawns fresh (no resume). Or: stale processes accumulate after cc-tui exits.
+Non-persistent conversation: user spawns session, works, quits ccsm, re-opens — session spawns fresh (no resume). Or: stale processes accumulate after ccsm exits.
 
 Cause:
 Three exit strategies were tried, each wrong:
@@ -91,7 +91,7 @@ Evidence:
 ## CLI `run_resume` never saves session_id — spawns fresh every time
 
 Symptom:
-`cc-tui new test1 && cc-tui resume test1` → types in claude, quits → `cc-tui resume test1` again → spawns fresh instead of resuming. Registry shows `session_id: ""`.
+`ccsm new test1 && ccsm resume test1` → types in claude, quits → `ccsm resume test1` again → spawns fresh instead of resuming. Registry shows `session_id: ""`.
 
 Cause:
 `run_resume` used `Command::status()` which blocks until exit but never captures the child pid. Three missing steps: (1) never wrote pid to registry entry, (2) never called `refresh_from_live` after exit to harvest session_id from the session file claude wrote, (3) explicitly cleared pids when `session_id.is_empty()` at line 1057, which would have prevented `refresh_from_live` from matching even if it were called. The TUI path (sidebar Enter) doesn't have this bug — it calls `link_spawn` at spawn time and `refresh_from_live` on a 2-second cycle.
@@ -102,14 +102,14 @@ Fix:
 3. Call `reg.refresh_from_live()` + `reg.save()` after `child.wait()` to harvest the session_id claude wrote on exit
 
 Evidence:
-2026-06-15, `test1` entry in sessions.json had `session_id: ""`, `pids: []`, status `in_progress` after user did `cc-tui resume test1`, typed, and quit. The live session file claude wrote was cleaned up on exit, but even if it persisted, `refresh_from_live` requires `!entry.pids.is_empty()` to match — and pids were empty.
+2026-06-15, `test1` entry in sessions.json had `session_id: ""`, `pids: []`, status `in_progress` after user did `ccsm resume test1`, typed, and quit. The live session file claude wrote was cleaned up on exit, but even if it persisted, `refresh_from_live` requires `!entry.pids.is_empty()` to match — and pids were empty.
 
 ---
 
 ## Harvest session_id BEFORE child exits — Claude deletes session file on graceful exit
 
 Symptom:
-`cc-tui resume <name>` spawns Claude, user chats, quits — `cc-tui show <name>` shows `session_id: ""`. Second resume spawns fresh instead of `--resume`. Session file existed while Claude was running but was gone by the time `child.wait()` returned.
+`ccsm resume <name>` spawns Claude, user chats, quits — `ccsm show <name>` shows `session_id: ""`. Second resume spawns fresh instead of `--resume`. Session file existed while Claude was running but was gone by the time `child.wait()` returned.
 
 Cause:
 Claude Code v2.1.158 writes `~/.claude/sessions/<pid>.json` at startup but **deletes it on graceful exit**. The harvest code ran after `child.wait()`, when the file was already gone. The old `refresh_from_live` had the same bug (designed for TUI polling, not post-exit reads).
@@ -132,4 +132,4 @@ let status = child.wait()?;  // Claude exits, deletes session file
 ```
 
 Evidence:
-2026-06-15, user ran `cc-tui resume test1`, Claude printed session ID `5d86e310-...` in its greeting, user quit, `show` had empty session_id. Session file at `~/.claude/sessions/<pid>.json` was confirmed missing after exit despite existing during the session. Polling before `wait()` fixed it — confirmed working on next test.
+2026-06-15, user ran `ccsm resume test1`, Claude printed session ID `5d86e310-...` in its greeting, user quit, `show` had empty session_id. Session file at `~/.claude/sessions/<pid>.json` was confirmed missing after exit despite existing during the session. Polling before `wait()` fixed it — confirmed working on next test.

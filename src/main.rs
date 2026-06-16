@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 // ── CLI (clap) ──────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "cc-tui", version, about = "Session registry CLI for Claude Code", long_about = None)]
+#[command(name = "ccsm", version, about = "Session registry CLI for Claude Code", long_about = None)]
 struct Cli {
     /// Workspace directory (defaults to $PWD)
     #[arg(short = 'w', long)]
@@ -124,7 +124,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path()),
         Commands::CleanAll => run_clean_all(&home, &workspace_path()),
         Commands::Sequence { args } => run_sequence(&args),
-        Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "cc-tui".into())),
+        Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into())),
     }
 }
 // ── CLI subcommands ───────────────────────────────────────────────────
@@ -137,7 +137,7 @@ fn load_workspace_registry() -> anyhow::Result<crate::registry::WorkspaceRegistr
     crate::registry::WorkspaceRegistry::load(&workspace_path())
 }
 
-/// `cc-tui list` — all sessions, one line each.  --active / --summary / --status filter.
+/// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter.
 fn run_list(active: bool, summary: bool, status_filter: Option<&str>) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let reg = load_workspace_registry()?;
@@ -158,7 +158,7 @@ fn run_list(active: bool, summary: bool, status_filter: Option<&str>) -> anyhow:
             eprintln!("  completed    — finished successfully");
             eprintln!("  blocked      — can't proceed, waiting on a dependency");
             eprintln!("  abandoned    — gave up, no longer relevant");
-            eprintln!("  trashed      — soft-deleted, recoverable with `cc-tui recover <name>`");
+            eprintln!("  trashed      — soft-deleted, recoverable with `ccsm recover <name>`");
             return Ok(());
         }
         None => None,
@@ -258,7 +258,7 @@ fn now_iso_ts() -> String {
 
 // ── Mutation commands ───────────────────────────────────────────────────
 
-/// `cc-tui attach <name> <session-id>` — link a Claude session_id to an entry.
+/// `ccsm attach <name> <session-id>` — link a Claude session_id to an entry.
 fn run_attach(name: &str, session_id: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
@@ -275,7 +275,7 @@ fn run_attach(name: &str, session_id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `cc-tui trash <name>` — soft-delete: move to Trashed status.
+/// `ccsm trash <name>` — soft-delete: move to Trashed status.
 fn run_trash(name: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
@@ -287,14 +287,14 @@ fn run_trash(name: &str) -> anyhow::Result<()> {
     if reg.trash(&sid, name) {
         reg.updated = now_iso_ts();
         reg.save(&workspace)?;
-        println!("trashed     {}  ← soft-deleted (recover with `cc-tui recover {}`)", name, name);
+        println!("trashed     {}  ← soft-deleted (recover with `ccsm recover {}`)", name, name);
     } else {
         anyhow::bail!("no session named '{}'", name);
     }
     Ok(())
 }
 
-/// `cc-tui recover <name>` — untrash: move from Trashed → InProgress.
+/// `ccsm recover <name>` — untrash: move from Trashed → InProgress.
 fn run_recover(name: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
@@ -312,7 +312,7 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `cc-tui clean <name>` — permanently delete transcript, session files, and registry entry.
+/// `ccsm clean <name>` — permanently delete transcript, session files, and registry entry.
 fn run_clean(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let sid = reg.sessions.iter().rev()
@@ -330,7 +330,7 @@ fn run_clean(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<
     Ok(())
 }
 
-/// `cc-tui clean-all` — permanently delete ALL trashed entries.
+/// `ccsm clean-all` — permanently delete ALL trashed entries.
 fn run_clean_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let count = reg.sessions.iter()
@@ -347,7 +347,7 @@ fn run_clean_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `cc-tui new <name> [goal]` — create a new session entry.
+/// `ccsm new <name> [goal]` — create a new session entry.
 fn run_new(name: &str, goal: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
@@ -385,9 +385,9 @@ fn run_new(name: &str, goal: &str) -> anyhow::Result<()> {
                     .replace("{{status}}", "pending")
                     .replace("{{scope}}", "(fill in — approach, constraints, what's in/out)")
                     .replace("{{tags}}", "(fill in)")
-                    .replace("{{session_id}}", "(auto — cc-tui manages)")
+                    .replace("{{session_id}}", "(auto — ccsm manages)")
                     .replace("{{cwd}}", &workspace.to_string_lossy())
-                    .replace("{{pids}}", "(auto — cc-tui manages)")
+                    .replace("{{pids}}", "(auto — ccsm manages)")
                     .replace("{{kind}}", "(auto)")
                     .replace("{{version}}", "(auto)")
                     .replace("{{waiting_for}}", "(none)")
@@ -406,7 +406,7 @@ fn run_new(name: &str, goal: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `cc-tui start|complete|block|abandon <name>` — status transitions.
+/// `ccsm start|complete|block|abandon <name>` — status transitions.
 fn run_status(name: &str, action: &str) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let new_status = match action {
@@ -424,7 +424,7 @@ fn run_status(name: &str, action: &str) -> anyhow::Result<()> {
     })
 }
 
-/// `cc-tui resume <name>` — promote entry, exec `claude --resume` or fresh.
+/// `ccsm resume <name>` — promote entry, exec `claude --resume` or fresh.
 fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result<()> {
     let slug = crate::registry::project_slug(workspace);
     let now = now_iso_ts();
@@ -554,7 +554,7 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
     Ok(())
 }
 
-/// `cc-tui pending <name>` — reset to pending, clear identity fields.
+/// `ccsm pending <name>` — reset to pending, clear identity fields.
 fn run_pending(name: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
@@ -574,14 +574,14 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `cc-tui scope <name> <text>` — set the scope field.
+/// `ccsm scope <name> <text>` — set the scope field.
 fn run_set_field(name: &str, _field: &str, value: &str) -> anyhow::Result<()> {
     mutate_session(name, "scope updated", |entry| {
         entry.scope = value.to_string();
     })
 }
 
-/// `cc-tui tag <name> <tags...>` — replace tags.
+/// `ccsm tag <name> <tags...>` — replace tags.
 fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
     let tag_str = tags.join(", ");
     let _ = mutate_session(name, "tagged", |entry| {
@@ -591,8 +591,8 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `cc-tui show <name>` — registry fields + detail file section list.
-/// `cc-tui show <name> --section <s>` — extract one section from detail file.
+/// `ccsm show <name>` — registry fields + detail file section list.
+/// `ccsm show <name> --section <s>` — extract one section from detail file.
 fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
@@ -675,7 +675,7 @@ fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
                 };
                 println!("   ## {}{}", header, hint);
             }
-            println!("\n   `cc-tui show {} --section <name>` to read one section", name);
+            println!("\n   `ccsm show {} --section <name>` to read one section", name);
         }
     } else {
         println!("\n💡 no detail file — create: cp .claude/session-detail-template.md .claude/sessions/{}.md", name);
@@ -718,7 +718,7 @@ fn parse_sections(md: &str) -> Vec<(String, String)> {
 
 // ── Sequence subcommand ────────────────────────────────────────────────
 
-/// `cc-tui sequence -q <cmd> <args...> -q <cmd> <args...> ...`
+/// `ccsm sequence -q <cmd> <args...> -q <cmd> <args...> ...`
 ///
 /// Runs multiple mutations in a single lock/load/save cycle.
 /// Each `-q` flag starts a new operation group.
@@ -790,13 +790,13 @@ fn run_setup(bin_path: &str) -> anyhow::Result<()> {
     if !script.exists() {
         anyhow::bail!(
             "setup script not found at {}\n\
-             (cc-tui must be run from its source tree with `cargo run setup` \
-             or `cargo build && ./target/debug/cc-tui setup`)",
+             (ccsm must be run from its source tree with `cargo run setup` \
+             or `cargo build && ./target/debug/ccsm setup`)",
             script.display()
         );
     }
 
-    println!("cc-tui setup ({})\n", bin_path);
+    println!("ccsm setup ({})\n", bin_path);
     let status = Command::new("bash")
         .arg(&script)
         .status()

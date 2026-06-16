@@ -1,7 +1,7 @@
 {
   "name": "session-manager",
   "version": "1.0.0",
-  "description": "Maintain the cc-tui session registry (.claude/sessions.json) — create entries, update status, fill goal/scope. Every agent working on cc-tui MUST use this skill.",
+  "description": "Maintain the ccsm session registry (.claude/sessions.json) — create entries, update status, fill goal/scope. Every agent working on ccsm MUST use this skill.",
   "author": "leviathanst",
   "instructions": "SKILL.md",
   "enabled": true,
