@@ -1,5 +1,5 @@
 {
-  "updated": "day20620T11:21:27Z",
+  "updated": "day20620T11:39:53Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -87,7 +87,7 @@
       "name": "session-scope-awareness",
       "goal": "Agents scan existing sessions before creating new ones, detect overlaps, update existing session scope when extending",
       "scope": "Add Cross-Session Teammate Awareness to the session-manager SKILL.md: Rust flags (--verbose, --cross) + SKILL.md protocol with 3 coordination patterns (Dependency, Redundancy, Related Work). In: CLI flags, SKILL.md protocol. Out: sequence support for --cross, NLP overlap detection, cross-workspace awareness.",
-      "status": "in_progress",
+      "status": "completed",
       "pids": [
         3396387
       ],
@@ -99,7 +99,7 @@
         "protocol"
       ],
       "started": "day20620T10:59Z",
-      "completed": ""
+      "completed": "day20620T11:39:53Z"
     },
     {
       "session_id": "4e8b0665-e501-4347-83de-4267779e11e3",
