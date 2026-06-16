@@ -55,7 +55,7 @@ enum Commands {
         #[arg(short = 'g', long)]
         goal: Option<String>,
     },
-    /// pending → in_progress (max 1 per workspace)
+    /// pending → in_progress
     Start { name: String },
     /// in_progress → completed, sets completed timestamp
     Complete { name: String },
@@ -113,6 +113,11 @@ enum Commands {
         #[arg(short = 'x', long)]
         cross: Option<String>,
     },
+    /// Generate shell completion script (bash, fish, zsh)
+    Completions {
+        /// Shell: bash, fish, or zsh
+        shell: String,
+    },
     /// Install session tracking into global CLAUDE.md + skills (run once)
     Setup,
 }
@@ -145,6 +150,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Doctor => run_doctor(&home, &workspace_path()),
         Commands::Sequence { args } => run_sequence(&args),
         Commands::Note { name, text, cross } => run_note(&name, &text.join(" "), cross.as_deref()),
+        Commands::Completions { shell } => run_completions(&shell),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into())),
     }
 }
@@ -553,18 +559,9 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
     let slug = crate::registry::project_slug(workspace);
     let now = now_iso_ts();
 
-    // ── Phase 1: Promote entry, demote others (locked) ──────────────
+    // ── Phase 1: Promote entry (locked) ────────────────────────────
     let (sid, fresh) = {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-
-        for e in reg.sessions.iter_mut() {
-            if e.status == crate::registry::SessionStatus::InProgress && e.name != name {
-                e.status = crate::registry::SessionStatus::Completed;
-                if e.completed.is_empty() {
-                    e.completed = now.clone();
-                }
-            }
-        }
 
         let (sid, is_fresh) = match reg.sessions.iter().rev().position(|e| e.name == name) {
             Some(pos) => {
@@ -1240,10 +1237,10 @@ fn run_doctor(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
         }
     }
 
-    // 6. Multiple in_progress — tip, not error
-    if in_progress_count >= 3 {
-        tips.push(format!(
-            "  {} in_progress sessions — ensure you're not in hype mode and all tasks need to be done",
+    // 6. Excessive in_progress — hype mode detected
+    if in_progress_count >= 20 {
+        warnings.push(format!(
+            "  {} in_progress sessions — hype mode detected. Close stale sessions with `ccsm complete <name>` or `ccsm abandon <name>`",
             in_progress_count,
         ));
     }
@@ -1309,6 +1306,30 @@ fn run_doctor(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
         println!("✓ all {} session{} healthy", healthy, if healthy == 1 { "" } else { "s" });
     }
 
+    Ok(())
+}
+
+// ── Completions subcommand ─────────────────────────────────────────────
+
+/// `ccsm completions <shell>` — generate shell completion script to stdout.
+fn run_completions(shell: &str) -> anyhow::Result<()> {
+    use clap::CommandFactory;
+    use clap_complete::{Shell, generate};
+
+    let mut cmd = Cli::command();
+    let bin_name = "ccsm";
+
+    match shell {
+        "bash" => generate(Shell::Bash, &mut cmd, bin_name, &mut std::io::stdout()),
+        "fish" => generate(Shell::Fish, &mut cmd, bin_name, &mut std::io::stdout()),
+        "zsh" => generate(Shell::Zsh, &mut cmd, bin_name, &mut std::io::stdout()),
+        other => {
+            anyhow::bail!(
+                "unknown shell '{}'. Supported: bash, fish, zsh",
+                other
+            );
+        }
+    }
     Ok(())
 }
 

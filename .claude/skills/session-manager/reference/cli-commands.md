@@ -18,7 +18,7 @@
 | Command | Transition |
 |---|---|
 | `ccsm new <name> -g <goal>` | → pending |
-| `ccsm start <name>` | pending → in_progress (max 1 per workspace) |
+| `ccsm start <name>` | pending → in_progress |
 | `ccsm complete <name>` | in_progress → completed, sets timestamp |
 | `ccsm block <name>` | in_progress → blocked (waiting on dependency) |
 | `ccsm abandon <name>` | in_progress → abandoned (no longer relevant) |
@@ -44,7 +44,7 @@
 
 ```
 pending      — planned, not started yet
-in_progress  — actively working on (max 1 per workspace)
+in_progress  — actively working on
 completed    — finished successfully
 blocked      — can't proceed, waiting on a dependency
 abandoned    — gave up, no longer relevant

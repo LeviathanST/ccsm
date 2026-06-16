@@ -24,7 +24,7 @@ Session_id is persisted before Claude exits — Claude v2.1+ deletes the session
 
 ```
 pending      — planned, not started yet
-in_progress  — actively working on (max 1 per workspace)
+in_progress  — actively working on
 completed    — finished successfully
 blocked      — can't proceed, waiting on a dependency
 abandoned    — gave up, no longer relevant
