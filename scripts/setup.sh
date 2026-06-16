@@ -24,6 +24,24 @@ ccsm reads this file — empty entries mean no session context is recorded.
 2. Create or claim an entry with `name`, `goal`, `scope`, `status: "in_progress"`
 3. Leave `session_id` and `pids` empty — ccsm manages those automatically
 
+### 🔴 On Session RESUME (DO THIS FIRST — before ANY other output)
+
+When you wake up in a resumed session, you do NOT know which ccsm session you belong to.
+The registry knows. You MUST discover it before speaking.
+
+```bash
+# Fast path: ccsm resume injects CCSM_SESSION into the environment
+test -n "$CCSM_SESSION" && ccsm show "$CCSM_SESSION" && return
+# Fallback: scan the registry
+ccsm list --active          # find the in_progress session → that's you
+ccsm show <name>            # load goal, scope, tags, progress log
+ccsm show <name> --section progress-log  # what was the last thing done?
+```
+
+**Never open with "What are we working on?"** — the session registry already knows.
+If there are multiple active sessions, ask which one you're continuing.
+If there are zero active sessions, ask the human what to start.
+
 ### On Session END
 - Update `status` to `completed`, set `completed` timestamp
 - Or `blocked` / `abandoned` if appropriate

@@ -628,6 +628,7 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
     // ── Phase 2: Spawn claude (no lock) ─────────────────────────────
     let mut cmd = std::process::Command::new("claude");
     cmd.current_dir(workspace);
+    cmd.env("CCSM_SESSION", name);
     if let Some(ref id) = sid {
         cmd.arg("--resume").arg(id);
         println!("resuming    {}  ← claude --resume {}", name, &id[..id.len().min(8)]);
