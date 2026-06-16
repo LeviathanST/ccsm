@@ -1,6 +1,8 @@
 #[allow(dead_code)]
 mod registry;
 #[allow(dead_code)]
+mod sequence;
+#[allow(dead_code)]
 mod session;
 
 use std::path::PathBuf;
@@ -88,6 +90,12 @@ enum Commands {
     /// Permanently delete ALL trashed entries. Irreversible.
     #[command(visible_alias = "clean-all")]
     CleanAll,
+    /// Run multiple mutations in a single lock/load/save cycle.
+    /// Each -q starts an operation: -q start foo -q scope foo text -q complete foo
+    Sequence {
+        #[arg(num_args = 1.., required = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Install session tracking into global CLAUDE.md + skills (run once)
     Setup,
 }
@@ -115,6 +123,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Recover { name } => run_recover(&name),
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path()),
         Commands::CleanAll => run_clean_all(&home, &workspace_path()),
+        Commands::Sequence { args } => run_sequence(&args),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "cc-tui".into())),
     }
 }
@@ -217,7 +226,7 @@ where
     F: FnOnce(&mut crate::registry::WorkspaceSession),
 {
     let workspace = std::env::current_dir()?;
-    let mut reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
     {
         let entry = reg
             .sessions
@@ -252,7 +261,7 @@ fn now_iso_ts() -> String {
 /// `cc-tui attach <name> <session-id>` — link a Claude session_id to an entry.
 fn run_attach(name: &str, session_id: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
-    let mut reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
     let entry = reg
         .sessions
         .iter_mut()
@@ -269,7 +278,7 @@ fn run_attach(name: &str, session_id: &str) -> anyhow::Result<()> {
 /// `cc-tui trash <name>` — soft-delete: move to Trashed status.
 fn run_trash(name: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
-    let mut reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
     // Get session_id for the entry (may be empty for seed entries).
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
@@ -288,7 +297,7 @@ fn run_trash(name: &str) -> anyhow::Result<()> {
 /// `cc-tui recover <name>` — untrash: move from Trashed → InProgress.
 fn run_recover(name: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
-    let mut reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
         .map(|s| s.session_id.clone())
@@ -305,7 +314,7 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
 
 /// `cc-tui clean <name>` — permanently delete transcript, session files, and registry entry.
 fn run_clean(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
-    let mut reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
         .map(|s| s.session_id.clone())
@@ -323,7 +332,7 @@ fn run_clean(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<
 
 /// `cc-tui clean-all` — permanently delete ALL trashed entries.
 fn run_clean_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
-    let mut reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let count = reg.sessions.iter()
         .filter(|s| s.status == crate::registry::SessionStatus::Trashed)
         .count();
@@ -341,7 +350,7 @@ fn run_clean_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
 /// `cc-tui new <name> [goal]` — create a new session entry.
 fn run_new(name: &str, goal: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
-    let mut reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
     if reg.sessions.iter().any(|s| s.name == name) {
         anyhow::bail!("session '{}' already exists", name);
     }
@@ -417,65 +426,64 @@ fn run_status(name: &str, action: &str) -> anyhow::Result<()> {
 
 /// `cc-tui resume <name>` — promote entry, exec `claude --resume` or fresh.
 fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result<()> {
-    let mut reg = crate::registry::WorkspaceRegistry::load(workspace)?;
     let slug = crate::registry::project_slug(workspace);
-
-    // Promote this entry, demote others
     let now = now_iso_ts();
-    for e in reg.sessions.iter_mut() {
-        if e.status == crate::registry::SessionStatus::InProgress && e.name != name {
-            e.status = crate::registry::SessionStatus::Completed;
-            if e.completed.is_empty() { e.completed = now.clone(); }
+
+    // ── Phase 1: Promote entry, demote others (locked) ──────────────
+    let sid = {
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+
+        for e in reg.sessions.iter_mut() {
+            if e.status == crate::registry::SessionStatus::InProgress && e.name != name {
+                e.status = crate::registry::SessionStatus::Completed;
+                if e.completed.is_empty() {
+                    e.completed = now.clone();
+                }
+            }
         }
-    }
 
-    // Find entry by name, prefer newest
-    let promote_idx = reg.sessions.iter().rev()
-        .position(|e| e.name == name)
-        .map(|pos| reg.sessions.len() - 1 - pos);
-
-    let sid = match promote_idx {
-        Some(i) => {
-            reg.sessions[i].status = crate::registry::SessionStatus::InProgress;
-            reg.sessions[i].started.clear();
-            // Check if transcript exists
-            if !reg.sessions[i].session_id.is_empty() {
-                let path = home.join(".claude").join("projects")
-                    .join(&slug).join(format!("{}.jsonl", reg.sessions[i].session_id));
-                if path.exists() {
-                    Some(reg.sessions[i].session_id.clone())
+        let sid = match reg.sessions.iter().rev().position(|e| e.name == name) {
+            Some(pos) => {
+                let i = reg.sessions.len() - 1 - pos;
+                reg.sessions[i].status = crate::registry::SessionStatus::InProgress;
+                reg.sessions[i].started.clear();
+                if !reg.sessions[i].session_id.is_empty() {
+                    let path = home.join(".claude").join("projects")
+                        .join(&slug).join(format!("{}.jsonl", reg.sessions[i].session_id));
+                    if path.exists() {
+                        Some(reg.sessions[i].session_id.clone())
+                    } else {
+                        reg.sessions[i].session_id.clear();
+                        reg.sessions[i].pids.clear();
+                        None
+                    }
                 } else {
-                    reg.sessions[i].session_id.clear();
                     reg.sessions[i].pids.clear();
                     None
                 }
-            } else {
-                reg.sessions[i].pids.clear();
+            }
+            None => {
+                reg.sessions.push(crate::registry::WorkspaceSession {
+                    session_id: String::new(),
+                    name: name.to_string(),
+                    goal: String::new(),
+                    scope: String::new(),
+                    status: crate::registry::SessionStatus::InProgress,
+                    pids: vec![],
+                    tags: vec![],
+                    started: String::new(),
+                    completed: String::new(),
+                });
                 None
             }
-        }
-        None => {
-            // Create new entry
-            reg.sessions.push(crate::registry::WorkspaceSession {
-                session_id: String::new(),
-                name: name.to_string(),
-                goal: String::new(),
-                scope: String::new(),
-                status: crate::registry::SessionStatus::InProgress,
-                pids: vec![],
-                tags: vec![],
-                started: String::new(),
-                completed: String::new(),
-            });
-            None
-        }
-    };
+        };
 
-    reg.updated = now;
-    reg.save(workspace)?;
+        reg.updated = now.clone();
+        reg.save(workspace)?;
+        sid
+    }; // lock released
 
-    // Exec claude — use spawn() so we can capture the child pid
-    // and later harvest the session_id from the session file on disk.
+    // ── Phase 2: Spawn claude (no lock) ─────────────────────────────
     let mut cmd = std::process::Command::new("claude");
     cmd.current_dir(workspace);
     if let Some(ref id) = sid {
@@ -484,32 +492,22 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
     } else {
         println!("starting    {}  ← claude (fresh)", name);
     }
-    // Set Claude's session display name to match our registry entry.
     cmd.arg("-n").arg(name);
 
     let mut child = cmd.spawn()?;
     let child_pid = child.id();
 
-    // Write the pid to the registry entry — session_id is harvested below
-    // before claude exits (it cleans up its session file on graceful exit).
-    if let Some(idx) = promote_idx.or_else(|| {
-        reg.sessions.iter().rev()
-            .position(|e| e.name == name)
-            .map(|pos| reg.sessions.len() - 1 - pos)
-    }) {
-        reg.sessions[idx].pids = vec![child_pid];
-    } else {
-        // New entry was created — find it (last entry with matching name).
-        if let Some(entry) = reg.sessions.iter_mut().rev()
-            .find(|e| e.name == name)
-        {
+    // ── Phase 3: Write pid to registry (locked) ─────────────────────
+    {
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             entry.pids = vec![child_pid];
         }
+        reg.updated = now_iso_ts();
+        reg.save(workspace)?;
     }
-    let _ = reg.save(workspace);
 
-    // Poll for the session file — Claude writes it at startup, but
-    // deletes it on graceful exit. Harvest the session_id NOW.
+    // ── Phase 4: Poll for session file, harvest session_id ──────────
     let session_file = home.join(".claude").join("sessions").join(format!("{child_pid}.json"));
     for _ in 0..50 {
         if session_file.exists() {
@@ -517,29 +515,38 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
-    if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-        if let Ok(contents) = std::fs::read_to_string(&session_file) {
-            if let Ok(s) = serde_json::from_str::<crate::session::Session>(&contents) {
-                if entry.session_id.is_empty() {
-                    entry.session_id = s.session_id;
+
+    // ── Phase 5: Harvest session_id + started (locked) ──────────────
+    {
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+            if let Ok(contents) = std::fs::read_to_string(&session_file) {
+                if let Ok(s) = serde_json::from_str::<crate::session::Session>(&contents) {
+                    if entry.session_id.is_empty() {
+                        entry.session_id = s.session_id;
+                    }
+                    if entry.started.is_empty() {
+                        entry.started = crate::registry::format_ts(s.started_at);
+                    }
+                    reg.updated = now_iso_ts();
                 }
-                if entry.started.is_empty() {
-                    entry.started = crate::registry::format_ts(s.started_at);
-                }
-                reg.updated = now_iso_ts();
             }
         }
+        reg.save(workspace)?;
     }
-    let _ = reg.save(workspace);
 
+    // ── Phase 6: Wait for child ─────────────────────────────────────
     let status = child.wait()?;
 
-    // Process exited — clear stale pids.
-    if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-        entry.pids.clear();
-        reg.updated = now_iso_ts();
+    // ── Phase 7: Clear stale pids (locked) ──────────────────────────
+    {
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+            entry.pids.clear();
+            reg.updated = now_iso_ts();
+        }
+        reg.save(workspace)?;
     }
-    let _ = reg.save(workspace);
 
     if !status.success() {
         anyhow::bail!("claude exited with {status}");
@@ -550,7 +557,7 @@ fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result
 /// `cc-tui pending <name>` — reset to pending, clear identity fields.
 fn run_pending(name: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
-    let mut reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
     let entry = reg
         .sessions
         .iter_mut()
@@ -583,8 +590,6 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
     println!("  tags: {}", tag_str);
     Ok(())
 }
-
-/// `cc-tui tag <name> <tags...>` — replace tags.
 
 /// `cc-tui show <name>` — registry fields + detail file section list.
 /// `cc-tui show <name> --section <s>` — extract one section from detail file.
@@ -710,6 +715,68 @@ fn parse_sections(md: &str) -> Vec<(String, String)> {
 }
 
 
+
+// ── Sequence subcommand ────────────────────────────────────────────────
+
+/// `cc-tui sequence -q <cmd> <args...> -q <cmd> <args...> ...`
+///
+/// Runs multiple mutations in a single lock/load/save cycle.
+/// Each `-q` flag starts a new operation group.
+fn run_sequence(args: &[String]) -> anyhow::Result<()> {
+    // Split on "-q" markers into operation groups.
+    let mut groups: Vec<Vec<String>> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut in_group = false;
+
+    for arg in args {
+        if arg == "-q" {
+            if in_group && !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+            in_group = true;
+        } else if in_group {
+            current.push(arg.clone());
+        }
+    }
+    if in_group && !current.is_empty() {
+        groups.push(current);
+    }
+
+    if groups.is_empty() {
+        anyhow::bail!("expected at least one -q <command> ... group");
+    }
+
+    // Phase 1: Parse all operations (no lock — fail-fast on bad input)
+    let ops: Vec<crate::sequence::SeqOp> = groups
+        .iter()
+        .map(|g| crate::sequence::SeqOp::parse(g))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    // Phase 2: Execute all operations in memory (single lock)
+    let workspace = std::env::current_dir()?;
+    let now = now_iso_ts();
+    let outputs = {
+        let (mut reg, _lock) =
+            crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+
+        let mut outputs = Vec::new();
+        for op in &ops {
+            let lines = crate::sequence::apply_op(&mut reg, op, &now)?;
+            outputs.extend(lines);
+        }
+
+        reg.updated = now;
+        reg.save(&workspace)?;
+        outputs
+    }; // lock released
+
+    // Phase 3: Print all output
+    for line in &outputs {
+        println!("{}", line);
+    }
+
+    Ok(())
+}
 
 // ── Setup subcommand ──────────────────────────────────────────────────
 

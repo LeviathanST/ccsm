@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -193,6 +194,15 @@ impl WorkspaceRegistry {
         }
     }
 
+    /// Load with an exclusive lock held for the lifetime of the returned `LockFile`.
+    /// Use this for every read-modify-write cycle to prevent races between
+    /// chained `cc-tui` mutation commands.
+    pub fn load_locked(repo_path: &PathBuf) -> Result<(Self, LockFile)> {
+        let lock = LockFile::acquire(repo_path)?;
+        let reg = Self::load(repo_path)?;
+        Ok((reg, lock))
+    }
+
     /// Save back to disk.
     pub fn save(&self, repo_path: &PathBuf) -> Result<()> {
         let path = repo_path.join(".claude").join("sessions.json");
@@ -358,6 +368,38 @@ impl WorkspaceRegistry {
     }
 }
 
+// ── File Locking ─────────────────────────────────────────────────────
+
+/// Advisory exclusive lock on `.claude/sessions.json.lock`.
+///
+/// Acquired before reading the registry and held until dropped —
+/// this prevents the read-modify-write race when multiple `cc-tui`
+/// mutation commands are chained with `&&` in a single shell call.
+///
+/// The OS releases the lock automatically if the process exits,
+/// so a crash won't leave the registry permanently locked.
+pub struct LockFile {
+    _file: std::fs::File,
+}
+
+impl LockFile {
+    pub fn acquire(repo_path: &PathBuf) -> Result<Self> {
+        let lock_path = repo_path.join(".claude").join("sessions.json.lock");
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .context("opening lock file")?;
+        file.lock_exclusive()
+            .context("acquiring exclusive lock on sessions.json")?;
+        Ok(Self { _file: file })
+    }
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 fn now_iso() -> String {
@@ -391,4 +433,262 @@ pub(crate) fn project_slug(path: &std::path::Path) -> String {
     s.chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    /// Create a temp workspace with `.claude/sessions.json` pre-populated.
+    fn temp_workspace() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let reg_path = claude_dir.join("sessions.json");
+        // Start with an empty but valid registry
+        let reg = WorkspaceRegistry {
+            updated: "test".into(),
+            sessions: vec![],
+        };
+        std::fs::write(&reg_path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
+        (dir, reg_path)
+    }
+
+    // ── LockFile tests ─────────────────────────────────────────────
+
+    #[test]
+    fn lock_acquire_creates_lockfile() {
+        let (dir, _reg_path) = temp_workspace();
+        let lock_path = dir.path().join(".claude").join("sessions.json.lock");
+        assert!(!lock_path.exists());
+
+        let _lock = LockFile::acquire(&dir.path().to_path_buf()).unwrap();
+        assert!(lock_path.exists());
+    }
+
+    #[test]
+    fn lock_drop_releases() {
+        let (dir, _reg_path) = temp_workspace();
+        let workspace = dir.path().to_path_buf();
+
+        // Acquire and drop
+        let lock = LockFile::acquire(&workspace).unwrap();
+        drop(lock);
+
+        // Should be able to acquire again immediately (lock released)
+        let _lock2 = LockFile::acquire(&workspace).unwrap();
+    }
+
+    #[test]
+    fn lock_exclusive_blocks_same_process() {
+        let (dir, _reg_path) = temp_workspace();
+        let workspace = dir.path().to_path_buf();
+
+        // Acquire exclusive lock on one fd
+        let _lock1 = LockFile::acquire(&workspace).unwrap();
+
+        // Try to acquire on a different fd — should fail with try_lock
+        let lock_path = workspace.join(".claude").join("sessions.json.lock");
+        let file2 = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+
+        // try_lock_exclusive should fail because lock1 still holds it
+        assert!(fs2::FileExt::try_lock_exclusive(&file2).is_err());
+    }
+
+    #[test]
+    fn lock_released_after_drop_allows_new_lock() {
+        let (dir, _reg_path) = temp_workspace();
+        let workspace = dir.path().to_path_buf();
+
+        let lock = LockFile::acquire(&workspace).unwrap();
+        drop(lock);
+
+        // Now try_lock should succeed
+        let lock_path = workspace.join(".claude").join("sessions.json.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&file).is_ok());
+    }
+
+    // ── load_locked tests ──────────────────────────────────────────
+
+    #[test]
+    fn load_locked_loads_registry() {
+        let (dir, reg_path) = temp_workspace();
+        // Write a known entry
+        let reg = WorkspaceRegistry {
+            updated: "day0T00:00:00Z".into(),
+            sessions: vec![WorkspaceSession {
+                session_id: "abc-123".into(),
+                name: "test-session".into(),
+                goal: "test goal".into(),
+                scope: String::new(),
+                status: SessionStatus::InProgress,
+                pids: vec![42],
+                tags: vec!["test".into()],
+                started: "day0T00:00:00Z".into(),
+                completed: String::new(),
+            }],
+        };
+        std::fs::write(&reg_path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
+
+        let (loaded, _lock) = WorkspaceRegistry::load_locked(&dir.path().to_path_buf()).unwrap();
+        assert_eq!(loaded.sessions.len(), 1);
+        assert_eq!(loaded.sessions[0].name, "test-session");
+        assert_eq!(loaded.sessions[0].goal, "test goal");
+        assert_eq!(loaded.sessions[0].session_id, "abc-123");
+    }
+
+    #[test]
+    fn load_locked_holds_lock_during_mutation() {
+        let (dir, _reg_path) = temp_workspace();
+        let workspace = dir.path().to_path_buf();
+
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked(&workspace).unwrap();
+
+        // While lock is held, try_lock should fail on another fd
+        let lock_path = workspace.join(".claude").join("sessions.json.lock");
+        let other_file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&other_file).is_err());
+
+        // Mutate and save while holding the lock
+        reg.sessions.push(WorkspaceSession {
+            session_id: String::new(),
+            name: "locked-mutation".into(),
+            goal: "created under lock".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+        });
+        reg.save(&workspace).unwrap();
+
+        // Drop the lock
+        drop(_lock);
+        drop(reg);
+
+        // Now another lock can be acquired
+        let (_reg2, _lock2) = WorkspaceRegistry::load_locked(&workspace).unwrap();
+        assert_eq!(_reg2.sessions.len(), 1);
+        assert_eq!(_reg2.sessions[0].name, "locked-mutation");
+    }
+
+    // ── Concurrent mutation tests ──────────────────────────────────
+
+    #[test]
+    fn concurrent_mutations_preserve_all_entries() {
+        let (dir, _reg_path) = temp_workspace();
+        let workspace = Arc::new(dir.path().to_path_buf());
+        let num_threads = 8;
+
+        let mut handles = vec![];
+        for i in 0..num_threads {
+            let ws = workspace.clone();
+            handles.push(std::thread::spawn(move || {
+                let name = format!("thread-{}", i);
+                let (mut reg, _lock) = WorkspaceRegistry::load_locked(&ws).unwrap();
+                reg.sessions.push(WorkspaceSession {
+                    session_id: String::new(),
+                    name,
+                    goal: format!("entry from thread {}", i),
+                    scope: String::new(),
+                    status: SessionStatus::Pending,
+                    pids: vec![],
+                    tags: vec![format!("t{}", i)],
+                    started: String::new(),
+                    completed: String::new(),
+                });
+                reg.save(&ws).unwrap();
+                // _lock dropped here
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All entries should be present — none lost to race
+        let reg = WorkspaceRegistry::load(&workspace).unwrap();
+        assert_eq!(reg.sessions.len(), num_threads,
+            "expected {} entries, got {} — mutations were lost to a race",
+            num_threads, reg.sessions.len());
+
+        let mut names: Vec<_> = reg.sessions.iter().map(|s| s.name.clone()).collect();
+        names.sort();
+        for i in 0..num_threads {
+            assert_eq!(names[i], format!("thread-{}", i));
+        }
+    }
+
+    #[test]
+    fn concurrent_mutations_without_lock_can_lose_state() {
+        // This test demonstrates WHY the lock is necessary.
+        // Without locks, concurrent read-modify-write can corrupt the file
+        // (empty reads, parse failures) or silently lose entries.
+        let (dir, _reg_path) = temp_workspace();
+        let workspace = Arc::new(dir.path().to_path_buf());
+        let num_threads = 8;
+
+        let mut handles = vec![];
+        for i in 0..num_threads {
+            let ws = workspace.clone();
+            handles.push(std::thread::spawn(move || {
+                let name = format!("unlocked-{}", i);
+                let mut reg = WorkspaceRegistry::load(&ws)
+                    .unwrap_or_else(|_| WorkspaceRegistry::empty());
+                reg.sessions.push(WorkspaceSession {
+                    session_id: String::new(),
+                    name,
+                    goal: "unlocked entry".into(),
+                    scope: String::new(),
+                    status: SessionStatus::Pending,
+                    pids: vec![],
+                    tags: vec![],
+                    started: String::new(),
+                    completed: String::new(),
+                });
+                let _ = reg.save(&ws);
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Without locks, the file is often corrupted or entries are lost.
+        // We just verify the locked version works correctly — this test
+        // exists to document the race condition that load_locked prevents.
+        let reg = WorkspaceRegistry::load(&workspace).unwrap_or_else(|_| {
+            // File was corrupted by concurrent writes — exactly what the lock prevents
+            WorkspaceRegistry::empty()
+        });
+        eprintln!(
+            "unlocked concurrent test: {}/{} entries survived ({} = expected with locking)",
+            reg.sessions.len(),
+            num_threads,
+            num_threads
+        );
+        // No assertion on count — the file may be corrupt, partially written,
+        // or missing entries. This is expected without locking.
+    }
 }
