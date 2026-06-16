@@ -77,11 +77,29 @@ ccsm pending <name>         # reset to pending
 ccsm scope <name> <text>    # set scope
 ccsm tag <name> <tags...>   # set tags
 ccsm note <name> <text>     # append to progress log
-ccsm attach <name> <sid>    # link session_id
+ccsm attach <name>              # auto-discover & link live session (--pid <pid> or <uuid> also accepted)
 ccsm resume <name>          # spawn claude (--resume if session_id exists)
 ccsm sequence -q <cmd> <args...> ...  # batch mutations in single lock/save
 ccsm --help                 # full command list
 ```
+### Attach modes (why UUID, PID, and auto-discover)
+
+Claude Code identifies sessions by UUID (e.g. `f493397b-...-4d5f15da0311`).
+This UUID is stored in `~/.claude/sessions/<pid>.json` and names the transcript
+file at `~/.claude/projects/<slug>/<uuid>.jsonl`. ccsm uses this UUID to link
+registry entries to their transcripts so `resume` can pass `--resume <uuid>`.
+
+Three ways to attach, from simplest to most explicit:
+
+| Mode | Command | When |
+|---|---|---|
+| **Auto-discover** | `ccsm attach <name>` | You're in a live Claude session. ccsm scans session files, prefers name match (from `/rename`), falls back to most recent in workspace. |
+| **By PID** | `ccsm attach <name> --pid <pid>` | You know the process ID (from `ps aux \| grep claude`). ccsm reads the session file and harvests the UUID. |
+| **By UUID** | `ccsm attach <name> <uuid>` | Scripting, cross-workspace, or when you already have the UUID from `~/.claude/sessions/<pid>.json`. |
+
+Names like "smith-system" are NOT session IDs — they're session names set by
+`/rename` or `-n`. ccsm rejects non-UUID strings to prevent the exact bug where
+`ccsm attach smith-system smith-system` silently wrote a name where a UUID was expected.
 
 ### Session Lifecycle
 ```
@@ -96,7 +114,7 @@ NEW → start → (work → note → note → ...) → END-GATE → complete
 - Use `ccsm` CLI to mutate — never edit JSON directly
 - **`ccsm note <name> <text>` after every non-trivial change** — progress log is mandatory
 - **Before `ccsm complete`:** answer the END-GATE: what was built? what was NOT done? what's left?
-- Use `ccsm attach <name> <session-id>` to link an existing Claude session
+- Use `ccsm attach <name>` to link a live Claude session (auto-discover by name match or recency)
 
 ### Team Awareness
 - **Before starting:** `ccsm list --active` — check if someone already claimed this work

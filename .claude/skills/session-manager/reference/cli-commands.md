@@ -25,7 +25,7 @@
 | `ccsm pending <name>` | → pending, clears session_id + pids + timestamps |
 | `ccsm scope <name> <text>` | Set scope field |
 | `ccsm tag <name> <tags...>` | Replace tags |
-| `ccsm attach <name> <sid>` | Manually link a Claude session_id |
+| `ccsm attach <name>` | Auto-discover & link live session. `--pid <pid>` or `<uuid>` for explicit |
 | `ccsm resume <name>` | Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit |
 | `ccsm note <name> <text>` | Append timestamped entry to detail file Progress Log |
 | `ccsm note <name> --cross <src> <text>` | Cross-session note: prepends `CROSS-SESSION [src]:` |

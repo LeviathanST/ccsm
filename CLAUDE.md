@@ -155,7 +155,7 @@ ccsm abandon   <name>            # → abandoned
 ccsm pending   <name>            # → pending + clear identity fields
 ccsm scope     <name> <text>     # set scope
 ccsm tag       <name> <tags...>  # replace tags
-ccsm attach    <name> <sid>      # link session_id
+ccsm attach    <name>              # auto-discover & link live session (--pid <pid> or <uuid> also accepted)
 ccsm resume    <name>            # spawn claude (--resume if session_id exists)
 ccsm note      <name> <text>     # append timestamped entry to progress log
 ccsm archive   <name>            # delete transcript, keep entry as work log

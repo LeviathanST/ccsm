@@ -35,7 +35,7 @@ ccsm setup
 | `ccsm pending <name>` | Reset to pending |
 | `ccsm scope <name> <text>` | Set scope |
 | `ccsm tag <name> <tags...>` | Replace tags |
-| `ccsm attach <name> <sid>` | Link a session_id |
+| `ccsm attach <name>` | Auto-discover & link live session. `--pid <pid>` for explicit, `<uuid>` for scripting |
 | `ccsm note <name> <text>` | Append to progress log |
 | `ccsm sequence -q <cmd> <args...> -q <cmd> ...` | Batch mutations in a single lock/save |
 
@@ -90,7 +90,17 @@ Token-efficient reading: `ccsm show <name>` lists section headlines with line co
 
 Agents use the `/session-manager` skill (installed by `ccsm setup`). It enforces session tracking protocol: create entries, update status, maintain detail files.
 
-## Sequence (Batch Mutations)
+### Attach modes
+
+Claude Code identifies sessions by UUID. ccsm uses this UUID to link registry entries to transcripts. Three ways to attach:
+
+| Mode | Command | When |
+|---|---|---|
+| **Auto-discover** | `ccsm attach <name>` | Live session — scans session files by name match (from `/rename`) or recency |
+| **By PID** | `ccsm attach <name> --pid <pid>` | You know the process ID — harvests UUID from session file |
+| **By UUID** | `ccsm attach <name> <uuid>` | Scripting, cross-workspace, or you already have the UUID |
+
+Names like "smith-system" are NOT UUIDs — ccsm validates and rejects non-UUID strings with a clear error.
 
 Run multiple mutations in a single process, single lock, single save:
 
