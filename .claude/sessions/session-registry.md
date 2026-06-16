@@ -20,6 +20,8 @@ token-efficient CLI commands, topic picker wizard, and cc-tui setup subcommand.
 
 ## Progress Log
 
+- [2026-06-16 13:34Z] RETROACTIVE-COMPLETE: foundational mega-session (June 14, 10 hours) that built the entire ccsm skeleton — two-tier registry, CLI, sidebar, session-manager skill, Ctrl+N picker, merge strategies. Was left blocked without END-GATE. Binary later renamed cc-tui → ccsm.
+
 - [2026-06-14 16:30] Created `quality-audit` pending session with 55-point checklist covering
   8 audit areas: compilation, sidebar, registry, CLI, PTY, ANSI, session, integration.
   Ready for Ctrl+N picker.

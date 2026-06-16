@@ -1,12 +1,12 @@
 {
-  "updated": "day20620T11:39:53Z",
+  "updated": "day20620T13:35:50Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
       "name": "session-registry",
       "goal": "Two-tier session registry for team visibility + agent skills + CLI tooling",
       "scope": "Session registry, merge logic, CLI commands, wizard, sidebar, skills. cc-tui v0.3.0.",
-      "status": "blocked",
+      "status": "completed",
       "pids": [],
       "tags": [
         "registry",
@@ -14,7 +14,7 @@
         "team"
       ],
       "started": "day20618T11:26Z",
-      "completed": "day20618T11:49:57Z"
+      "completed": "day20620T13:35:25Z"
     },
     {
       "session_id": "",
@@ -134,6 +134,23 @@
       ],
       "started": "day20620T09:02Z",
       "completed": "day20620T10:31:52Z"
+    },
+    {
+      "session_id": "",
+      "name": "ccsm-audit-and-vision",
+      "goal": "-g Audit ccsm stability, identify gaps, and decide next-phase vision",
+      "scope": "Stability audit of ccsm codebase + vision planning for next phase. Audit: test coverage, error handling, main.rs monolith risk, CLI surface consistency, registry edge cases, binary naming (cc-tui vs ccsm), session lifecycle bugs. Vision: what's the product? what's missing? what should v0.6/v1.0 look like? Output: structured assessment + prioritized backlog of sessions.",
+      "status": "in_progress",
+      "pids": [],
+      "tags": [
+        "audit",
+        "vision",
+        "planning",
+        "roadmap",
+        "stability"
+      ],
+      "started": "",
+      "completed": ""
     }
   ]
 }
