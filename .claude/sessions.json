@@ -1,5 +1,5 @@
 {
-  "updated": "day20620T10:46:33Z",
+  "updated": "day20620T11:21:27Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -83,19 +83,22 @@
       "completed": "day20620T09:02:56Z"
     },
     {
-      "session_id": "",
+      "session_id": "a687c2b7-6b8f-4783-a851-44af2466a995",
       "name": "session-scope-awareness",
       "goal": "Agents scan existing sessions before creating new ones, detect overlaps, update existing session scope when extending",
-      "scope": "When setting up a new session, agents must scan ccsm list --active and ccsm list --summary for related work. If an existing session handles a related topic but the new work extends it, agents should offer to update that session's scope instead of creating a duplicate. This prevents parallel duplicate sessions and keeps scope documentation current.",
-      "status": "pending",
-      "pids": [],
+      "scope": "Add Cross-Session Teammate Awareness to the session-manager SKILL.md: Rust flags (--verbose, --cross) + SKILL.md protocol with 3 coordination patterns (Dependency, Redundancy, Related Work). In: CLI flags, SKILL.md protocol. Out: sequence support for --cross, NLP overlap detection, cross-workspace awareness.",
+      "status": "in_progress",
+      "pids": [
+        3396387
+      ],
       "tags": [
         "agent-workflow",
-        "scope",
-        "detection",
-        "dedup"
+        "cross-session",
+        "teammate-awareness",
+        "coordination",
+        "protocol"
       ],
-      "started": "",
+      "started": "day20620T10:59Z",
       "completed": ""
     },
     {
@@ -103,10 +106,8 @@
       "name": "scope-gate-protocol",
       "goal": "Agents flag out-of-scope requests and offer to create pending sessions or update current scope",
       "scope": "Insert a dedicated Scope-Gate Protocol section into session-manager SKILL.md between Team Awareness and Proactive Ideation Dashboard. Defines what triggers the gate (new feature, infra change, cross-cutting concern, different subsystem), what doesn't (clarifying questions, minor adjustments, explicit inclusions, quick one-liners), and a 3-step gate pattern: Flag → Offer (3 options: pending session, expand scope, quick aside) → Execute. Moves the comparison table from Proactive Ideation into this section since the gate is defined first. No Rust code changes.",
-      "status": "in_progress",
-      "pids": [
-        3297558
-      ],
+      "status": "completed",
+      "pids": [],
       "tags": [
         "agent-workflow",
         "scope",
@@ -114,7 +115,7 @@
         "gate"
       ],
       "started": "day20620T10:41Z",
-      "completed": ""
+      "completed": "day20620T10:58:46Z"
     },
     {
       "session_id": "c64d8e0f-18b6-4a4d-a7e7-361b4b9438da",
