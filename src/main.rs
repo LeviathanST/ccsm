@@ -479,29 +479,27 @@ fn run_rename(old: &str, new: &str, home: &PathBuf, workspace: &PathBuf) -> anyh
             .join("projects")
             .join(&slug)
             .join(format!("{sid}.jsonl"));
-        if !transcript.exists() {
-            anyhow::bail!(
-                "transcript not found at {}\n\
-                 The transcript may have been cleaned or archived.\n\
-                 To rename without transcript: /rename in the TUI, then ccsm rename",
-                transcript.display()
+        if transcript.exists() {
+            let rename_line = format!(
+                "{{\"type\":\"custom-title\",\"customTitle\":\"{}\",\"sessionId\":\"{}\"}}\n\
+                 {{\"type\":\"agent-name\",\"agentName\":\"{}\",\"sessionId\":\"{}\"}}\n",
+                new, sid, new, sid
+            );
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&transcript)
+                .with_context(|| format!("opening transcript for append: {}", transcript.display()))?;
+            file.write_all(rename_line.as_bytes())
+                .with_context(|| format!("appending rename to transcript: {}", transcript.display()))?;
+            file.flush()
+                .with_context(|| format!("flushing transcript: {}", transcript.display()))?;
+            eprintln!("  transcript  appended custom-title + agent-name: {}", new);
+        } else {
+            eprintln!(
+                "  transcript  not found — session may not have been spawned yet (skipping)"
             );
         }
-        let rename_line = format!(
-            "{{\"type\":\"custom-title\",\"customTitle\":\"{}\",\"sessionId\":\"{}\"}}\n\
-             {{\"type\":\"agent-name\",\"agentName\":\"{}\",\"sessionId\":\"{}\"}}\n",
-            new, sid, new, sid
-        );
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&transcript)
-            .with_context(|| format!("opening transcript for append: {}", transcript.display()))?;
-        file.write_all(rename_line.as_bytes())
-            .with_context(|| format!("appending rename to transcript: {}", transcript.display()))?;
-        file.flush()
-            .with_context(|| format!("flushing transcript: {}", transcript.display()))?;
-        eprintln!("  transcript  appended custom-title + agent-name: {}", new);
     }
 
     // 2. Update live session files (best-effort, ephemeral)
