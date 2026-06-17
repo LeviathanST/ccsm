@@ -87,6 +87,13 @@ enum Commands {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Rename a session: registry entry, detail file, live session files, and transcript.
+    Rename {
+        /// Current session name
+        old: String,
+        /// New session name (kebab-case)
+        new: String,
+    },
     /// Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit
     Resume { name: String },
     /// Soft-delete → trashed. Recoverable. Trash first, then `clean` to nuke.
@@ -145,6 +152,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
+        Commands::Rename { old, new } => run_rename(&old, &new, &home, &workspace_path()),
         Commands::Resume { name } => run_resume(&name, &workspace_path(), &home),
         Commands::Trash { name } => run_trash(&name),
         Commands::Recover { name } => run_recover(&name),
@@ -435,6 +443,131 @@ fn validate_session_id(sid: &str) -> anyhow::Result<()> {
             sid, sid
         );
     }
+}
+
+/// `ccsm rename <old> <new>` — rename a session across registry, detail file,
+/// live session files, and transcript.
+fn run_rename(old: &str, new: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+
+    // Validate: old must exist, new must not
+    let idx = reg
+        .sessions
+        .iter()
+        .position(|s| s.name == old)
+        .ok_or_else(|| anyhow::anyhow!("no session named '{}'", old))?;
+    if reg.sessions.iter().any(|s| s.name == new) {
+        anyhow::bail!("session '{}' already exists", new);
+    }
+    if !is_kebab_case(new) {
+        anyhow::bail!(
+            "'{}' is not kebab-case. Session names must be lowercase letters, digits, and hyphens.",
+            new
+        );
+    }
+
+    let sid = reg.sessions[idx].session_id.clone();
+    let slug = crate::registry::project_slug(workspace);
+
+    // 1. Append rename entries to transcript (if session_id is set)
+    if !sid.is_empty() {
+        let transcript = home
+            .join(".claude")
+            .join("projects")
+            .join(&slug)
+            .join(format!("{sid}.jsonl"));
+        if !transcript.exists() {
+            anyhow::bail!(
+                "transcript not found at {}\n\
+                 The transcript may have been cleaned or archived.\n\
+                 To rename without transcript: /rename in the TUI, then ccsm rename",
+                transcript.display()
+            );
+        }
+        let rename_line = format!(
+            "{{\"type\":\"custom-title\",\"customTitle\":\"{}\",\"sessionId\":\"{}\"}}\n\
+             {{\"type\":\"agent-name\",\"agentName\":\"{}\",\"sessionId\":\"{}\"}}\n",
+            new, sid, new, sid
+        );
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .with_context(|| format!("opening transcript for append: {}", transcript.display()))?;
+        file.write_all(rename_line.as_bytes())
+            .with_context(|| format!("appending rename to transcript: {}", transcript.display()))?;
+        file.flush()
+            .with_context(|| format!("flushing transcript: {}", transcript.display()))?;
+        eprintln!("  transcript  appended custom-title + agent-name: {}", new);
+    }
+
+    // 2. Update live session files (best-effort, ephemeral)
+    let sessions_dir = home.join(".claude").join("sessions");
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map_or(true, |e| e != "json") {
+                continue;
+            }
+            let Ok(contents) = std::fs::read_to_string(&path) else { continue };
+            if let Ok(session) = serde_json::from_str::<crate::session::Session>(&contents) {
+                let ws = workspace.to_string_lossy().to_string();
+                if session.name == old && session.cwd.starts_with(&ws) {
+                    // Rewrite with updated name
+                    let updated = contents.replace(
+                        &format!("\"name\":\"{}\"", old),
+                        &format!("\"name\":\"{}\"", new),
+                    );
+                    let _ = std::fs::write(&path, updated);
+                    eprintln!("  session file  pid {}  name → {}", session.pid, new);
+                }
+            }
+        }
+    }
+
+    // 3. Rename detail file
+    let detail_old = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{old}.md"));
+    let detail_new = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{new}.md"));
+    if detail_old.exists() {
+        std::fs::rename(&detail_old, &detail_new).with_context(|| {
+            format!(
+                "renaming detail file: {} → {}",
+                detail_old.display(),
+                detail_new.display()
+            )
+        })?;
+        eprintln!("  detail file  {}.md → {}.md", old, new);
+    }
+
+    // 4. Update registry entry name
+    reg.sessions[idx].name = new.to_string();
+    reg.updated = now_iso_ts();
+    reg.save(workspace)?;
+
+    // 5. Log the rename to progress log of the new detail file
+    if detail_new.exists() {
+        let ts = note_timestamp();
+        let note_line = format!("- [{}] Renamed from '{}' to '{}'\n", ts, old, new);
+        if let Ok(contents) = std::fs::read_to_string(&detail_new) {
+            let updated = insert_note(&contents, &note_line);
+            let _ = std::fs::write(&detail_new, updated);
+        }
+    }
+
+    println!("renamed     {} → {}", old, new);
+    Ok(())
+}
+
+fn is_kebab_case(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// `ccsm trash <name>` — soft-delete: move to Trashed status.
