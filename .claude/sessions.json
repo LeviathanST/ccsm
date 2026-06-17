@@ -1,5 +1,5 @@
 {
-  "updated": "day20620T15:39:04Z",
+  "updated": "day20621T06:51:25Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -15,61 +15,6 @@
       ],
       "started": "day20618T11:26Z",
       "completed": "day20620T13:35:25Z"
-    },
-    {
-      "session_id": "",
-      "name": "test",
-      "goal": "",
-      "scope": "",
-      "status": "completed",
-      "pids": [],
-      "tags": [],
-      "started": "",
-      "completed": "day20618T12:25:48Z"
-    },
-    {
-      "session_id": "",
-      "name": "Session picking proble from Ascendra project",
-      "goal": "",
-      "scope": "",
-      "status": "completed",
-      "pids": [],
-      "tags": [],
-      "started": "day20619T06:09:46Z",
-      "completed": "day20618T13:58:41Z"
-    },
-    {
-      "session_id": "",
-      "name": "sidebar-enhancement",
-      "goal": "",
-      "scope": "",
-      "status": "completed",
-      "pids": [],
-      "tags": [],
-      "started": "day20618T15:55:07Z",
-      "completed": "day20618T15:44:54Z"
-    },
-    {
-      "session_id": "",
-      "name": "Claude Code panel scrollable",
-      "goal": "",
-      "scope": "",
-      "status": "completed",
-      "pids": [],
-      "tags": [],
-      "started": "day20619T05:54:01Z",
-      "completed": "day20618T15:54:45Z"
-    },
-    {
-      "session_id": "",
-      "name": "test1",
-      "goal": "test",
-      "scope": "",
-      "status": "completed",
-      "pids": [],
-      "tags": [],
-      "started": "day20619T08:17Z",
-      "completed": "day20620T05:18:49Z"
     },
     {
       "session_id": "af0c0ed3-aa2a-4ad5-829e-df17994e51c8",
@@ -136,9 +81,9 @@
       "name": "ccsm-audit-and-vision",
       "goal": "-g Audit ccsm stability, identify gaps, and decide next-phase vision",
       "scope": "Stability audit of ccsm codebase + vision planning for next phase. Audit: test coverage, error handling, main.rs monolith risk, CLI surface consistency, registry edge cases, binary naming (cc-tui vs ccsm), session lifecycle bugs. Vision: what's the product? what's missing? what should v0.6/v1.0 look like? Output: structured assessment + prioritized backlog of sessions.",
-      "status": "in_progress",
+      "status": "completed",
       "pids": [
-        721256
+        747620
       ],
       "tags": [
         "audit",
@@ -147,24 +92,45 @@
         "roadmap",
         "stability"
       ],
-      "started": "day20620T15:39Z",
-      "completed": "day20620T15:03:39Z"
+      "started": "day20621T04:38Z",
+      "completed": "day20621T06:18:21Z"
+    },
+    {
+      "session_id": "f89e0f50-0165-42f8-a29b-394081f5f559",
+      "name": "test3",
+      "goal": "",
+      "scope": "",
+      "status": "abandoned",
+      "pids": [],
+      "tags": [],
+      "started": "day20621T04:56Z",
+      "completed": "day20621T04:59:51Z"
     },
     {
       "session_id": "",
-      "name": "ccsm-completions",
-      "goal": "-g Add shell completion generation to ccsm CLI via clap_complete",
-      "scope": "Add 'ccsm completions <shell>' subcommand that generates shell completion scripts for bash/fish/zsh using the clap_complete crate. Add --force flag to ccsm resume to prevent accidental session swaps (refuse if another session is in_progress, require explicit --force to demote). In scope: clap_complete integration, completions subcommand, setup integration, resume --force guard. Out of scope: TUI command picker (separate session).",
+      "name": "integration-tests",
+      "goal": "Add integration tests to ccsm: CLI end-to-end, lifecycle, locking, edge cases",
+      "scope": "Add integration tests to ccsm CLI. Use assert_cmd or std::process::Command to invoke the ccsm binary. Test: new→start→note→complete lifecycle, sequence batch operations, attach modes (auto-discover, --pid, UUID), rename with -g/-s, trash/recover, clean-all. Test locking: concurrent mutations don't race. Test edge cases: missing sessions, invalid names, duplicate detection. Target: ~15-20 integration tests that exercise the full CLI surface.",
       "status": "completed",
       "pids": [],
       "tags": [
-        "cli",
-        "dx",
-        "shell",
-        "completions"
+        "testing",
+        "integration",
+        "quality"
       ],
       "started": "",
-      "completed": "day20620T14:12:24Z"
+      "completed": "day20621T06:51:25Z"
+    },
+    {
+      "session_id": "",
+      "name": "playbook",
+      "goal": "Document common ccsm sequence chains and workflows as reusable recipes",
+      "scope": "",
+      "status": "pending",
+      "pids": [],
+      "tags": [],
+      "started": "",
+      "completed": ""
     }
   ]
 }
