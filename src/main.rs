@@ -91,11 +91,18 @@ enum Commands {
         pid: Option<u32>,
     },
     /// Rename a session: registry entry, detail file, live session files, and transcript.
+    /// Use -g and -s to refresh the topic at the same time.
     Rename {
         /// Current session name
         old: String,
         /// New session name (kebab-case)
         new: String,
+        /// New goal (for topic change)
+        #[arg(short = 'g', long)]
+        goal: Option<String>,
+        /// New scope (for topic change)
+        #[arg(short = 's', long)]
+        scope: Option<String>,
     },
     /// Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit
     Resume { name: String },
@@ -155,7 +162,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
-        Commands::Rename { old, new } => run_rename(&old, &new, &home, &workspace_path()),
+        Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path()),
         Commands::Resume { name } => run_resume(&name, &workspace_path(), &home),
         Commands::Trash { name } => run_trash(&name),
         Commands::Recover { name } => run_recover(&name),
@@ -450,7 +457,7 @@ fn validate_session_id(sid: &str) -> anyhow::Result<()> {
 
 /// `ccsm rename <old> <new>` — rename a session across registry, detail file,
 /// live session files, and transcript.
-fn run_rename(old: &str, new: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
 
     // Validate: old must exist, new must not
@@ -546,15 +553,49 @@ fn run_rename(old: &str, new: &str, home: &PathBuf, workspace: &PathBuf) -> anyh
         eprintln!("  detail file  {}.md → {}.md", old, new);
     }
 
-    // 4. Update registry entry name
+    // 4. Snapshot old values for logging
+    let old_goal = reg.sessions[idx].goal.clone();
+    let old_scope = reg.sessions[idx].scope.clone();
+    let has_topic_change = goal.is_some() || scope.is_some();
+
+    // 5. Update detail file content — replace header, goal, scope
+    if detail_new.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&detail_new) {
+            let mut updated = contents
+                .replace(&format!("# Session: {}", old), &format!("# Session: {}", new));
+            if let Some(g) = goal {
+                updated = replace_detail_section(&updated, "## Goal", g);
+            }
+            if let Some(s) = scope {
+                updated = replace_detail_section(&updated, "## Scope / Plan", s);
+            }
+            let _ = std::fs::write(&detail_new, &updated);
+            eprintln!("  detail file  updated header");
+        }
+    }
+
+    // 6. Update registry entry
     reg.sessions[idx].name = new.to_string();
+    if let Some(g) = goal {
+        reg.sessions[idx].goal = g.to_string();
+    }
+    if let Some(s) = scope {
+        reg.sessions[idx].scope = s.to_string();
+    }
     reg.updated = now_iso_ts();
     reg.save(workspace)?;
 
-    // 5. Log the rename to progress log of the new detail file
+    // 7. Log the rename to progress log (include old values when topic changed)
     if detail_new.exists() {
         let ts = note_timestamp();
-        let note_line = format!("- [{}] Renamed from '{}' to '{}'\n", ts, old, new);
+        let mut note_parts = vec![format!("Renamed from '{}' to '{}'", old, new)];
+        if has_topic_change {
+            note_parts.push(format!("Old goal: {}", old_goal));
+            if !old_scope.is_empty() {
+                note_parts.push(format!("Old scope: {}", old_scope));
+            }
+        }
+        let note_line = format!("- [{}] {}\n", ts, note_parts.join(" | "));
         if let Ok(contents) = std::fs::read_to_string(&detail_new) {
             let updated = insert_note(&contents, &note_line);
             let _ = std::fs::write(&detail_new, updated);
@@ -569,6 +610,55 @@ fn is_kebab_case(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Replace the body of a `## SectionName` in a markdown string.
+/// If the section exists, replaces lines between the header and the next `## `.
+/// If the section doesn't exist, appends it at the end.
+fn replace_detail_section(md: &str, header: &str, new_body: &str) -> String {
+    let lines: Vec<&str> = md.lines().collect();
+
+    // Find the section header: exact match or header + trailing text
+    let hdr_idx = lines.iter().position(|l| {
+        let t = l.trim();
+        t == header || t.starts_with(&format!("{} ", header))
+    });
+
+    match hdr_idx {
+        Some(hdr) => {
+            // Find where this section body ends (next ##, or end of file)
+            let end = lines[hdr + 1..]
+                .iter()
+                .position(|l| l.starts_with("## "))
+                .map(|p| hdr + 1 + p)
+                .unwrap_or(lines.len());
+
+            let mut out = String::new();
+            for i in 0..=hdr {
+                out.push_str(lines[i]);
+                out.push('\n');
+            }
+            out.push('\n');
+            out.push_str(new_body);
+            if end < lines.len() {
+                out.push('\n');
+            }
+            for i in end..lines.len() {
+                out.push_str(lines[i]);
+                out.push('\n');
+            }
+            out
+        }
+        None => {
+            // Section doesn't exist — append at end
+            let mut out = md.to_string();
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&format!("\n{}\n\n{}\n", header, new_body));
+            out
+        }
+    }
 }
 
 /// `ccsm trash <name>` — soft-delete: move to Trashed status.

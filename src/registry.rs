@@ -280,6 +280,13 @@ impl WorkspaceRegistry {
             }
         }
 
+        // Delete the detail file
+        let detail = workspace
+            .join(".claude")
+            .join("sessions")
+            .join(format!("{name}.md"));
+        let _ = std::fs::remove_file(&detail);
+
         self.sessions.retain(|e| {
             !(e.session_id == session_id
                 || (session_id.is_empty() && e.name == name && e.session_id.is_empty()))
