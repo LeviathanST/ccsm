@@ -1,6 +1,6 @@
 # Session: integration-tests
 
-> **pending** | started {{started}} | completed {{completed}} | {{pid_count}} pids
+> **completed** | started 2026-06-17 06:13Z | completed 2026-06-17 06:51Z | 0 pids
 
 ## Goal
 
@@ -8,11 +8,11 @@ Add integration tests to ccsm: CLI end-to-end, lifecycle, locking, edge cases
 
 ## Scope / Plan
 
-(fill in — approach, constraints, what's in/out)
+Add integration tests using std::process::Command via TempWorkspace harness (common/mod.rs). Tests exercise the full CLI surface: lifecycle, attach modes, rename with topic change, sequence batches, clean/archive. Temp workspace with isolated .claude/sessions.json, HOME overrides. Binary auto-detected from CARGO_BIN_EXE_ccsm. Target: 20+ tests covering happy paths and error cases. Out of scope: lock concurrency tests (needs multi-process), PTY integration.
 
 ## Tags
 
-(fill in)
+testing, integration, quality
 
 ## Live Session Data
 
