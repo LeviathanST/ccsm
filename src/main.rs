@@ -55,6 +55,9 @@ enum Commands {
         /// One-sentence goal
         #[arg(short = 'g', long)]
         goal: Option<String>,
+        /// Skip fuzzy duplicate detection
+        #[arg(short = 'f', long)]
+        force: bool,
     },
     /// pending → in_progress
     Start { name: String },
@@ -143,7 +146,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::List { active, summary, status, verbose } => run_list(active, summary, verbose, status.as_deref()),
         Commands::Show { name, section } => run_show(&name, section.as_deref()),
-        Commands::New { name, goal } => run_new(&name, goal.as_deref().unwrap_or("")),
+        Commands::New { name, goal, force } => run_new(&name, goal.as_deref().unwrap_or(""), force),
         Commands::Start { name } => run_status(&name, "start"),
         Commands::Complete { name } => run_status(&name, "complete"),
         Commands::Block { name } => run_status(&name, "block"),
@@ -708,7 +711,7 @@ fn run_archive_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
 }
 
 /// `ccsm new <name> [goal]` — create a new session entry.
-fn run_new(name: &str, goal: &str) -> anyhow::Result<()> {
+fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
 
@@ -717,28 +720,30 @@ fn run_new(name: &str, goal: &str) -> anyhow::Result<()> {
         anyhow::bail!("session '{}' already exists", name);
     }
 
-    // Fuzzy duplicate — catch typos before creating garbage
-    let similar: Vec<&str> = reg
-        .sessions
-        .iter()
-        .map(|s| s.name.as_str())
-        .filter(|n| {
-            // Substring: only flag if the overlap is significant (≥40% of longer name)
-            let shorter = n.len().min(name.len());
-            let longer = n.len().max(name.len());
-            let significant_overlap = shorter >= 4 && (shorter as f64 / longer as f64) >= 0.4;
-            (significant_overlap && (n.contains(name) || name.contains(*n)))
-                || (name.len() >= 4 && edit_distance(n, name) <= 2)
-                || edit_distance(n, name) <= 1
-        })
-        .take(3)
-        .collect();
-    if !similar.is_empty() {
-        anyhow::bail!(
-            "session '{}' looks similar to existing: {}. Use `ccsm resume <name>` to continue an existing session, or choose a more distinct name.",
-            name,
-            similar.join(", "),
-        );
+    // Fuzzy duplicate — catch typos before creating garbage (skip with --force)
+    if !force {
+        let similar: Vec<&str> = reg
+            .sessions
+            .iter()
+            .map(|s| s.name.as_str())
+            .filter(|n| {
+                // Substring: only flag if the overlap is significant (≥40% of longer name)
+                let shorter = n.len().min(name.len());
+                let longer = n.len().max(name.len());
+                let significant_overlap = shorter >= 4 && (shorter as f64 / longer as f64) >= 0.4;
+                (significant_overlap && (n.contains(name) || name.contains(*n)))
+                    || (name.len() >= 4 && edit_distance(n, name) <= 2)
+                    || edit_distance(n, name) <= 1
+            })
+            .take(3)
+            .collect();
+        if !similar.is_empty() {
+            anyhow::bail!(
+                "session '{}' looks similar to existing: {}. Use --force to create anyway, or `ccsm resume <name>` to continue an existing session.",
+                name,
+                similar.join(", "),
+            );
+        }
     }
 
     reg.sessions.push(crate::registry::WorkspaceSession {
