@@ -80,57 +80,6 @@ Claude Code derives the project directory slug from the absolute path by replaci
 6. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.claude/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
 7. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
 
-## Agent Workflow (MANDATORY)
-
-Every agent working on ccsm MUST follow this workflow. The session registry is the team coordination board.
-
-### On Session Start
-
-```bash
-# 1. Scan the board — who's active?
-ccsm list --active
-
-# 2. Is someone already doing my task?
-ccsm show <name>   # check if a session overlaps with my work
-```
-
-| Situation | Action |
-|---|---|
-| **Duplicate found** | Report: "Session X already does this." Help that session or narrow scope. |
-| **Depends on another session** | Note in scope: "Depends on: <name> (status: ...)" |
-| **No overlap** | Create new entry and detail file |
-
-### If starting new work
-
-```bash
-ccsm new <name> -g "One-sentence goal"
-ccsm start <name>
-cp .claude/session-detail-template.md .claude/sessions/<name>.md
-# Edit the detail file — fill in scope, tags, dependencies
-ccsm scope <name> "2-4 sentence approach and constraints"
-ccsm tag <name> tag1 tag2
-```
-
-### During work
-
-```bash
-# Append progress notes to .claude/sessions/<name>.md
-# Update dependencies if they change
-```
-
-### On completion
-
-```bash
-ccsm complete <name>
-# Update .claude/sessions/<name>.md — final status, summary, completed date
-```
-
-### Rules
-
-- **NEVER** edit `.claude/sessions.json` directly — use CLI commands
-- **NEVER** touch `session_id`, `pids`, or `started` — ccsm manages those
-- **ALWAYS** create a detail file for new sessions
-- **ALWAYS** scan `ccsm list --active` before starting new work
 ## CLI Commands
 
 ### Query (token-efficient, agent-optimized)
@@ -149,15 +98,19 @@ ccsm show <name> --section <s>            # extract one section from detail file
 ```
 ccsm new       <name> -g <goal>  # create pending entry
 ccsm start     <name>            # → in_progress
-ccsm complete  <name>            # → completed + timestamp
+ccsm complete  <name> [--force]   # → completed + timestamp (gate checks)
 ccsm block     <name>            # → blocked
 ccsm abandon   <name>            # → abandoned
 ccsm pending   <name>            # → pending + clear identity fields
 ccsm scope     <name> <text>     # set scope
 ccsm tag       <name> <tags...>  # replace tags
-ccsm attach    <name>              # auto-discover & link live session (--pid <pid> or <uuid> also accepted)
+ccsm rename    <old> <new>       # rename session across all surfaces
+ccsm attach    <name>            # auto-discover & link live session
 ccsm resume    <name>            # spawn claude (--resume if session_id exists)
+ccsm refresh   <name> [-r why]   # retire current Claude session, spawn fresh
+ccsm close     <name>            # pre-completion gate: check detail file completeness
 ccsm note      <name> <text>     # append timestamped entry to progress log
+ccsm note-check                  # (hook) remind if tree dirty + detail file stale
 ccsm archive   <name>            # delete transcript, keep entry as work log
 ccsm archive-all                 # archive all completed sessions
 ccsm doctor                      # scan for health issues + cleanup hints

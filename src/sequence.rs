@@ -199,6 +199,7 @@ pub(crate) fn apply_op(
                 tags: vec![],
                 started: String::new(),
                 completed: String::new(),
+                retired_session_ids: vec![],
             });
             Ok(vec![format!("pending     {}  ← created", name)])
         }
@@ -421,6 +422,7 @@ mod tests {
             tags: vec![],
             started: String::new(),
             completed: String::new(),
+                retired_session_ids: vec![],
         });
         reg
     }

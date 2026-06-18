@@ -124,6 +124,15 @@ pub struct WorkspaceRegistry {
     pub sessions: Vec<WorkspaceSession>,
 }
 
+/// A retired Claude session — kept for history when `ccsm refresh` swaps
+/// out a stale session for a fresh one within the same ccsm session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetiredSession {
+    pub id: String,
+    pub retired_at: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSession {
     pub session_id: String,
@@ -140,6 +149,10 @@ pub struct WorkspaceSession {
     pub started: String,
     #[serde(default)]
     pub completed: String,
+    /// Retired Claude session_ids — one ccsm session may chain through
+    /// multiple Claude sessions as the context window fills up.
+    #[serde(default)]
+    pub retired_session_ids: Vec<RetiredSession>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -376,6 +389,7 @@ impl WorkspaceRegistry {
                 tags: vec!["pty".into(), "ratatui".into(), "vt100".into(), "phase-1".into()],
                 started: String::new(),
                 completed: String::new(),
+                retired_session_ids: vec![],
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -387,6 +401,7 @@ impl WorkspaceRegistry {
                 tags: vec!["sidebar".into(), "ratatui".into(), "sessions".into(), "phase-2".into()],
                 started: String::new(),
                 completed: String::new(),
+                retired_session_ids: vec![],
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -398,6 +413,7 @@ impl WorkspaceRegistry {
                 tags: vec!["transcript".into(), "replay".into(), "phase-3".into()],
                 started: String::new(),
                 completed: String::new(),
+                retired_session_ids: vec![],
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -409,6 +425,7 @@ impl WorkspaceRegistry {
                 tags: vec!["registry".into(), "sessions".into(), "team".into()],
                 started: String::new(),
                 completed: String::new(),
+                retired_session_ids: vec![],
             },
         ]
     }
@@ -818,6 +835,7 @@ mod tests {
                 tags: vec!["test".into()],
                 started: "day0T00:00:00Z".into(),
                 completed: String::new(),
+                retired_session_ids: vec![],
             }],
         };
         std::fs::write(&reg_path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
@@ -857,6 +875,7 @@ mod tests {
             tags: vec![],
             started: String::new(),
             completed: String::new(),
+            retired_session_ids: vec![],
         });
         reg.save(&workspace).unwrap();
 
@@ -894,6 +913,7 @@ mod tests {
                     tags: vec![format!("t{}", i)],
                     started: String::new(),
                     completed: String::new(),
+                    retired_session_ids: vec![],
                 });
                 reg.save(&ws).unwrap();
                 // _lock dropped here
@@ -943,6 +963,7 @@ mod tests {
                     tags: vec![],
                     started: String::new(),
                     completed: String::new(),
+                    retired_session_ids: vec![],
                 });
                 let _ = reg.save(&ws);
             }));

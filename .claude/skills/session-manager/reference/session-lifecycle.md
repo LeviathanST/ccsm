@@ -3,11 +3,31 @@
 ## Lifecycle
 
 ```
-NEW → start → (work → note → work → note → ...) → END-GATE → complete
-                                                       ↓
-                                                   blocked/abandoned
+NEW → start → (work → note → work → note → ...) → ccsm close → ccsm complete
+                                                       ↓            ↓
+                                                   blocked/      --force
+                                                   abandoned
                                                    (must note why)
+
+Bloat? → ccsm refresh (retire stale Claude session, spawn fresh — same ccsm session)
 ```
+
+## Refresh (context bloat rescue)
+
+When the context window fills up and the model gets biased:
+```bash
+ccsm refresh <name> -r "context at 45%, stuck on auth bug"
+```
+Moves current session_id to `retired_session_ids`, spawns fresh `claude` without `--resume`. The ccsm session continues — only the Claude session is refreshed.
+
+## Close Gate (before complete)
+
+```bash
+ccsm close <name>     # hard checks + self-review checklist
+ccsm complete <name>  # auto-runs same gate, refuses unless --force
+```
+
+Gate checks: template residue, empty scope/tags, <2 progress notes, hollow Live Session Data.
 
 ## How Resume Works
 

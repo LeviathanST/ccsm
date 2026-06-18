@@ -19,7 +19,7 @@
 |---|---|
 | `ccsm new <name> -g <goal>` | → pending |
 | `ccsm start <name>` | pending → in_progress |
-| `ccsm complete <name>` | in_progress → completed, sets timestamp |
+| `ccsm complete <name> [--force]` | in_progress → completed, sets timestamp. Runs gate checks first (use --force to bypass) |
 | `ccsm block <name>` | in_progress → blocked (waiting on dependency) |
 | `ccsm abandon <name>` | in_progress → abandoned (no longer relevant) |
 | `ccsm pending <name>` | → pending, clears session_id + pids + timestamps |
@@ -27,6 +27,9 @@
 | `ccsm tag <name> <tags...>` | Replace tags |
 | `ccsm attach <name>` | Auto-discover & link live session. `--pid <pid>` or `<uuid>` for explicit |
 | `ccsm resume <name>` | Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit |
+| `ccsm refresh <name> [-r]` | Retire current Claude session to retired_session_ids, spawn fresh (no --resume) |
+| `ccsm rename <old> <new> [-g] [-s]` | Rename session across registry, detail file, live sessions, transcript |
+| `ccsm close <name>` | Pre-completion gate: hard checks + self-review checklist. Exit non-zero if hollow |
 | `ccsm note <name> <text>` | Append timestamped entry to detail file Progress Log |
 | `ccsm note <name> --cross <src> <text>` | Cross-session note: prepends `CROSS-SESSION [src]:` |
 | `ccsm sequence -q <cmd> <args...> ...` | Batch mutations under a single lock/save. Faster than `&&` chaining |

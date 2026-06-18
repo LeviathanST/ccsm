@@ -156,6 +156,13 @@ cp "$PROJECT_DIR/.claude/skills/session-manager/SKILL.md" "$SKILL_DIR/"
 cp "$PROJECT_DIR/.claude/skills/session-manager/skill.json" "$SKILL_DIR/"
 echo "[updated] Skill installed at $SKILL_DIR"
 
+# ── 2b. Install seed-session skill globally ─────────────────────────────
+
+SEED_SKILL_DIR="${HOME}/.claude/skills/seed-session"
+mkdir -p "$SEED_SKILL_DIR"
+cp "$PROJECT_DIR/.claude/skills/seed-session/SKILL.md" "$SEED_SKILL_DIR/"
+echo "[updated] seed-session skill installed at $SEED_SKILL_DIR"
+
 # ── 3. Create a minimal .claude/sessions.json if none exists ──────────────
 
 WORKSPACE_REGISTRY="${PROJECT_DIR}/.claude/sessions.json"
@@ -253,3 +260,61 @@ echo "  Global CLAUDE.md  ←  session tracking section + CLI reference"
 echo "  Global skill      ←  /session-manager"
 echo "  Global hooks      ←  SessionStart + UserPromptSubmit (ccsm inject-scope)"
 echo "  Workspace registry←  .claude/sessions.json"
+
+# ── 4. Ensure ccsm hooks in global settings.json ─────────────────────────
+
+GLOBAL_SETTINGS="${HOME}/.claude/settings.json"
+
+if command -v jq &>/dev/null; then
+    if [ ! -f "$GLOBAL_SETTINGS" ]; then
+        echo '{}' > "$GLOBAL_SETTINGS"
+    fi
+
+    # Merge ccsm hooks: inject-scope on SessionStart+UserPromptSubmit, note-check on Stop.
+    # Only adds if the hook block isn't already present for that event.
+    TMP_SETTINGS=$(mktemp)
+    jq '
+      # SessionStart: inject-scope
+      .hooks.SessionStart //= []
+      | .hooks.SessionStart |= (
+          if any(.[].hooks?[]?.command?; . == "ccsm inject-scope 2>/dev/null || true") then .
+          else . + [{
+              matcher: "",
+              hooks: [{
+                type: "command",
+                command: "ccsm inject-scope 2>/dev/null || true"
+              }]
+            }]
+          end
+        )
+      # UserPromptSubmit: inject-scope
+      | .hooks.UserPromptSubmit //= []
+      | .hooks.UserPromptSubmit |= (
+          if any(.[].hooks?[]?.command?; . == "ccsm inject-scope 2>/dev/null || true") then .
+          else . + [{
+              matcher: "",
+              hooks: [{
+                type: "command",
+                command: "ccsm inject-scope 2>/dev/null || true"
+              }]
+            }]
+          end
+        )
+      # Stop: note-check
+      | .hooks.Stop //= []
+      | .hooks.Stop |= (
+          if any(.[].hooks?[]?.command?; . == "ccsm note-check 2>/dev/null || true") then .
+          else . + [{
+              matcher: "",
+              hooks: [{
+                type: "command",
+                command: "ccsm note-check 2>/dev/null || true"
+              }]
+            }]
+          end
+        )
+    ' "$GLOBAL_SETTINGS" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$GLOBAL_SETTINGS"
+    echo "  Global hooks     ←  SessionStart + UserPromptSubmit (inject-scope), Stop (note-check)"
+else
+    echo "  ⚠ jq not found — skipped hook installation. Install jq and re-run setup."
+fi

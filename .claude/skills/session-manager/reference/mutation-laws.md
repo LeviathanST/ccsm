@@ -62,29 +62,43 @@ The progress log IS the audit trail. If you did something, log it. **Never skip 
 
 # End-Gate Protocol (BEFORE `ccsm complete`)
 
-## 🔴 Pre-Flight Checklist (VERIFY FIRST)
+## 🔴 Step 1: Mechanical Gate — `ccsm close <name>`
 
-Before you even think about the narrative questions, **inspect the detail file with your own eyes.** Typing the END-GATE narrative without looking at the artifact is the #1 failure mode.
-
-Read the detail file and verify every item:
+The CLI enforces these hard checks. Fix failures before proceeding:
 
 ```
-☐ Status badge (line ~3): matches registry status (completed) and has real timestamps
-☐ Live Session Data table: every field filled — no `(auto — ccsm manages)`, no `{{...}}`
-☐ Scope/Plan section: no `(fill in` residue
-☐ Tags section: no `(fill in` residue
-☐ Dependencies section: current — not stale "(none)" if cross-session notes were added
-☐ Notes section: key decisions and discoveries captured
+ccsm close <name>
 ```
 
-**Check your work:**
+**Checked mechanically (exit non-zero on violation):**
+- Detail file exists
+- Scope/Plan not empty or template `(fill in)`
+- Tags not empty or template
+- Progress Log has ≥ 2 entries
+- Live Session Data filled (not `(auto — ccsm manages)`)
+
+**Self-review checklist (printed on pass):**
+```
+☐ Tests pass?
+☐ All changes committed and pushed?
+☐ Scope fulfilled? Anything left undocumented?
+☐ Dependencies resolved?
+☐ Detail file tags and progress log are current?
+```
+
+`ccsm complete <name>` also runs this gate internally — refuse unless `--force`.
+
+### On `ccsm close` failure
+
+Read the error output, fix each issue, re-run. Fixes:
 ```bash
-ccsm doctor    # any "template residue" or "empty scope" warnings for this session? FIX THEM.
+ccsm scope <name> "<approach>"     # fill scope
+ccsm tag <name> <tag1> <tag2>     # fill tags
+ccsm note <name> "<what you did>" # add progress entry
+# Edit .claude/sessions/<name>.md for Live Session Data
 ```
 
-If ANY checkbox fails: fix the detail file BEFORE writing the END-GATE note. An END-GATE on a template is a lie.
-
-## The Three Questions (only after pre-flight passes)
+## Step 2: The Three Questions (only after gate passes)
 
 Before marking a session complete, you MUST answer these three questions via `ccsm note`:
 

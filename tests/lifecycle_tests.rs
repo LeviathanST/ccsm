@@ -21,8 +21,26 @@ fn lifecycle_new_start_complete() {
     assert!(out.contains("my-session"), "active list: {}", out);
     assert!(out.contains("in_progress"), "active list: {}", out);
 
-    // Add a note
-    ws.write_detail("my-session", "## Progress Log\n\n");
+    // Populate detail file to satisfy gate checks
+    ws.write_detail("my-session", "\
+## Scope / Plan
+
+Test scope — verify lifecycle.
+
+## Tags
+
+test, lifecycle
+
+## Live Session Data
+
+session_id: auto
+started: day20622T10:00Z
+pids: none
+
+## Progress Log
+
+- [2026-06-18 10:00Z] Session created
+");
     let out = ws.run_ok(&["note", "my-session", "implemented the thing"]);
     assert!(out.contains("noted"), "note: {}", out);
 

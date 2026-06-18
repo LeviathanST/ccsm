@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use crate::registry::{parse_sections, now_iso as now_iso_ts};
 
 // ── CLI (clap) ──────────────────────────────────────────────────────
 
@@ -64,7 +65,12 @@ enum Commands {
     /// pending → in_progress
     Start { name: String },
     /// in_progress → completed, sets completed timestamp
-    Complete { name: String },
+    Complete {
+        name: String,
+        /// Skip gate checks (detail file completeness etc.)
+        #[arg(short = 'f', long)]
+        force: bool,
+    },
     /// in_progress → blocked (waiting on dependency)
     Block { name: String },
     /// in_progress → abandoned (no longer relevant)
@@ -108,12 +114,26 @@ enum Commands {
     },
     /// Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit
     Resume { name: String },
+    /// Retire current Claude session, spawn a fresh one for the same ccsm session.
+    /// Use when context is bloated (>40%) and the model gets biased.
+    Refresh {
+        name: String,
+        /// Why the refresh (logged to retired_session_ids)
+        #[arg(short = 'r', long)]
+        reason: Option<String>,
+    },
     /// Soft-delete → trashed. Recoverable. Trash first, then `clean` to nuke.
     Trash { name: String },
     /// trashed → in_progress
     Recover { name: String },
     /// Permanently delete transcript + session files + entry. Irreversible.
     Clean { name: String },
+    /// Pre-completion gate: check detail file completeness, print self-review checklist.
+    /// Exits non-zero if the detail file is hollow. Run before `ccsm complete`.
+    Close { name: String },
+    /// Stop-hook helper: if working tree is dirty, remind to update session detail.
+    /// Auto-discovers the in_progress session. Silent when clean or recently noted.
+    NoteCheck,
     /// Permanently delete ALL trashed entries. Irreversible.
     CleanAll,
     /// Archive transcript + session files, keep registry entry as work log
@@ -171,19 +191,22 @@ fn main() -> anyhow::Result<()> {
         Commands::List { active, summary, status, verbose } => run_list(active, summary, verbose, status.as_deref()),
         Commands::Show { name, section } => run_show(&name, section.as_deref()),
         Commands::New { name, goal, force } => run_new(&name, goal.as_deref().unwrap_or(""), force),
-        Commands::Start { name } => run_status(&name, "start"),
-        Commands::Complete { name } => run_status(&name, "complete"),
-        Commands::Block { name } => run_status(&name, "block"),
-        Commands::Abandon { name } => run_status(&name, "abandon"),
+        Commands::Start { name } => run_status(&name, "start", false),
+        Commands::Complete { name, force } => run_status(&name, "complete", force),
+        Commands::Block { name } => run_status(&name, "block", false),
+        Commands::Abandon { name } => run_status(&name, "abandon", false),
         Commands::Pending { name } => run_pending(&name),
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
         Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path()),
         Commands::Resume { name } => commands::resume::run_resume(&name, &workspace_path(), &home),
+        Commands::Refresh { name, reason } => run_refresh(&name, reason.as_deref(), &workspace_path(), &home),
         Commands::Trash { name } => run_trash(&name),
         Commands::Recover { name } => run_recover(&name),
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path()),
+        Commands::Close { name } => run_close(&name),
+        Commands::NoteCheck => run_note_check(),
         Commands::CleanAll => run_clean_all(&home, &workspace_path()),
         Commands::Archive { name } => run_archive(&name, &home, &workspace_path()),
         Commands::ArchiveAll => run_archive_all(&home, &workspace_path()),
@@ -751,6 +774,7 @@ fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
         tags: vec![],
         started: String::new(),
         completed: String::new(),
+                retired_session_ids: vec![],
     });
     reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
@@ -793,8 +817,34 @@ fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
 }
 
 /// `ccsm start|complete|block|abandon <name>` — status transitions.
-fn run_status(name: &str, action: &str) -> anyhow::Result<()> {
+fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
+
+    // Pre-completion gate: refuse to complete if detail file is hollow
+    if action == "complete" && !force {
+        if let Err(e) = run_gate_checks(name) {
+            eprintln!(
+                "✗ cannot complete: gate checks failed.\n\
+                 \n  → ccsm close {} to see what's needed\n\
+                 → ccsm complete {} --force to bypass\n\
+                 \n{e}",
+                name, name,
+            );
+            anyhow::bail!("gate checks failed — fix issues or use --force");
+        }
+        // Gate passed — print the self-review checklist
+        println!();
+        println!(
+            "\
+🔍 Self-review:
+  [ ] Tests pass?
+  [ ] All changes committed and pushed?
+  [ ] Scope fulfilled? Anything left undocumented?
+  [ ] Dependencies resolved?
+  [ ] Detail file tags and progress log are current?"
+        );
+    }
+
     let new_status = match action {
         "start" => SessionStatus::InProgress,
         "complete" => SessionStatus::Completed,
@@ -808,6 +858,188 @@ fn run_status(name: &str, action: &str) -> anyhow::Result<()> {
             entry.completed = crate::registry::now_iso();
         }
     })
+}
+
+/// `ccsm refresh <name> [--reason]` — retire current Claude session, spawn fresh.
+///
+/// Use when the context window is bloated (>40%) and the model gets biased.
+/// Moves the current session_id to `retired_session_ids` with timestamp and reason,
+/// then spawns a fresh `claude` (no --resume) with `CCSM_SESSION` injected so the
+/// new agent knows which ccsm session it serves.
+fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result<()> {
+    let now = now_iso_ts();
+    let reason_text = reason.unwrap_or("context refresh");
+
+    // ── Phase 1: Retire current session_id, save, auto-note (locked) ──
+    {
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        let entry = reg
+            .sessions
+            .iter_mut()
+            .rev()
+            .find(|e| e.name == name)
+            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+
+        if entry.status != crate::registry::SessionStatus::InProgress {
+            anyhow::bail!(
+                "session '{}' is {} — only in_progress sessions can be refreshed",
+                name, entry.status,
+            );
+        }
+
+        // Retire current session_id if one exists
+        if !entry.session_id.is_empty() {
+            entry.retired_session_ids.push(crate::registry::RetiredSession {
+                id: entry.session_id.clone(),
+                retired_at: now.clone(),
+                reason: reason_text.to_string(),
+            });
+        }
+
+        // Clear identity fields — fresh session repopulates them
+        entry.session_id.clear();
+        entry.pids.clear();
+        entry.started.clear();
+
+        reg.updated = now.clone();
+        reg.save(workspace)?;
+    } // lock released
+
+    // ── Phase 2: Auto-note to progress log ──────────────────────────
+    let retired_count = {
+        let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+        reg.sessions
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.retired_session_ids.len())
+            .unwrap_or(0)
+    };
+
+    let note_text = if retired_count <= 1 {
+        format!("Refreshed session — fresh context (reason: {})", reason_text)
+    } else {
+        format!(
+            "Refreshed session ({}th refresh) — fresh context (reason: {})",
+            retired_count, reason_text,
+        )
+    };
+    // Best-effort note — don't fail the whole operation if this errors
+    let _ = run_note(name, &note_text, None);
+
+    // ── Phase 3: Spawn fresh claude (no --resume) ────────────────────
+    let mut cmd = std::process::Command::new("claude");
+    cmd.current_dir(workspace);
+    cmd.env("CCSM_SESSION", name);
+    cmd.arg("-n").arg(name);
+
+    if retired_count <= 1 {
+        println!("refreshing  {}  ← claude (fresh, 1 refresh)", name);
+    } else {
+        println!("refreshing  {}  ← claude (fresh, {} refreshes)", name, retired_count);
+    }
+
+    let mut child = cmd.spawn()?;
+    let child_pid = child.id();
+
+    // ── Phase 4: Write pid to registry (locked) ──────────────────────
+    {
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+            Some(entry) => entry.pids = vec![child_pid],
+            None => anyhow::bail!(
+                "internal error: session '{}' vanished from registry between Phase 1 and Phase 4",
+                name
+            ),
+        }
+        reg.updated = now_iso_ts();
+        reg.save(workspace)?;
+    }
+
+    // ── Phase 5: Poll for session file, harvest session_id ───────────
+    let session_file = home.join(".claude").join("sessions").join(format!("{child_pid}.json"));
+    let mut found = false;
+    for _ in 0..50 {
+        if session_file.exists() {
+            found = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if !found {
+        anyhow::bail!(
+            "claude did not write a session file at {} within 5s.\n\
+             Claude may have failed to start. Check for errors above.",
+            session_file.display(),
+        );
+    }
+
+    // ── Phase 6: Harvest session_id + started (locked) ───────────────
+    {
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+            Some(e) => e,
+            None => anyhow::bail!(
+                "internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                name
+            ),
+        };
+
+        match std::fs::read_to_string(&session_file) {
+            Ok(contents) => match serde_json::from_str::<crate::session::Session>(&contents) {
+                Ok(s) => {
+                    if entry.session_id.is_empty() {
+                        entry.session_id = s.session_id;
+                    }
+                    if entry.started.is_empty() {
+                        entry.started = crate::registry::format_ts(s.started_at);
+                    }
+                    reg.updated = now_iso_ts();
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to parse session file {}: {}. \
+                         Session tracking may be incomplete.",
+                        session_file.display(), e
+                    );
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "warning: failed to read session file {}: {}. \
+                     Session tracking may be incomplete.",
+                    session_file.display(), e
+                );
+            }
+        }
+        reg.save(workspace)?;
+    }
+
+    // ── Phase 7: Wait for child ──────────────────────────────────────
+    let status = child.wait()?;
+
+    // ── Phase 8: Clear stale pids (locked) ───────────────────────────
+    {
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+            Some(entry) => {
+                entry.pids.clear();
+                reg.updated = now_iso_ts();
+            }
+            None => {
+                eprintln!(
+                    "warning: session '{}' not found in registry at cleanup — \
+                     may have been removed while claude was running",
+                    name
+                );
+            }
+        }
+        reg.save(workspace)?;
+    }
+
+    if !status.success() {
+        anyhow::bail!("claude exited with {status}");
+    }
+    Ok(())
 }
 
 /// `ccsm pending <name>` — reset to pending, clear identity fields.
@@ -911,6 +1143,13 @@ fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
     }
     if !session.completed.is_empty() {
         println!("completed:  {}", session.completed);
+    }
+    if !session.retired_session_ids.is_empty() {
+        println!("retired:    {} session{}", session.retired_session_ids.len(),
+            if session.retired_session_ids.len() == 1 { "" } else { "s" });
+        for r in &session.retired_session_ids {
+            println!("  {}  {}", r.retired_at, r.reason);
+        }
     }
 
     // ── Detail file sections ─────────────────────────────────────
@@ -1049,6 +1288,236 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     std::fs::write(&detail_path, new_contents)?;
 
     println!("noted       {}  ← [{}] {}", name, ts, display);
+    Ok(())
+}
+
+// ── Helpers (now in registry.rs) ────────────────────────────────────────
+// note_timestamp, days_to_date, is_leap, edit_distance, insert_note
+// are imported from crate::registry.
+
+// ── Doctor subcommand ──────────────────────────────────────────────────
+
+/// Shared gate-check logic: returns Ok(()) if all hard checks pass,
+/// Err with a human-readable message listing each failure otherwise.
+/// Used by both `ccsm close` and the `ccsm complete` internal gate.
+/// `ccsm note-check` — Stop-hook helper. If the in_progress session hasn't been
+/// noted recently, emit a reminder. Time-based only — no git diff, no false positives
+/// from stale uncommitted changes.
+/// Auto-discovers the in_progress session. Silent when recently noted or no active session.
+fn run_note_check() -> anyhow::Result<()> {
+    use crate::registry::SessionStatus;
+
+    let workspace = std::env::current_dir()?;
+
+    // Find in_progress session
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let session = match reg.sessions.iter().find(|s| s.status == SessionStatus::InProgress) {
+        Some(s) => s,
+        None => return Ok(()), // no active session → silent
+    };
+
+    // Check detail file note recency
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", session.name));
+    if !detail_path.exists() {
+        return Ok(()); // no detail file → skip
+    }
+
+    let Ok(contents) = std::fs::read_to_string(&detail_path) else {
+        return Ok(());
+    };
+    let sections = parse_sections(&contents);
+    let pl_body = sections
+        .iter()
+        .find(|(h, _)| h.to_lowercase().contains("progress"))
+        .map(|(_, b)| b.as_str())
+        .unwrap_or("");
+
+    // Find most recent `- [YYYY-MM-DD HH:MMZ]` entry
+    let last_ts = pl_body
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim_start();
+            if t.starts_with("- [") {
+                t.get(3..19) // "YYYY-MM-DD HH:MMZ"
+            } else {
+                None
+            }
+        })
+        .last();
+
+    let stale = match last_ts {
+        Some(ts) => {
+            // Parse the timestamp and compare to current time
+            // Format: "YYYY-MM-DD HH:MMZ"
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let note_secs = parse_note_timestamp(ts).unwrap_or(0);
+            now_secs.saturating_sub(note_secs) > 120 // > 2 min
+        }
+        None => true, // no notes at all
+    };
+
+    if stale {
+        eprintln!(
+            "\
+⚡ If this turn modified/updated/changed anything, update the session detail.
+  → ccsm note {} \"<what you changed and why>\"",
+            session.name,
+        );
+    }
+
+    Ok(())
+}
+
+/// Parse "YYYY-MM-DD HH:MMZ" into seconds since epoch.
+fn parse_note_timestamp(s: &str) -> Option<u64> {
+    let parts: Vec<&str> = s.split(&['-', ' ', ':', 'Z'][..]).collect();
+    if parts.len() < 6 {
+        return None;
+    }
+    let year: i64 = parts[0].parse().ok()?;
+    let month: i64 = parts[1].parse().ok()?;
+    let day: i64 = parts[2].parse().ok()?;
+    let hour: i64 = parts[3].parse().ok()?;
+    let min: i64 = parts[4].parse().ok()?;
+    // Simple days-since-epoch (approximate, good enough for 60-min staleness check)
+    let mut days = 0i64;
+    for y in 1970..year {
+        days += if is_leap_year(y) { 366 } else { 365 };
+    }
+    let mdays: [i64; 12] = if is_leap_year(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    for m in 0..(month - 1) as usize {
+        days += mdays[m];
+    }
+    days += day - 1;
+    let secs = (days * 86400) as u64 + (hour as u64 * 3600) + (min as u64 * 60);
+    Some(secs)
+}
+
+fn is_leap_year(y: i64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
+fn run_gate_checks(name: &str) -> anyhow::Result<()> {
+    let workspace = std::env::current_dir()?;
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    if !reg.sessions.iter().any(|s| s.name == name) {
+        anyhow::bail!("no session named '{}'", name);
+    }
+
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", name));
+
+    let mut failures: Vec<String> = Vec::new();
+
+    if !detail_path.exists() {
+        failures.push(format!(
+            "  no detail file → cp .claude/session-detail-template.md {}",
+            detail_path.display(),
+        ));
+        return Err(format_err(&failures, name));
+    }
+
+    let contents = std::fs::read_to_string(&detail_path)?;
+    let sections = parse_sections(&contents);
+
+    // Scope/Plan
+    let scope_body = sections
+        .iter()
+        .find(|(h, _)| h.to_lowercase().contains("scope"))
+        .map(|(_, b)| b.as_str())
+        .unwrap_or("");
+    if scope_body.trim().is_empty() || scope_body.contains("(fill in") {
+        failures.push("  Scope/Plan is empty or still template".into());
+    }
+
+    // Tags
+    let tags_body = sections
+        .iter()
+        .find(|(h, _)| h.to_lowercase() == "tags")
+        .map(|(_, b)| b.as_str())
+        .unwrap_or("");
+    if tags_body.trim().is_empty() || tags_body.contains("(fill in") {
+        failures.push("  Tags is empty or still template".into());
+    }
+
+    // Progress Log ≥ 2 entries
+    let pl_body = sections
+        .iter()
+        .find(|(h, _)| h.to_lowercase().contains("progress"))
+        .map(|(_, b)| b.as_str())
+        .unwrap_or("");
+    let note_count = pl_body
+        .lines()
+        .filter(|l| l.trim_start().starts_with("- ["))
+        .count();
+    if note_count < 2 {
+        failures.push(format!(
+            "  Progress Log has {} substantive entr{} (need ≥ 2)",
+            note_count,
+            if note_count == 1 { "y" } else { "ies" },
+        ));
+    }
+
+    // Live Session Data not template
+    let lsd_body = sections
+        .iter()
+        .find(|(h, _)| h.to_lowercase().contains("live session"))
+        .map(|(_, b)| b.trim())
+        .unwrap_or("");
+    if lsd_body.contains("(auto") || lsd_body.is_empty() {
+        failures.push("  Live Session Data still has template placeholders".into());
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format_err(&failures, name))
+    }
+}
+
+fn format_err(failures: &[String], name: &str) -> anyhow::Error {
+    let mut msg = String::from("✗ gate failures:\n");
+    for f in failures {
+        msg.push_str(f);
+        msg.push('\n');
+    }
+    msg.push_str(&format!(
+        "  → edit .claude/sessions/{}.md",
+        name,
+    ));
+    anyhow::anyhow!("{}", msg)
+}
+
+/// `ccsm close <name>` — pre-completion gate. Run before `ccsm complete`.
+///
+/// **Hard checks** (exit non-zero on violation): detail file, scope, tags,
+/// progress log, live session data.
+/// **Self-review checklist** (always printed on pass).
+fn run_close(name: &str) -> anyhow::Result<()> {
+    run_gate_checks(name)?;
+
+    println!(
+        "\
+🔍 Self-review:
+  [ ] Tests pass?
+  [ ] All changes committed and pushed?
+  [ ] Scope fulfilled? Anything left undocumented?
+  [ ] Dependencies resolved?
+  [ ] Detail file tags and progress log are current?"
+    );
+
     Ok(())
 }
 
