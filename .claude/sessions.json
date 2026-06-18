@@ -1,5 +1,5 @@
 {
-  "updated": "day20621T06:51:25Z",
+  "updated": "day20622T13:45:55Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -14,7 +14,8 @@
         "team"
       ],
       "started": "day20618T11:26Z",
-      "completed": "day20620T13:35:25Z"
+      "completed": "day20620T13:35:25Z",
+      "retired_session_ids": []
     },
     {
       "session_id": "af0c0ed3-aa2a-4ad5-829e-df17994e51c8",
@@ -25,7 +26,8 @@
       "pids": [],
       "tags": [],
       "started": "day20620T08:47Z",
-      "completed": "day20620T09:02:56Z"
+      "completed": "day20620T09:02:56Z",
+      "retired_session_ids": []
     },
     {
       "session_id": "a687c2b7-6b8f-4783-a851-44af2466a995",
@@ -42,7 +44,8 @@
         "protocol"
       ],
       "started": "day20620T14:30Z",
-      "completed": "day20620T14:39:09Z"
+      "completed": "day20620T14:39:09Z",
+      "retired_session_ids": []
     },
     {
       "session_id": "4e8b0665-e501-4347-83de-4267779e11e3",
@@ -58,7 +61,8 @@
         "gate"
       ],
       "started": "day20620T10:41Z",
-      "completed": "day20620T10:58:46Z"
+      "completed": "day20620T10:58:46Z",
+      "retired_session_ids": []
     },
     {
       "session_id": "c64d8e0f-18b6-4a4d-a7e7-361b4b9438da",
@@ -74,7 +78,8 @@
         "dashboard"
       ],
       "started": "day20620T13:43Z",
-      "completed": "day20620T10:31:52Z"
+      "completed": "day20620T10:31:52Z",
+      "retired_session_ids": []
     },
     {
       "session_id": "9b16bdf6-3d54-46ae-bd29-d50edf1b8e1f",
@@ -93,7 +98,8 @@
         "stability"
       ],
       "started": "day20621T04:38Z",
-      "completed": "day20621T06:18:21Z"
+      "completed": "day20621T06:18:21Z",
+      "retired_session_ids": []
     },
     {
       "session_id": "f89e0f50-0165-42f8-a29b-394081f5f559",
@@ -104,7 +110,8 @@
       "pids": [],
       "tags": [],
       "started": "day20621T04:56Z",
-      "completed": "day20621T04:59:51Z"
+      "completed": "day20621T04:59:51Z",
+      "retired_session_ids": []
     },
     {
       "session_id": "",
@@ -119,7 +126,8 @@
         "quality"
       ],
       "started": "",
-      "completed": "day20621T06:51:25Z"
+      "completed": "day20621T06:51:25Z",
+      "retired_session_ids": []
     },
     {
       "session_id": "",
@@ -130,7 +138,39 @@
       "pids": [],
       "tags": [],
       "started": "",
-      "completed": ""
+      "completed": "",
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "37bf5f37-0a88-43b4-9fca-c265219df6f4",
+      "name": "Multiple claude session for one ccsm session",
+      "goal": "Enable multiple claude session for a ccsm session to avoid chaos, large context window or produce some approaches",
+      "scope": "Implement ccsm refresh: retire current Claude session to retired_session_ids list, spawn fresh claude (no --resume), inject CCSM_SESSION env var for agent self-awareness. New CLI subcommand: ccsm refresh <name> [--reason]. Registry schema adds retired_session_ids: [{id, retired_at, reason}]. One ccsm session → one active Claude session at a time, with history of retired ones.",
+      "status": "completed",
+      "pids": [
+        2543
+      ],
+      "tags": [],
+      "started": "day20622T12:43Z",
+      "completed": "day20622T13:45:55Z",
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "",
+      "name": "unified-data-directory",
+      "goal": "Refactor data directory from Claude-specific .claude/sessions to agent-neutral .ccsm/ layout supporting multiple agents (Claude Code, Codex, Gemini, etc.)",
+      "scope": "Current state: ccsm hardcodes .claude/sessions.json, ~/.claude/sessions/<pid>.json, ~/.claude/projects/<slug>/. Goal: design and implement a unified data layout that works across agent platforms while maintaining backward compatibility with existing Claude Code sessions.\n\nKey questions to resolve:\n- New directory root? (.ccsm/ at workspace and ~/.ccsm/ at home)\n- How to namespace per-agent sessions? (.ccsm/sessions/claude/, .ccsm/sessions/codex/, etc.)\n- Transcript format differs by agent — do we care or just store them?\n- Migration path for existing .claude/ data\n- Hook compatibility — do other agents have hook equivalents?\n\nApproach: read current code paths, enumerate all .claude/ references, design the new layout, implement a configurable root with claude as default, add migration subcommand.",
+      "status": "pending",
+      "pids": [],
+      "tags": [
+        "data-directory",
+        "migration",
+        "multi-agent",
+        "architecture"
+      ],
+      "started": "",
+      "completed": "",
+      "retired_session_ids": []
     }
   ]
 }
