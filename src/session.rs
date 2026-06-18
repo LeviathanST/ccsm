@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::PathBuf;
 
 /// A snapshot of a Claude Code session from `~/.claude/sessions/<pid>.json`.
 #[derive(Debug, Clone, Deserialize)]
@@ -49,13 +48,14 @@ impl Session {
 
 /// Load sessions from disk, optionally filtering to those whose cwd
 /// starts with `workspace` (the current project directory).
-pub fn load_all(sessions_dir: &PathBuf, workspace: Option<&PathBuf>) -> Result<Vec<Session>> {
+pub fn load_all(sessions_dir: &std::path::Path, workspace: Option<&std::path::Path>) -> Result<Vec<Session>> {
     let all = load_all_unfiltered(sessions_dir)?;
     if let Some(ws) = workspace {
-        let ws_str = ws.to_string_lossy().to_string();
+        let ws_str = ws.to_string_lossy();
+        // Ensure trailing separator so /home/user/proj doesn't match /home/user/proj-other
         Ok(all
             .into_iter()
-            .filter(|s| s.cwd.starts_with(&ws_str))
+            .filter(|s| s.cwd == *ws_str || s.cwd.starts_with(&format!("{ws_str}/")))
             .collect())
     } else {
         Ok(all)
@@ -63,7 +63,7 @@ pub fn load_all(sessions_dir: &PathBuf, workspace: Option<&PathBuf>) -> Result<V
 }
 
 /// Load all session files from the sessions directory (no filter).
-fn load_all_unfiltered(sessions_dir: &PathBuf) -> Result<Vec<Session>> {
+fn load_all_unfiltered(sessions_dir: &std::path::Path) -> Result<Vec<Session>> {
     let mut sessions: Vec<Session> = Vec::new();
 
     let entries = match std::fs::read_dir(sessions_dir) {
@@ -74,7 +74,7 @@ fn load_all_unfiltered(sessions_dir: &PathBuf) -> Result<Vec<Session>> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().map_or(true, |e| e != "json") {
+        if path.extension().is_none_or(|e| e != "json") {
             continue;
         }
         match std::fs::read_to_string(&path) {
@@ -95,7 +95,7 @@ fn load_all_unfiltered(sessions_dir: &PathBuf) -> Result<Vec<Session>> {
     }
 
     // Sort by most recently updated first
-    sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
 
     Ok(sessions)
 }

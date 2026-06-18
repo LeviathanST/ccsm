@@ -4,6 +4,8 @@ mod registry;
 mod sequence;
 #[allow(dead_code)]
 mod session;
+#[allow(dead_code)]
+mod commands;
 
 use std::path::PathBuf;
 
@@ -140,6 +142,21 @@ enum Commands {
         /// Shell: bash, fish, or zsh
         shell: String,
     },
+    /// Output a system-reminder block with the active session's goal and scope.
+    /// Used by SystemMessage hook to inject session context every turn.
+    InjectScope {
+        /// Session name (auto-detects in_progress if omitted)
+        name: Option<String>,
+    },
+    /// Check if current work aligns with session scope. Exit 0 = pass, 1 = fail.
+    /// Designed for Stop hook before `ccsm complete`.
+    GateCheck {
+        /// Session name (auto-detects in_progress if omitted)
+        name: Option<String>,
+        /// Strict mode: fail if scope is empty or unfilled
+        #[arg(short = 'S', long)]
+        strict: bool,
+    },
     /// Install session tracking into global CLAUDE.md + skills (run once)
     Setup,
 }
@@ -163,17 +180,19 @@ fn main() -> anyhow::Result<()> {
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
         Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path()),
-        Commands::Resume { name } => run_resume(&name, &workspace_path(), &home),
+        Commands::Resume { name } => commands::resume::run_resume(&name, &workspace_path(), &home),
         Commands::Trash { name } => run_trash(&name),
         Commands::Recover { name } => run_recover(&name),
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path()),
         Commands::CleanAll => run_clean_all(&home, &workspace_path()),
         Commands::Archive { name } => run_archive(&name, &home, &workspace_path()),
         Commands::ArchiveAll => run_archive_all(&home, &workspace_path()),
-        Commands::Doctor => run_doctor(&home, &workspace_path()),
+        Commands::Doctor => commands::doctor::run_doctor(&home, &workspace_path()),
         Commands::Sequence { args } => run_sequence(&args),
         Commands::Note { name, text, cross } => run_note(&name, &text.join(" "), cross.as_deref()),
         Commands::Completions { shell } => run_completions(&shell),
+        Commands::InjectScope { name } => run_inject_scope(name.as_deref()),
+        Commands::GateCheck { name, strict } => run_gate_check(name.as_deref(), strict),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into())),
     }
 }
@@ -250,9 +269,8 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
         if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked) {
             continue;
         }
-        if let Some(fs) = filter {
-            if s.status != fs { continue; }
-        }
+        if let Some(fs) = filter
+            && s.status != fs { continue; }
         if verbose {
             // Teammate scan mode: full goal + tags, one line per session
             let goal = if s.goal.is_empty() { "" } else { " — " };
@@ -296,25 +314,12 @@ where
             .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
         f(entry);
     }
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
     // Re-borrow immutably for the status line
     let entry = reg.sessions.iter().find(|s| s.name == name).unwrap();
     println!("{:12}  {}  ← {}", entry.status.to_string(), entry.name, action);
     Ok(())
-}
-
-fn now_iso_ts() -> String {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let secs = ts % 86400;
-    let days = ts / 86400;
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
-    let s = secs % 60;
-    format!("day{days}T{h:02}:{m:02}:{s:02}Z")
 }
 
 // ── Mutation commands ───────────────────────────────────────────────────
@@ -323,15 +328,15 @@ fn now_iso_ts() -> String {
 ///
 /// If neither session-id nor --pid is given, auto-discovers the most recently
 /// updated live Claude session in this workspace.
-fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &PathBuf) -> anyhow::Result<()> {
+fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std::path::Path) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
 
     let resolved_sid = match (session_id.filter(|s| !s.is_empty()), pid) {
         (Some(sid), _) => {
-            validate_session_id(sid)?;
+            crate::registry::validate_session_id(sid)?;
             sid.to_string()
         }
-        (_, Some(p)) => harvest_from_pid(home, p)?,
+        (_, Some(p)) => crate::registry::harvest_from_pid(home, p)?,
         _ => {
             // Auto-discover: prefer name match in session file, fall back to most recent
             let sessions = crate::session::load_all(
@@ -408,56 +413,15 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &Pat
         .find(|s| s.name == name)
         .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
     entry.session_id = resolved_sid.clone();
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
     println!("attached    {}  ← session {}", name, &resolved_sid[..resolved_sid.len().min(8)]);
     Ok(())
 }
 
-fn harvest_from_pid(home: &PathBuf, pid: u32) -> anyhow::Result<String> {
-    let session_file = home.join(".claude").join("sessions").join(format!("{pid}.json"));
-    if !session_file.exists() {
-        anyhow::bail!(
-            "no session file at {}\n  Is PID {} running?",
-            session_file.display(), pid
-        );
-    }
-    let contents = std::fs::read_to_string(&session_file)
-        .context("reading session file")?;
-    let s: crate::session::Session = serde_json::from_str(&contents)
-        .context("parsing session file")?;
-    if s.session_id.is_empty() {
-        anyhow::bail!("session file for PID {} has no sessionId yet", pid);
-    }
-    Ok(s.session_id)
-}
-
-/// Reject session_ids that don't look like UUIDs.
-fn validate_session_id(sid: &str) -> anyhow::Result<()> {
-    // UUID format: 8-4-4-4-12 hex digits (e.g. f493397b-456a-426d-92e1-4d5f15da0311)
-    let parts: Vec<&str> = sid.split('-').collect();
-    if parts.len() == 5
-        && parts[0].len() == 8
-        && parts[1].len() == 4
-        && parts[2].len() == 4
-        && parts[3].len() == 4
-        && parts[4].len() == 12
-        && sid.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-    {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "'{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
-             If you renamed the session in the TUI, the name changed but the UUID didn't.\n\
-             Use --pid <pid> instead: ccsm attach {} --pid <pid>",
-            sid, sid
-        );
-    }
-}
-
 /// `ccsm rename <old> <new>` — rename a session across registry, detail file,
 /// live session files, and transcript.
-fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &std::path::Path, workspace: &std::path::Path) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
 
     // Validate: old must exist, new must not
@@ -469,7 +433,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     if reg.sessions.iter().any(|s| s.name == new) {
         anyhow::bail!("session '{}' already exists", new);
     }
-    if !is_kebab_case(new) {
+    if !crate::registry::is_kebab_case(new) {
         anyhow::bail!(
             "'{}' is not kebab-case. Session names must be lowercase letters, digits, and hyphens.",
             new
@@ -514,7 +478,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(true, |e| e != "json") {
+            if path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
             let Ok(contents) = std::fs::read_to_string(&path) else { continue };
@@ -559,20 +523,19 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     let has_topic_change = goal.is_some() || scope.is_some();
 
     // 5. Update detail file content — replace header, goal, scope
-    if detail_new.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&detail_new) {
+    if detail_new.exists()
+        && let Ok(contents) = std::fs::read_to_string(&detail_new) {
             let mut updated = contents
                 .replace(&format!("# Session: {}", old), &format!("# Session: {}", new));
             if let Some(g) = goal {
-                updated = replace_detail_section(&updated, "## Goal", g);
+                updated = crate::registry::replace_detail_section(&updated, "## Goal", g);
             }
             if let Some(s) = scope {
-                updated = replace_detail_section(&updated, "## Scope / Plan", s);
+                updated = crate::registry::replace_detail_section(&updated, "## Scope / Plan", s);
             }
             let _ = std::fs::write(&detail_new, &updated);
             eprintln!("  detail file  updated header");
         }
-    }
 
     // 6. Update registry entry
     reg.sessions[idx].name = new.to_string();
@@ -582,12 +545,12 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     if let Some(s) = scope {
         reg.sessions[idx].scope = s.to_string();
     }
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(workspace)?;
 
     // 7. Log the rename to progress log (include old values when topic changed)
     if detail_new.exists() {
-        let ts = note_timestamp();
+        let ts = crate::registry::note_timestamp();
         let mut note_parts = vec![format!("Renamed from '{}' to '{}'", old, new)];
         if has_topic_change {
             note_parts.push(format!("Old goal: {}", old_goal));
@@ -597,68 +560,13 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
         }
         let note_line = format!("- [{}] {}\n", ts, note_parts.join(" | "));
         if let Ok(contents) = std::fs::read_to_string(&detail_new) {
-            let updated = insert_note(&contents, &note_line);
+            let updated = crate::registry::insert_note(&contents, &note_line);
             let _ = std::fs::write(&detail_new, updated);
         }
     }
 
     println!("renamed     {} → {}", old, new);
     Ok(())
-}
-
-fn is_kebab_case(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-/// Replace the body of a `## SectionName` in a markdown string.
-/// If the section exists, replaces lines between the header and the next `## `.
-/// If the section doesn't exist, appends it at the end.
-fn replace_detail_section(md: &str, header: &str, new_body: &str) -> String {
-    let lines: Vec<&str> = md.lines().collect();
-
-    // Find the section header: exact match or header + trailing text
-    let hdr_idx = lines.iter().position(|l| {
-        let t = l.trim();
-        t == header || t.starts_with(&format!("{} ", header))
-    });
-
-    match hdr_idx {
-        Some(hdr) => {
-            // Find where this section body ends (next ##, or end of file)
-            let end = lines[hdr + 1..]
-                .iter()
-                .position(|l| l.starts_with("## "))
-                .map(|p| hdr + 1 + p)
-                .unwrap_or(lines.len());
-
-            let mut out = String::new();
-            for i in 0..=hdr {
-                out.push_str(lines[i]);
-                out.push('\n');
-            }
-            out.push('\n');
-            out.push_str(new_body);
-            if end < lines.len() {
-                out.push('\n');
-            }
-            for i in end..lines.len() {
-                out.push_str(lines[i]);
-                out.push('\n');
-            }
-            out
-        }
-        None => {
-            // Section doesn't exist — append at end
-            let mut out = md.to_string();
-            if !out.ends_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(&format!("\n{}\n\n{}\n", header, new_body));
-            out
-        }
-    }
 }
 
 /// `ccsm trash <name>` — soft-delete: move to Trashed status.
@@ -671,7 +579,7 @@ fn run_trash(name: &str) -> anyhow::Result<()> {
         .map(|s| s.session_id.clone())
         .unwrap_or_default();
     if reg.trash(&sid, name) {
-        reg.updated = now_iso_ts();
+        reg.updated = crate::registry::now_iso();
         reg.save(&workspace)?;
         println!("trashed     {}  ← soft-deleted (recover with `ccsm recover {}`)", name, name);
     } else {
@@ -689,7 +597,7 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
         .map(|s| s.session_id.clone())
         .unwrap_or_default();
     if reg.recover(&sid, name) {
-        reg.updated = now_iso_ts();
+        reg.updated = crate::registry::now_iso();
         reg.save(&workspace)?;
         println!("recovered   {}  ← in_progress", name);
     } else {
@@ -699,7 +607,7 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
 }
 
 /// `ccsm clean <name>` — permanently delete transcript, session files, and registry entry.
-fn run_clean(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+fn run_clean(name: &str, home: &std::path::Path, workspace: &std::path::Path) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
@@ -710,14 +618,14 @@ fn run_clean(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<
         anyhow::bail!("no session named '{}'", name);
     }
     reg.clean(&sid, name, home, workspace);
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(workspace)?;
     println!("cleaned     {}  ← permanently deleted", name);
     Ok(())
 }
 
 /// `ccsm clean-all` — permanently delete ALL trashed entries.
-fn run_clean_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+fn run_clean_all(home: &std::path::Path, workspace: &std::path::Path) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let count = reg.sessions.iter()
         .filter(|s| s.status == crate::registry::SessionStatus::Trashed)
@@ -727,14 +635,14 @@ fn run_clean_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
         return Ok(());
     }
     reg.clean_all_trashed(home, workspace);
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(workspace)?;
     println!("cleaned     {} trashed session{}", count, if count == 1 { "" } else { "s" });
     Ok(())
 }
 
 /// `ccsm archive <name>` — delete transcript + session files, keep registry entry.
-fn run_archive(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
@@ -746,17 +654,16 @@ fn run_archive(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Resul
     }
 
     // Check not active
-    if let Some(s) = reg.sessions.iter().find(|s| s.name == name) {
-        if s.status == crate::registry::SessionStatus::InProgress {
+    if let Some(s) = reg.sessions.iter().find(|s| s.name == name)
+        && s.status == crate::registry::SessionStatus::InProgress {
             anyhow::bail!(
                 "cannot archive active session '{}'. Complete or abandon it first.",
                 name
             );
         }
-    }
 
     let freed = reg.archive(&sid, name, home, workspace);
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(workspace)?;
 
     if freed > 0 {
@@ -768,7 +675,7 @@ fn run_archive(name: &str, home: &PathBuf, workspace: &PathBuf) -> anyhow::Resul
 }
 
 /// `ccsm archive-all` — archive all completed sessions with transcripts.
-fn run_archive_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
+fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let candidates: Vec<(String, String)> = reg
         .sessions
@@ -786,7 +693,7 @@ fn run_archive_all(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
     for (sid, name) in &candidates {
         total_freed += reg.archive(sid, name, home, workspace);
     }
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(workspace)?;
 
     println!(
@@ -820,8 +727,8 @@ fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
                 let longer = n.len().max(name.len());
                 let significant_overlap = shorter >= 4 && (shorter as f64 / longer as f64) >= 0.4;
                 (significant_overlap && (n.contains(name) || name.contains(*n)))
-                    || (name.len() >= 4 && edit_distance(n, name) <= 2)
-                    || edit_distance(n, name) <= 1
+                    || (name.len() >= 4 && crate::registry::edit_distance(n, name) <= 2)
+                    || crate::registry::edit_distance(n, name) <= 1
             })
             .take(3)
             .collect();
@@ -845,7 +752,7 @@ fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
         started: String::new(),
         completed: String::new(),
     });
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
 
     // Auto-create the detail file from template if it doesn't exist.
@@ -857,8 +764,8 @@ fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
         let template = workspace
             .join(".claude")
             .join("session-detail-template.md");
-        if template.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&template) {
+        if template.exists()
+            && let Ok(contents) = std::fs::read_to_string(&template) {
                 let populated = contents
                     .replace("{{name}}", name)
                     .replace("{{goal}}", goal)
@@ -872,14 +779,13 @@ fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
                     .replace("{{version}}", "(auto)")
                     .replace("{{waiting_for}}", "(none)")
                     .replace("{{dependencies}}", "(none)")
-                    .replace("{{now}}", &now_iso_ts())
+                    .replace("{{now}}", &crate::registry::now_iso())
                     .replace("{{note}}", "Session created");
                 if let Some(parent) = detail_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 let _ = std::fs::write(&detail_path, populated);
             }
-        }
     }
 
     println!("pending     {}  ← created", name);
@@ -899,198 +805,9 @@ fn run_status(name: &str, action: &str) -> anyhow::Result<()> {
     mutate_session(name, action, |entry| {
         entry.status = new_status;
         if action == "complete" || action == "abandon" {
-            entry.completed = now_iso_ts();
+            entry.completed = crate::registry::now_iso();
         }
     })
-}
-
-/// `ccsm resume <name>` — promote entry, exec `claude --resume` or fresh.
-fn run_resume(name: &str, workspace: &PathBuf, home: &PathBuf) -> anyhow::Result<()> {
-    let slug = crate::registry::project_slug(workspace);
-    let now = now_iso_ts();
-
-    // ── Phase 1: Promote entry (locked) ────────────────────────────
-    let (sid, fresh) = {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-
-        let (sid, is_fresh) = match reg.sessions.iter().rev().position(|e| e.name == name) {
-            Some(pos) => {
-                let i = reg.sessions.len() - 1 - pos;
-                reg.sessions[i].status = crate::registry::SessionStatus::InProgress;
-                reg.sessions[i].started.clear();
-                if !reg.sessions[i].session_id.is_empty() {
-                    let path = home.join(".claude").join("projects")
-                        .join(&slug).join(format!("{}.jsonl", reg.sessions[i].session_id));
-                    if path.exists() {
-                        (Some(reg.sessions[i].session_id.clone()), false)
-                    } else {
-                        // session_id exists but transcript is gone — corrupted state.
-                        // Don't silently fall back to fresh; let the user decide.
-                        anyhow::bail!(
-                            "session '{}' has session_id '{}' but transcript not found at:\n  {}\n\
-                             The transcript may have been deleted or cleaned.\n\
-                             To start fresh: ccsm pending {}  (clears session_id, then resume)",
-                            name,
-                            &reg.sessions[i].session_id[..reg.sessions[i].session_id.len().min(8)],
-                            path.display(),
-                            name,
-                        );
-                    }
-                } else {
-                    (None, false)
-                }
-            }
-            None => {
-                // Collect session names that are plausible typos:
-                // - query is a substring of the session name, OR
-                // - edit distance ≤ 2 AND query is at least 4 chars (real word)
-                let similar: Vec<&str> = reg
-                    .sessions
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .filter(|n| {
-                        n.contains(name)
-                            || (name.len() >= 4 && edit_distance(n, name) <= 2)
-                            || edit_distance(n, name) <= 1
-                    })
-                    .take(5) // cap suggestions to avoid flooding the terminal
-                    .collect();
-                if similar.is_empty() {
-                    anyhow::bail!(
-                        "no session named '{}'. Use `ccsm new {} -g \"...\"` to create one.",
-                        name, name
-                    );
-                } else {
-                    anyhow::bail!(
-                        "no session named '{}'. Did you mean: {}?",
-                        name,
-                        similar.join(", ")
-                    );
-                }
-            }
-        };
-
-        reg.updated = now.clone();
-        reg.save(workspace)?;
-        (sid, is_fresh)
-    }; // lock released
-
-    // ── Phase 2: Spawn claude (no lock) ─────────────────────────────
-    let mut cmd = std::process::Command::new("claude");
-    cmd.current_dir(workspace);
-    cmd.env("CCSM_SESSION", name);
-    if let Some(ref id) = sid {
-        cmd.arg("--resume").arg(id);
-        println!("resuming    {}  ← claude --resume {}", name, &id[..id.len().min(8)]);
-    } else if fresh {
-        println!("starting    {}  ← claude (fresh)", name);
-    } else {
-        println!("starting    {}  ← claude (new session)", name);
-    }
-    cmd.arg("-n").arg(name);
-
-    let mut child = cmd.spawn()?;
-    let child_pid = child.id();
-
-    // ── Phase 3: Write pid to registry (locked) ─────────────────────
-    {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            Some(entry) => entry.pids = vec![child_pid],
-            None => anyhow::bail!(
-                "internal error: session '{}' vanished from registry between Phase 1 and Phase 3",
-                name
-            ),
-        }
-        reg.updated = now_iso_ts();
-        reg.save(workspace)?;
-    }
-
-    // ── Phase 4: Poll for session file, harvest session_id ──────────
-    let session_file = home.join(".claude").join("sessions").join(format!("{child_pid}.json"));
-    let mut found = false;
-    for _ in 0..50 {
-        if session_file.exists() {
-            found = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    if !found {
-        anyhow::bail!(
-            "claude did not write a session file at {} within 5s.\n\
-             Claude may have failed to start. Check for errors above.",
-            session_file.display(),
-        );
-    }
-
-    // ── Phase 5: Harvest session_id + started (locked) ──────────────
-    {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            Some(e) => e,
-            None => anyhow::bail!(
-                "internal error: session '{}' vanished from registry between Phase 1 and Phase 5",
-                name
-            ),
-        };
-
-        match std::fs::read_to_string(&session_file) {
-            Ok(contents) => match serde_json::from_str::<crate::session::Session>(&contents) {
-                Ok(s) => {
-                    if entry.session_id.is_empty() {
-                        entry.session_id = s.session_id;
-                    }
-                    if entry.started.is_empty() {
-                        entry.started = crate::registry::format_ts(s.started_at);
-                    }
-                    reg.updated = now_iso_ts();
-                }
-                Err(e) => {
-                    eprintln!(
-                        "warning: failed to parse session file {}: {}. \
-                         Session tracking may be incomplete.",
-                        session_file.display(), e
-                    );
-                }
-            },
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to read session file {}: {}. \
-                     Session tracking may be incomplete.",
-                    session_file.display(), e
-                );
-            }
-        }
-        reg.save(workspace)?;
-    }
-
-    // ── Phase 6: Wait for child ─────────────────────────────────────
-    let status = child.wait()?;
-
-    // ── Phase 7: Clear stale pids (locked) ──────────────────────────
-    {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            Some(entry) => {
-                entry.pids.clear();
-                reg.updated = now_iso_ts();
-            }
-            None => {
-                eprintln!(
-                    "warning: session '{}' not found in registry at cleanup — \
-                     may have been removed while claude was running",
-                    name
-                );
-            }
-        }
-        reg.save(workspace)?;
-    }
-
-    if !status.success() {
-        anyhow::bail!("claude exited with {status}");
-    }
-    Ok(())
 }
 
 /// `ccsm pending <name>` — reset to pending, clear identity fields.
@@ -1107,7 +824,7 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
     entry.pids.clear();
     entry.started.clear();
     entry.completed.clear();
-    reg.updated = now_iso_ts();
+    reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
     println!("pending     {}  ← reset (identity fields cleared)", name);
     Ok(())
@@ -1152,7 +869,7 @@ fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
             anyhow::bail!("no detail file for '{}' (expected {})", name, detail_path.display());
         }
         let contents = std::fs::read_to_string(&detail_path)?;
-        let sections = parse_sections(&contents);
+        let sections = crate::registry::parse_sections(&contents);
         let key = sec.to_lowercase().replace('-', " ");
         match sections.iter().find(|(h, _)| h.to_lowercase() == key) {
             Some((header, body)) => {
@@ -1199,7 +916,7 @@ fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
     // ── Detail file sections ─────────────────────────────────────
     if detail_path.exists() {
         let contents = std::fs::read_to_string(&detail_path)?;
-        let sections = parse_sections(&contents);
+        let sections = crate::registry::parse_sections(&contents);
         if sections.is_empty() {
             println!("\n📄 .claude/sessions/{}.md (no sections)", name);
         } else {
@@ -1221,36 +938,6 @@ fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Parse a markdown string into `(header, body)` pairs for each `## Section`.
-/// Stops at the next `## ` or end of file.
-fn parse_sections(md: &str) -> Vec<(String, String)> {
-    let mut sections: Vec<(String, String)> = Vec::new();
-    let mut current_header: Option<String> = None;
-    let mut current_body = String::new();
-
-    for line in md.lines() {
-        if line.starts_with("## ") {
-            // Save previous section
-            if let Some(h) = current_header.take() {
-                sections.push((h, std::mem::take(&mut current_body)));
-            }
-            current_header = Some(line[3..].trim().to_string());
-        } else if current_header.is_some() {
-            if !current_body.is_empty() {
-                current_body.push('\n');
-            }
-            current_body.push_str(line);
-        }
-    }
-    // Save final section
-    if let Some(h) = current_header {
-        if !current_body.trim().is_empty() || sections.iter().any(|(_, b)| !b.trim().is_empty()) {
-            sections.push((h, current_body));
-        }
-    }
-    sections
 }
 
 
@@ -1293,7 +980,7 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
 
     // Phase 2: Execute all operations in memory (single lock)
     let workspace = std::env::current_dir()?;
-    let now = now_iso_ts();
+    let now = crate::registry::now_iso();
     let outputs = {
         let (mut reg, _lock) =
             crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
@@ -1348,7 +1035,7 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     }
 
     let contents = std::fs::read_to_string(&detail_path)?;
-    let ts = note_timestamp();
+    let ts = crate::registry::note_timestamp();
 
     let formatted = match cross {
         Some(source) => format!("CROSS-SESSION [{}]: {}", source, text),
@@ -1358,305 +1045,10 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     let new_entry = format!("- [{}] {}\n", ts, formatted);
     let display = if cross.is_some() { &formatted } else { text };
 
-    let new_contents = insert_note(&contents, &new_entry);
+    let new_contents = crate::registry::insert_note(&contents, &new_entry);
     std::fs::write(&detail_path, new_contents)?;
 
     println!("noted       {}  ← [{}] {}", name, ts, display);
-    Ok(())
-}
-
-/// Simple UTC timestamp: `YYYY-MM-DD HH:MMZ` without external date crates.
-fn note_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let secs_per_day: u64 = 86400;
-    let days = secs / secs_per_day;
-    let day_secs = secs % secs_per_day;
-    let hours = day_secs / 3600;
-    let mins = (day_secs % 3600) / 60;
-
-    let (y, m, d) = days_to_date(days);
-    format!("{:04}-{:02}-{:02} {:02}:{:02}Z", y, m, d, hours, mins)
-}
-
-/// Convert days since 1970-01-01 to (year, month, day).
-fn days_to_date(mut days: u64) -> (u32, u32, u32) {
-    let mut year: u32 = 1970;
-    loop {
-        let diy: u64 = if is_leap(year) { 366 } else { 365 };
-        if days < diy { break; }
-        days -= diy;
-        year += 1;
-    }
-    let mdays: [u64; 12] = if is_leap(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month: u32 = 1;
-    for &md in &mdays {
-        if days < md { break; }
-        days -= md;
-        month += 1;
-    }
-    (year, month, (days + 1) as u32)
-}
-
-fn is_leap(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
-}
-
-/// Simple Levenshtein distance — used to suggest corrections for typos.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let mut prev = (0..=b.len()).collect::<Vec<_>>();
-    let mut curr = vec![0; b.len() + 1];
-    for i in 1..=a.len() {
-        curr[0] = i;
-        for j in 1..=b.len() {
-            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[b.len()]
-}
-
-/// Insert `new_entry` into the Progress Log section of `contents`.
-/// Prepends (newest at top) — inserts right after the `## Progress Log`
-/// header, past any blank lines or HTML comments.
-fn insert_note(contents: &str, new_entry: &str) -> String {
-    let lines: Vec<&str> = contents.lines().collect();
-
-    if let Some(hdr) = lines.iter().position(|l| l.trim() == "## Progress Log") {
-        // Find insertion point: skip past blank lines and HTML comments
-        let mut ins = hdr + 1;
-        let mut comment = false;
-        while ins < lines.len() {
-            let t = lines[ins].trim();
-            if t.is_empty() {
-                ins += 1;
-            } else if t.starts_with("<!--") {
-                comment = true;
-                ins += 1;
-            } else if comment && (t == "-->" || t.ends_with("-->")) {
-                comment = false;
-                ins += 1;
-            } else if comment {
-                ins += 1;
-            } else {
-                break;
-            }
-        }
-
-        let mut out = String::with_capacity(contents.len() + new_entry.len() + 2);
-        for i in 0..ins {
-            out.push_str(lines[i]);
-            out.push('\n');
-        }
-        out.push_str(new_entry);
-        if ins < lines.len() { out.push('\n'); }
-        for i in ins..lines.len() {
-            out.push_str(lines[i]);
-            out.push('\n');
-        }
-        out
-    } else {
-        // No Progress Log section — append one
-        let mut out = contents.to_string();
-        if !out.ends_with('\n') { out.push('\n'); }
-        out.push('\n');
-        out.push_str("## Progress Log\n\n");
-        out.push_str(new_entry);
-        out.push('\n');
-        out
-    }
-}
-
-// ── Doctor subcommand ──────────────────────────────────────────────────
-
-/// `ccsm doctor` — scan session registry and filesystem for health issues.
-fn run_doctor(home: &PathBuf, workspace: &PathBuf) -> anyhow::Result<()> {
-    let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
-    let slug = crate::registry::project_slug(workspace);
-    let proj_dir = home.join(".claude").join("projects").join(&slug);
-    let lock_path = workspace.join(".claude").join("sessions.json.lock");
-
-    let mut warnings: Vec<String> = Vec::new();
-    let mut infos: Vec<String> = Vec::new();
-    let mut tips: Vec<String> = Vec::new();
-    let mut healthy = 0usize;
-
-    let in_progress_count = reg.sessions.iter()
-        .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
-        .count();
-
-    for s in &reg.sessions {
-        let mut session_issues = 0usize;
-
-        // 1. Orphaned session_id (non-empty but transcript missing)
-        if !s.session_id.is_empty() {
-            let transcript = proj_dir.join(format!("{}.jsonl", s.session_id));
-            if !transcript.exists() {
-                warnings.push(format!(
-                    "  orphaned session_id  {}\n    session_id {} — transcript not found\n    → ccsm pending {}",
-                    s.name,
-                    &s.session_id[..s.session_id.len().min(8)],
-                    s.name,
-                ));
-                session_issues += 1;
-            }
-        }
-
-        // 2. Dead PIDs
-        for pid in &s.pids {
-            let proc_path = std::path::PathBuf::from(format!("/proc/{pid}"));
-            if !proc_path.exists() {
-                infos.push(format!(
-                    "  dead pid  {}\n    pid {} is no longer running (auto-cleaned on next resume)",
-                    s.name, pid,
-                ));
-                session_issues += 1;
-            }
-        }
-
-        // 3. Empty goal
-        if s.goal.is_empty() && s.status != crate::registry::SessionStatus::Pending {
-            warnings.push(format!(
-                "  empty goal  {}\n    status is {} but goal is empty\n    → edit .claude/sessions/{}.md",
-                s.name, s.status, s.name,
-            ));
-            session_issues += 1;
-        }
-
-        // 4. Empty scope on completed sessions
-        if s.scope.is_empty() && s.status == crate::registry::SessionStatus::Completed {
-            infos.push(format!(
-                "  empty scope  {}\n    completed but no scope documented\n    → ccsm scope {} \"<approach>\"",
-                s.name, s.name,
-            ));
-            session_issues += 1;
-        }
-
-        // 5. Missing detail file
-        let detail = workspace.join(".claude").join("sessions").join(format!("{}.md", s.name));
-        if !detail.exists() && !s.name.is_empty() {
-            infos.push(format!(
-                "  no detail file  {}\n    → cp .claude/session-detail-template.md .claude/sessions/{}.md",
-                s.name, s.name,
-            ));
-            session_issues += 1;
-        }
-
-        // 6. Template residue in detail file
-        if detail.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&detail) {
-                let mut residue: Vec<&str> = Vec::new();
-                for line in contents.lines() {
-                    let trimmed = line.trim();
-                    // Skip HTML comments (template instructions)
-                    if trimmed.starts_with("<!--") || trimmed.starts_with("-->") || trimmed == "-->" {
-                        continue;
-                    }
-                    if trimmed.contains("(fill in") {
-                        residue.push("(fill in)");
-                    }
-                    if trimmed.contains("{{") && trimmed.contains("}}") {
-                        residue.push("{{placeholder}}");
-                    }
-                }
-                if !residue.is_empty() {
-                    residue.dedup();
-                    warnings.push(format!(
-                        "  template residue  {}\n    detail file has unfilled {} — status is {}\n    → edit .claude/sessions/{}.md and fill the placeholder sections",
-                        s.name,
-                        residue.join(", "),
-                        s.status,
-                        s.name,
-                    ));
-                    session_issues += 1;
-                }
-            }
-        }
-
-        if session_issues == 0 {
-            healthy += 1;
-        }
-    }
-
-    // 6. Excessive in_progress — hype mode detected
-    if in_progress_count >= 20 {
-        warnings.push(format!(
-            "  {} in_progress sessions — hype mode detected. Close stale sessions with `ccsm complete <name>` or `ccsm abandon <name>`",
-            in_progress_count,
-        ));
-    }
-
-    // 7. Stale lock file
-    if lock_path.exists() {
-        infos.push(format!(
-            "  stale lock file  {}\n    → rm {}  (if no ccsm command is running)",
-            lock_path.display(),
-            lock_path.display(),
-        ));
-    }
-
-    // 8. Large transcripts — candidates for archive
-    let mut large: Vec<(String, u64)> = Vec::new();
-    for s in &reg.sessions {
-        if s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty() {
-            let transcript = proj_dir.join(format!("{}.jsonl", s.session_id));
-            if let Ok(meta) = std::fs::metadata(&transcript) {
-                let mb = meta.len() / 1_000_000;
-                if mb > 0 {
-                    large.push((s.name.clone(), mb));
-                }
-            }
-        }
-    }
-    if !large.is_empty() {
-        large.sort_by(|a, b| b.1.cmp(&a.1));
-        let names: Vec<String> = large.iter().map(|(n, mb)| format!("{} ({} MB)", n, mb)).collect();
-        let total: u64 = large.iter().map(|(_, mb)| *mb).sum();
-        if total >= 5 {
-            tips.push(format!(
-                "  {} completed session{} with transcripts: {}\n    → ccsm archive-all to free {} MB",
-                large.len(),
-                if large.len() == 1 { "" } else { "s" },
-                names.join(", "),
-                total,
-            ));
-        }
-    }
-
-    // ── Print results ───────────────────────────────────────────────
-    let any_issues = !warnings.is_empty() || !infos.is_empty() || !tips.is_empty();
-
-    if !warnings.is_empty() {
-        println!("⚠ warnings (should fix)");
-        for w in &warnings { println!("{}", w); }
-        println!();
-    }
-    if !infos.is_empty() {
-        println!("⚡ info");
-        for i in &infos { println!("{}", i); }
-        println!();
-    }
-    if !tips.is_empty() {
-        println!("💡 tips");
-        for t in &tips { println!("{}", t); }
-        println!();
-    }
-    if healthy > 0 && any_issues {
-        println!("✓ {} healthy session{}", healthy, if healthy == 1 { "" } else { "s" });
-    } else if !any_issues {
-        println!("✓ all {} session{} healthy", healthy, if healthy == 1 { "" } else { "s" });
-    }
-
     Ok(())
 }
 
@@ -1681,6 +1073,163 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+// ── InjectScope subcommand ───────────────────────────────────────────────
+
+/// `ccsm inject-scope [--name <name>]` — output a `<system-reminder>` block
+/// with the active session's goal and scope.  Designed for the SystemMessage
+/// hook so the agent sees its current task constraints on every turn.
+fn run_inject_scope(name: Option<&str>) -> anyhow::Result<()> {
+    let workspace = std::env::current_dir()?;
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+
+    let session = match name {
+        Some(n) => reg
+            .sessions
+            .iter()
+            .find(|s| s.name == n)
+            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
+        None => {
+            let active: Vec<_> = reg
+                .sessions
+                .iter()
+                .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+                .collect();
+            match active.as_slice() {
+                [] => return Ok(()), // silent — no active session
+                [s] => *s,
+                multiple => {
+                    eprintln!(
+                        "warning: {} in_progress sessions — injecting first: {}",
+                        multiple.len(),
+                        multiple[0].name
+                    );
+                    multiple[0]
+                }
+            }
+        }
+    };
+
+    println!("<system-reminder>");
+    println!("ACTIVE SESSION: {}", session.name);
+    if !session.goal.is_empty() {
+        println!("GOAL: {}", session.goal);
+    }
+    if !session.scope.is_empty() && !session.scope.contains("(fill in") {
+        println!("SCOPE: {}", session.scope);
+    }
+    println!(
+        "CONSTRAINT: Work within this scope. If you need to do something outside it, ask first."
+    );
+    println!("</system-reminder>");
+    Ok(())
+}
+
+// ── GateCheck subcommand ──────────────────────────────────────────────────
+
+/// `ccsm gate-check [--name <name>] [--strict]` — validate session readiness
+/// before completing.  Designed for the Stop hook.
+///
+/// Checks: scope/goal presence, git diff surface, untracked files.
+/// Exit 0 = pass, 1 = fail (for hook integration).
+fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
+    let workspace = std::env::current_dir()?;
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+
+    let session = match name {
+        Some(n) => reg
+            .sessions
+            .iter()
+            .find(|s| s.name == n)
+            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
+        None => {
+            let active: Vec<_> = reg
+                .sessions
+                .iter()
+                .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+                .collect();
+            match active.as_slice() {
+                [] => {
+                    println!("GATE: NO_ACTIVE_SESSION — nothing to gate");
+                    return Ok(());
+                }
+                [s] => *s,
+                multiple => {
+                    println!("GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.", multiple.len());
+                    for s in multiple {
+                        println!("  - {}", s.name);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    let mut fail = false;
+
+    // ── Scope ──────────────────────────────────────────────────────────
+    let scope_empty = session.scope.is_empty() || session.scope.contains("(fill in");
+    if scope_empty {
+        if strict {
+            println!("GATE: FAIL — scope is empty or unfilled");
+            fail = true;
+        } else {
+            println!(
+                "GATE: WARN — scope is empty. Set: ccsm scope {} \"...\"",
+                session.name
+            );
+        }
+    }
+
+    // ── Goal ──────────────────────────────────────────────────────────
+    if session.goal.is_empty() {
+        if strict {
+            println!("GATE: FAIL — goal is empty");
+            fail = true;
+        } else {
+            println!("GATE: WARN — goal is empty");
+        }
+    }
+
+    // ── Git diff ──────────────────────────────────────────────────────
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["diff", "--stat", "HEAD"])
+        .current_dir(&workspace)
+        .output()
+        && !output.stdout.is_empty() {
+            let stat = String::from_utf8_lossy(&output.stdout);
+            println!("GATE: CHANGED FILES");
+            let lines: Vec<&str> = stat.lines().collect();
+            for line in lines.iter().take(20) {
+                println!("  {}", line);
+            }
+            if lines.len() > 20 {
+                println!("  ... and {} more lines", lines.len() - 20);
+            }
+        }
+
+    // ── Untracked files ───────────────────────────────────────────────
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .current_dir(&workspace)
+        .output()
+        && !output.stdout.is_empty() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let files: Vec<&str> = text.lines().collect();
+            if !files.is_empty() {
+                println!("GATE: UNTRACKED ({})", files.len());
+                for f in files.iter().take(10) {
+                    println!("  ? {}", f);
+                }
+            }
+        }
+
+    if fail {
+        std::process::exit(1);
+    }
+    println!("GATE: PASS — '{}' is ready for review", session.name);
     Ok(())
 }
 
