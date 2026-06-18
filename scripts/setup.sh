@@ -169,8 +169,87 @@ JSON
     echo "[done] Created empty registry at $WORKSPACE_REGISTRY"
 fi
 
+# ── 4. Install scope injection hooks in global settings ──────────────────
+
+GLOBAL_SETTINGS="${HOME}/.claude/settings.json"
+
+install_hooks() {
+    # Use jq to merge ccsm hooks into existing settings, preserving all other config.
+    if command -v jq &>/dev/null; then
+        local tmp
+        tmp=$(mktemp)
+        jq '
+            # Add SessionStart if not already present
+            if .hooks.SessionStart then . else
+                .hooks.SessionStart = [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "ccsm inject-scope 2>/dev/null || true"
+                    }]
+                }]
+            end |
+            # Add UserPromptSubmit if not already present
+            if .hooks.UserPromptSubmit then . else
+                .hooks.UserPromptSubmit = [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "ccsm inject-scope 2>/dev/null || true"
+                    }]
+                }]
+            end
+        ' "$GLOBAL_SETTINGS" > "$tmp" && mv "$tmp" "$GLOBAL_SETTINGS"
+        echo "[updated] Scope injection hooks installed in $GLOBAL_SETTINGS"
+    else
+        echo "[skipped] jq not found — add hooks manually:"
+        echo "  SessionStart + UserPromptSubmit → ccsm inject-scope"
+    fi
+}
+
+if [ -f "$GLOBAL_SETTINGS" ]; then
+    # Ensure .hooks exists
+    if command -v jq &>/dev/null; then
+        jq '.hooks //= {}' "$GLOBAL_SETTINGS" > "${GLOBAL_SETTINGS}.tmp" \
+            && mv "${GLOBAL_SETTINGS}.tmp" "$GLOBAL_SETTINGS" 2>/dev/null || true
+    fi
+    install_hooks
+elif [ "$(uname)" = "Darwin" ] || [ "$(uname)" = "Linux" ]; then
+    # Create a fresh settings.json with just the ccsm hooks
+    cat > "$GLOBAL_SETTINGS" <<'JSON'
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ccsm inject-scope 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ccsm inject-scope 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+JSON
+    echo "[created] Fresh settings.json with ccsm scope injection hooks"
+fi
+
 echo ""
 echo "ccsm setup complete."
 echo "  Global CLAUDE.md  ←  session tracking section + CLI reference"
 echo "  Global skill      ←  /session-manager"
+echo "  Global hooks      ←  SessionStart + UserPromptSubmit (ccsm inject-scope)"
 echo "  Workspace registry←  .claude/sessions.json"

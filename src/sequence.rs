@@ -246,7 +246,7 @@ fn validate_uuid(s: &str) -> Result<()> {
 }
 
 fn get_mut<'a>(
-    sessions: &'a mut Vec<WorkspaceSession>,
+    sessions: &'a mut [WorkspaceSession],
     name: &str,
 ) -> Result<&'a mut WorkspaceSession> {
     sessions

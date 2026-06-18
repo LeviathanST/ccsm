@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 use crate::session::Session;
 
@@ -34,7 +33,7 @@ pub struct GlobalSessionEntry {
 
 impl GlobalRegistry {
     /// Build from the raw session files in `~/.claude/sessions/`.
-    pub fn build(sessions_dir: &PathBuf) -> Result<Self> {
+    pub fn build(sessions_dir: &std::path::Path) -> Result<Self> {
         let sessions = crate::session::load_all(sessions_dir, None)?;
 
         // Group by workspace (cwd)
@@ -59,7 +58,7 @@ impl GlobalRegistry {
                     .iter()
                     .filter_map(|s| s.updated_at)
                     .max()
-                    .map(|ts| format_ts(ts))
+                    .map(format_ts)
                     .unwrap_or_default();
 
                 let sessions: Vec<GlobalSessionEntry> = ss
@@ -92,23 +91,19 @@ impl GlobalRegistry {
     }
 
     /// Load from disk, or build fresh if missing.
-    pub fn load_or_build(global_path: &PathBuf, sessions_dir: &PathBuf) -> Result<Self> {
-        if global_path.exists() {
-            match std::fs::read_to_string(global_path) {
-                Ok(contents) => {
-                    if let Ok(reg) = serde_json::from_str::<GlobalRegistry>(&contents) {
-                        return Ok(reg);
-                    }
-                }
-                Err(_) => {}
-            }
+    pub fn load_or_build(global_path: &std::path::Path, sessions_dir: &std::path::Path) -> Result<Self> {
+        if global_path.exists()
+            && let Ok(contents) = std::fs::read_to_string(global_path)
+            && let Ok(reg) = serde_json::from_str::<GlobalRegistry>(&contents)
+        {
+            return Ok(reg);
         }
         let reg = Self::build(sessions_dir)?;
         reg.save(global_path)?;
         Ok(reg)
     }
 
-    pub fn save(&self, path: &PathBuf) -> Result<()> {
+    pub fn save(&self, path: &std::path::Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -178,7 +173,7 @@ impl std::fmt::Display for SessionStatus {
 
 impl WorkspaceRegistry {
     /// Load from the repo's `.claude/sessions.json`, or return empty.
-    pub fn load(repo_path: &PathBuf) -> Result<Self> {
+    pub fn load(repo_path: &std::path::Path) -> Result<Self> {
         let path = repo_path.join(".claude").join("sessions.json");
         if path.exists() {
             let contents = std::fs::read_to_string(&path).context("reading workspace registry")?;
@@ -197,14 +192,14 @@ impl WorkspaceRegistry {
     /// Load with an exclusive lock held for the lifetime of the returned `LockFile`.
     /// Use this for every read-modify-write cycle to prevent races between
     /// chained `ccsm` mutation commands.
-    pub fn load_locked(repo_path: &PathBuf) -> Result<(Self, LockFile)> {
+    pub fn load_locked(repo_path: &std::path::Path) -> Result<(Self, LockFile)> {
         let lock = LockFile::acquire(repo_path)?;
         let reg = Self::load(repo_path)?;
         Ok((reg, lock))
     }
 
     /// Save back to disk.
-    pub fn save(&self, repo_path: &PathBuf) -> Result<()> {
+    pub fn save(&self, repo_path: &std::path::Path) -> Result<()> {
         let path = repo_path.join(".claude").join("sessions.json");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -268,14 +263,13 @@ impl WorkspaceRegistry {
             if let Ok(entries) = std::fs::read_dir(home.join(".claude").join("sessions")) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().map_or(true, |e| e != "json") {
+                    if path.extension().is_none_or(|e| e != "json") {
                         continue;
                     }
-                    if let Ok(contents) = std::fs::read_to_string(&path) {
-                        if contents.contains(session_id) {
+                    if let Ok(contents) = std::fs::read_to_string(&path)
+                        && contents.contains(session_id) {
                             let _ = std::fs::remove_file(&path);
                         }
-                    }
                 }
             }
         }
@@ -320,17 +314,16 @@ impl WorkspaceRegistry {
             if let Ok(entries) = std::fs::read_dir(home.join(".claude").join("sessions")) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.extension().map_or(true, |e| e != "json") {
+                    if path.extension().is_none_or(|e| e != "json") {
                         continue;
                     }
-                    if let Ok(contents) = std::fs::read_to_string(&path) {
-                        if contents.contains(session_id) {
+                    if let Ok(contents) = std::fs::read_to_string(&path)
+                        && contents.contains(session_id) {
                             if let Ok(meta) = std::fs::metadata(&path) {
                                 freed += meta.len();
                             }
                             let _ = std::fs::remove_file(&path);
                         }
-                    }
                 }
             }
         }
@@ -444,7 +437,7 @@ pub struct LockFile {
 }
 
 impl LockFile {
-    pub fn acquire(repo_path: &PathBuf) -> Result<Self> {
+    pub fn acquire(repo_path: &std::path::Path) -> Result<Self> {
         let lock_path = repo_path.join(".claude").join("sessions.json.lock");
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent).ok();
@@ -463,7 +456,7 @@ impl LockFile {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn now_iso() -> String {
+pub fn now_iso() -> String {
     // Simple ISO-like timestamp without chrono dependency
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -494,6 +487,229 @@ pub(crate) fn project_slug(path: &std::path::Path) -> String {
     s.chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+/// Simple Levenshtein distance — used to suggest corrections for typos.
+pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev = (0..=b.len()).collect::<Vec<_>>();
+    let mut curr = vec![0; b.len() + 1];
+    for i in 1..=a.len() {
+        curr[0] = i;
+        for j in 1..=b.len() {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
+pub(crate) fn note_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let secs_per_day: u64 = 86400;
+    let days = secs / secs_per_day;
+    let day_secs = secs % secs_per_day;
+    let hours = day_secs / 3600;
+    let mins = (day_secs % 3600) / 60;
+
+    let (y, m, d) = days_to_date(days);
+    format!("{:04}-{:02}-{:02} {:02}:{:02}Z", y, m, d, hours, mins)
+}
+
+/// Convert days since 1970-01-01 to (year, month, day).
+fn days_to_date(mut days: u64) -> (u32, u32, u32) {
+    let mut year: u32 = 1970;
+    loop {
+        let diy: u64 = if is_leap(year) { 366 } else { 365 };
+        if days < diy { break; }
+        days -= diy;
+        year += 1;
+    }
+    let mdays: [u64; 12] = if is_leap(year) {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month: u32 = 1;
+    for &md in &mdays {
+        if days < md { break; }
+        days -= md;
+        month += 1;
+    }
+    (year, month, (days + 1) as u32)
+}
+
+fn is_leap(y: u32) -> bool {
+    y.is_multiple_of(4) && !y.is_multiple_of(100) || y.is_multiple_of(400)
+}
+
+/// Insert `new_entry` into the Progress Log section of `contents`.
+/// Prepends (newest at top) — inserts right after the `## Progress Log`
+/// header, past any blank lines or HTML comments.
+pub(crate) fn insert_note(contents: &str, new_entry: &str) -> String {
+    let lines: Vec<&str> = contents.lines().collect();
+
+    if let Some(hdr) = lines.iter().position(|l| l.trim() == "## Progress Log") {
+        let mut ins = hdr + 1;
+        let mut comment = false;
+        while ins < lines.len() {
+            let t = lines[ins].trim();
+            if t.is_empty() {
+                ins += 1;
+            } else if t.starts_with("<!--") {
+                comment = true;
+                ins += 1;
+            } else if comment && (t == "-->" || t.ends_with("-->")) {
+                comment = false;
+                ins += 1;
+            } else if comment {
+                ins += 1;
+            } else {
+                break;
+            }
+        }
+
+        let mut out = String::with_capacity(contents.len() + new_entry.len() + 2);
+        for line in &lines[..ins] {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push_str(new_entry);
+        if ins < lines.len() { out.push('\n'); }
+        for line in &lines[ins..] {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    } else {
+        let mut out = contents.to_string();
+        if !out.ends_with('\n') { out.push('\n'); }
+        out.push('\n');
+        out.push_str("## Progress Log\n\n");
+        out.push_str(new_entry);
+        out.push('\n');
+        out
+    }
+}
+
+/// Replace the body of a `## SectionName` in a markdown string.
+pub(crate) fn replace_detail_section(md: &str, header: &str, new_body: &str) -> String {
+    let lines: Vec<&str> = md.lines().collect();
+
+    let hdr_idx = lines.iter().position(|l| {
+        let t = l.trim();
+        t == header || t.starts_with(&format!("{} ", header))
+    });
+
+    match hdr_idx {
+        Some(hdr) => {
+            let end = lines[hdr + 1..]
+                .iter()
+                .position(|l| l.starts_with("## "))
+                .map(|p| hdr + 1 + p)
+                .unwrap_or(lines.len());
+
+            let mut out = String::new();
+            for line in &lines[..=hdr] {
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push('\n');
+            out.push_str(new_body);
+            if end < lines.len() {
+                out.push('\n');
+            }
+            for line in &lines[end..] {
+                out.push_str(line);
+                out.push('\n');
+            }
+            out
+        }
+        None => {
+            let mut out = md.to_string();
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&format!("\n{}\n\n{}\n", header, new_body));
+            out
+        }
+    }
+}
+
+pub(crate) fn is_kebab_case(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+pub(crate) fn harvest_from_pid(home: &std::path::Path, pid: u32) -> anyhow::Result<String> {
+    let session_file = home.join(".claude").join("sessions").join(format!("{pid}.json"));
+    if !session_file.exists() {
+        anyhow::bail!(
+            "no session file at {}\n  Is PID {} running?",
+            session_file.display(), pid
+        );
+    }
+    let contents = std::fs::read_to_string(&session_file)
+        .context("reading session file")?;
+    let s: crate::session::Session = serde_json::from_str(&contents)
+        .context("parsing session file")?;
+    if s.session_id.is_empty() {
+        anyhow::bail!("session file for PID {} has no sessionId yet", pid);
+    }
+    Ok(s.session_id)
+}
+
+pub(crate) fn validate_session_id(sid: &str) -> anyhow::Result<()> {
+    let parts: Vec<&str> = sid.split('-').collect();
+    if parts.len() == 5
+        && parts[0].len() == 8
+        && parts[1].len() == 4
+        && parts[2].len() == 4
+        && parts[3].len() == 4
+        && parts[4].len() == 12
+        && sid.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "'{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
+             If you renamed the session in the TUI, the name changed but the UUID didn't.\n\
+             Use --pid <pid> instead: ccsm attach {} --pid <pid>",
+            sid, sid
+        );
+    }
+}
+
+pub(crate) fn parse_sections(md: &str) -> Vec<(String, String)> {
+    let mut sections: Vec<(String, String)> = Vec::new();
+    let mut current_header: Option<String> = None;
+    let mut current_body = String::new();
+
+    for line in md.lines() {
+        if line.starts_with("## ") {
+            if let Some(h) = current_header.take() {
+                sections.push((h, std::mem::take(&mut current_body)));
+            }
+            current_header = Some(line.strip_prefix("## ").unwrap().trim().to_string());
+        } else if current_header.is_some() {
+            if !current_body.is_empty() {
+                current_body.push('\n');
+            }
+            current_body.push_str(line);
+        }
+    }
+    if let Some(h) = current_header
+        && (!current_body.trim().is_empty() || sections.iter().any(|(_, b)| !b.trim().is_empty())) {
+            sections.push((h, current_body));
+        }
+    sections
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
