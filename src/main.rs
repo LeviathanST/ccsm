@@ -1309,11 +1309,19 @@ fn run_note_check() -> anyhow::Result<()> {
 
     let workspace = std::env::current_dir()?;
 
-    // Find in_progress session
+    // Find in_progress session. CCSM_SESSION env var is authoritative if set.
     let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
-    let session = match reg.sessions.iter().find(|s| s.status == SessionStatus::InProgress) {
-        Some(s) => s,
-        None => return Ok(()), // no active session → silent
+    let session = {
+        let env_session = std::env::var("CCSM_SESSION").ok();
+        let s = if let Some(ref n) = env_session {
+            reg.sessions.iter().find(|s| s.name == *n && s.status == SessionStatus::InProgress)
+        } else {
+            None
+        };
+        match s.or_else(|| reg.sessions.iter().find(|s| s.status == SessionStatus::InProgress)) {
+            Some(s) => s,
+            None => return Ok(()), // no active session → silent
+        }
     };
 
     // Check detail file note recency
@@ -1561,21 +1569,52 @@ fn run_inject_scope(name: Option<&str>) -> anyhow::Result<()> {
             .find(|s| s.name == n)
             .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
         None => {
-            let active: Vec<_> = reg
-                .sessions
-                .iter()
-                .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
-                .collect();
-            match active.as_slice() {
-                [] => return Ok(()), // silent — no active session
-                [s] => *s,
-                multiple => {
-                    eprintln!(
-                        "warning: {} in_progress sessions — injecting first: {}",
-                        multiple.len(),
-                        multiple[0].name
-                    );
-                    multiple[0]
+            // CCSM_SESSION env var is injected at spawn time — it's the
+            // deterministic source of truth for which session this agent
+            // belongs to.  The in_progress scan is a fallback only.
+            let env_session = std::env::var("CCSM_SESSION").ok();
+            if let Some(ref n) = env_session {
+                if let Some(s) = reg.sessions.iter().find(|s| s.name == *n) {
+                    s
+                } else {
+                    // CCSM_SESSION name not found in this workspace registry —
+                    // agent might be in a different workspace. Fall through.
+                    let active: Vec<_> = reg
+                        .sessions
+                        .iter()
+                        .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+                        .collect();
+                    match active.as_slice() {
+                        [] => return Ok(()),
+                        [s] => *s,
+                        multiple => {
+                            eprintln!(
+                                "warning: CCSM_SESSION={} not found, {} in_progress — injecting first: {}",
+                                n,
+                                multiple.len(),
+                                multiple[0].name
+                            );
+                            multiple[0]
+                        }
+                    }
+                }
+            } else {
+                let active: Vec<_> = reg
+                    .sessions
+                    .iter()
+                    .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+                    .collect();
+                match active.as_slice() {
+                    [] => return Ok(()),
+                    [s] => *s,
+                    multiple => {
+                        eprintln!(
+                            "warning: {} in_progress sessions — injecting first: {}",
+                            multiple.len(),
+                            multiple[0].name
+                        );
+                        multiple[0]
+                    }
                 }
             }
         }
@@ -1614,23 +1653,53 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
             .find(|s| s.name == n)
             .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
         None => {
-            let active: Vec<_> = reg
-                .sessions
-                .iter()
-                .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
-                .collect();
-            match active.as_slice() {
-                [] => {
-                    println!("GATE: NO_ACTIVE_SESSION — nothing to gate");
-                    return Ok(());
-                }
-                [s] => *s,
-                multiple => {
-                    println!("GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.", multiple.len());
-                    for s in multiple {
-                        println!("  - {}", s.name);
+            // CCSM_SESSION env var is injected at spawn time.
+            let env_session = std::env::var("CCSM_SESSION").ok();
+            if let Some(ref n) = env_session {
+                if let Some(s) = reg.sessions.iter().find(|s| s.name == *n) {
+                    s
+                } else {
+                    // CCSM_SESSION name not in this workspace's registry —
+                    // fall through to in_progress scan.
+                    let active: Vec<_> = reg
+                        .sessions
+                        .iter()
+                        .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+                        .collect();
+                    match active.as_slice() {
+                        [] => {
+                            println!("GATE: NO_ACTIVE_SESSION — nothing to gate");
+                            return Ok(());
+                        }
+                        [s] => *s,
+                        multiple => {
+                            println!("GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.", multiple.len());
+                            for s in multiple {
+                                println!("  - {}", s.name);
+                            }
+                            return Ok(());
+                        }
                     }
-                    return Ok(());
+                }
+            } else {
+                let active: Vec<_> = reg
+                    .sessions
+                    .iter()
+                    .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+                    .collect();
+                match active.as_slice() {
+                    [] => {
+                        println!("GATE: NO_ACTIVE_SESSION — nothing to gate");
+                        return Ok(());
+                    }
+                    [s] => *s,
+                    multiple => {
+                        println!("GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.", multiple.len());
+                        for s in multiple {
+                            println!("  - {}", s.name);
+                        }
+                        return Ok(());
+                    }
                 }
             }
         }
