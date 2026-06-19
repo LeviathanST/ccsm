@@ -1569,52 +1569,27 @@ fn run_inject_scope(name: Option<&str>) -> anyhow::Result<()> {
             .find(|s| s.name == n)
             .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
         None => {
-            // CCSM_SESSION env var is injected at spawn time — it's the
-            // deterministic source of truth for which session this agent
-            // belongs to.  The in_progress scan is a fallback only.
-            let env_session = std::env::var("CCSM_SESSION").ok();
-            if let Some(ref n) = env_session {
-                if let Some(s) = reg.sessions.iter().find(|s| s.name == *n) {
-                    s
-                } else {
-                    // CCSM_SESSION name not found in this workspace registry —
-                    // agent might be in a different workspace. Fall through.
-                    let active: Vec<_> = reg
-                        .sessions
-                        .iter()
-                        .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
-                        .collect();
-                    match active.as_slice() {
-                        [] => return Ok(()),
-                        [s] => *s,
-                        multiple => {
+            // CCSM_SESSION is injected at spawn time — it's the authoritative
+            // source of identity. If absent/empty, there's no live session.
+            let csm = std::env::var("CCSM_SESSION")
+                .ok()
+                .filter(|v| !v.is_empty());
+            match csm {
+                Some(ref n) => {
+                    match reg.sessions.iter().find(|s| s.name == *n) {
+                        Some(s) => s,
+                        None => {
                             eprintln!(
-                                "warning: CCSM_SESSION={} not found, {} in_progress — injecting first: {}",
-                                n,
-                                multiple.len(),
-                                multiple[0].name
+                                "info: CCSM_SESSION={} not found in workspace — no live session",
+                                n
                             );
-                            multiple[0]
+                            return Ok(());
                         }
                     }
                 }
-            } else {
-                let active: Vec<_> = reg
-                    .sessions
-                    .iter()
-                    .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
-                    .collect();
-                match active.as_slice() {
-                    [] => return Ok(()),
-                    [s] => *s,
-                    multiple => {
-                        eprintln!(
-                            "warning: {} in_progress sessions — injecting first: {}",
-                            multiple.len(),
-                            multiple[0].name
-                        );
-                        multiple[0]
-                    }
+                None => {
+                    eprintln!("No live session! Please pick a session to continue.");
+                    return Ok(());
                 }
             }
         }
