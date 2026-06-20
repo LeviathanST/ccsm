@@ -66,3 +66,8 @@ checklist, close-gate, session-lifecycle, detail-file
 ## Notes
 
 <!-- Free-form: decisions, discoveries, gotchas, links -->
+
+## Group
+
+- **Group:** test-group
+- **Rank:** 1

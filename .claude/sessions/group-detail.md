@@ -1,6 +1,6 @@
 # Session: group-detail
 
-> **pending** | started {{started}} | completed {{completed}} | {{pid_count}} pids
+> **in_progress** | started 2026-06-20 15:54Z | completed — | 1 pid
 
 ## Goal
 
@@ -8,21 +8,21 @@ Central group markdown files at .claude/session-group/<name>.md
 
 ## Scope / Plan
 
-(fill in — approach, constraints, what's in/out)
+Added `.claude/session-group/` directory with per-group markdown files (## Goal / ## Scope / ## Members / ## Notes). Added `--goal` flag to `ccsm group`. Group files auto-create on first `--group` join with member list, auto-delete on last `--clear`. Overview (`ccsm group <name>`) reads and displays the group Goal section. Helpers: `ensure_group_file`, `update_group_members`, `set_group_goal`, `group_file_path`. No registry format changes. Updated docs: `--help` text and CLAUDE.md.
 
 ## Tags
 
-(fill in)
+grouping, detail-files, markdown, session-lifecycle
 
 ## Live Session Data
 
 | Field | Value |
 |---|---|
-| session_id | `(auto — ccsm manages)` |
+| session_id | `c8438d48-3b46-473d-af4c-a1df686bd6c1` |
 | cwd | `/home/leviathanst/workspaces/cc-tui` |
-| pids | (auto — ccsm manages) |
-| kind | `(auto)` |
-| version | `(auto)` |
+| pids | 66057 |
+| kind | `claude` |
+| version | `0.7.1` |
 | waitingFor | `(none)` |
 
 ## Progress Log
@@ -31,6 +31,10 @@ Central group markdown files at .claude/session-group/<name>.md
   Append dated entries as work happens. Keep newest at top.
   Format: [YYYY-MM-DD HH:MM] <note>
 -->
+
+- [2026-06-20 16:13Z] END-GATE: Built group detail markdown files — auto-create on join, auto-clean on last leave, --goal flag, overview display. All 65 tests pass. Docs updated (--help + CLAUDE.md). Nothing left undone.
+
+- [2026-06-20 16:08Z] Built group detail markdown files — auto-create on first join, auto-clean on last leave, --goal flag, overview display integration. All 65 tests pass.
 
 - [day20624T15:52:55Z] Session created
 

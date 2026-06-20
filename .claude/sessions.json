@@ -1,5 +1,5 @@
 {
-  "updated": "day20624T15:54:02Z",
+  "updated": "day20624T16:07:13Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -196,9 +196,7 @@
       "goal": "-g Group related sessions together with ordering — free (any order) or numeric rank",
       "scope": "Add group field to session entries: group.name (kebab slug) + group.rank (free | number). CLI surface: (1) ccsm group <name> --group <g> [--rank free|<n>] — set group+rank, (2) ccsm group <name> --clear — remove from group, (3) ccsm group <name> — overview of all sessions in that group, (4) ccsm next <group> — print next session to work on (in_progress > pending by rank/alpha), (5) ccsm list --group <g> [--by-rank] — filter. Rank collisions accepted (tie-break alphabetical). Registry schema gets optional group object. In: CLI, registry schema, list filtering, detail file section. Out: dependency graph, cross-group constraints, TUI rendering.",
       "status": "completed",
-      "pids": [
-        45694
-      ],
+      "pids": [],
       "tags": [
         "grouping",
         "ordering",
@@ -207,23 +205,22 @@
       ],
       "started": "day20624T15:32Z",
       "completed": "day20624T15:54:02Z",
-      "group": {
-        "name": "features",
-        "rank": 1
-      },
+      "group": null,
       "retired_session_ids": []
     },
     {
-      "session_id": "",
+      "session_id": "c8438d48-3b46-473d-af4c-a1df686bd6c1",
       "name": "group-detail",
       "goal": "Central group markdown files at .claude/session-group/<name>.md",
       "scope": "Add .claude/session-group/ directory with per-group markdown files matching the session detail pattern. Auto-create file when first session joins a group. Populate with ## Goal / ## Scope / ## Members (auto-generated list) / ## Notes sections. Delete file when last session leaves (auto-clean). Update ccsm group <name> overview to read and display the group detail file. CLI: ccsm group <name> --goal <text> sets the group goal. No new registry format — markdown files only.",
-      "status": "pending",
-      "pids": [],
+      "status": "in_progress",
+      "pids": [
+        66057
+      ],
       "tags": [
         "grouping, detail-files, markdown, session-lifecycle"
       ],
-      "started": "",
+      "started": "day20624T15:54Z",
       "completed": "",
       "group": null,
       "retired_session_ids": []
