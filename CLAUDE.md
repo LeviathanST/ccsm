@@ -96,7 +96,7 @@ ccsm show <name> --section <s>            # extract one section from detail file
 ### Mutate (never edit JSON directly)
 
 ```
-ccsm new       <name> -g <goal>  # create pending entry
+ccsm new       <name> -g <goal>  # create pending entry (-c for checklist section)
 ccsm start     <name>            # → in_progress
 ccsm complete  <name> [--force]   # → completed + timestamp (gate checks)
 ccsm block     <name>            # → blocked
@@ -109,12 +109,30 @@ ccsm attach    <name>            # auto-discover & link live session
 ccsm resume    <name>            # spawn claude (--resume if session_id exists)
 ccsm refresh   <name> [-r why]   # retire current Claude session, spawn fresh
 ccsm close     <name>            # pre-completion gate: check detail file completeness
+ccsm checklist <name>            # list checklist items (--init adds section)
+ccsm check     <name> <item> -s <pending|done|skipped|blocked>  # set checklist item status
 ccsm note      <name> <text>     # append timestamped entry to progress log
 ccsm note-check                  # (hook) remind if tree dirty + detail file stale
 ccsm archive   <name>            # delete transcript, keep entry as work log
 ccsm archive-all                 # archive all completed sessions
 ccsm doctor                      # scan for health issues + cleanup hints
 ```
+
+### Checklist
+
+The `## Checklist` section is **opt-in** — sessions are created without it by default.
+
+```bash
+ccsm new my-session -c              # create with checklist section
+ccsm checklist my-session --init    # add section to existing session
+ccsm checklist my-session           # list items with status
+ccsm check my-session 1 -s done     # mark item #1 done (by index)
+ccsm check my-session "text" -s skipped  # mark by text match
+ccsm check my-session 3 -s blocked  # mark item #3 blocked
+```
+
+Checkbox chars in the detail file: `- [ ]` pending, `- [x]` done, `- [~]` skipped, `- [!]` blocked.
+The close gate blocks completion while pending or blocked items remain.
 
 ### Batch (single lock/save cycle)
 

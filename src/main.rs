@@ -51,7 +51,10 @@ enum Commands {
         #[arg(short = 'S', long)]
         section: Option<String>,
     },
-    /// Create a pending entry. Use before starting work so the team sees it.
+    /// Create a pending entry. Optionally embed a ## Checklist section (-c).
+    ///
+    /// Without -c the detail file stays minimal (no checklist). Add one later with `ccsm checklist --init`.
+    #[command(long_about = None)]
     New {
         /// kebab-case session name
         name: String,
@@ -61,6 +64,9 @@ enum Commands {
         /// Skip fuzzy duplicate detection
         #[arg(short = 'f', long)]
         force: bool,
+        /// Also write a ## Checklist section to the detail file
+        #[arg(short = 'c', long)]
+        checklist: bool,
     },
     /// pending → in_progress
     Start { name: String },
@@ -131,6 +137,38 @@ enum Commands {
     /// Pre-completion gate: check detail file completeness, print self-review checklist.
     /// Exits non-zero if the detail file is hollow. Run before `ccsm complete`.
     Close { name: String },
+    /// List checklist items from the session detail file.
+    ///
+    /// The ## Checklist section is opt-in — add it with `ccsm new -c` or `ccsm checklist --init`.
+    ///
+    /// Checkbox format in the detail file:
+    ///   - [ ] pending
+    ///   - [x] done
+    ///   - [~] skipped
+    ///   - [!] blocked
+    ///
+    /// The close gate blocks completion while pending or blocked items remain.
+    Checklist {
+        name: String,
+        /// Add ## Checklist section to detail file if it doesn't exist yet
+        #[arg(short = 'i', long)]
+        init: bool,
+    },
+    /// Toggle a checklist item's checkbox in the detail file.
+    ///
+    /// ITEM can be a 1-based number or text to match (substring, case-insensitive).
+    ///
+    /// Examples:
+    ///   ccsm check my-session 1 -s done
+    ///   ccsm check my-session "write tests" -s skipped
+    Check {
+        name: String,
+        /// 1-based index (1, 2, 3…) or text substring to match
+        item: String,
+        /// Target status: pending, done, skipped, blocked
+        #[arg(short = 's', long)]
+        status: String,
+    },
     /// Stop-hook helper: if working tree is dirty, remind to update session detail.
     /// Auto-discovers the in_progress session. Silent when clean or recently noted.
     NoteCheck,
@@ -190,7 +228,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::List { active, summary, status, verbose } => run_list(active, summary, verbose, status.as_deref()),
         Commands::Show { name, section } => run_show(&name, section.as_deref()),
-        Commands::New { name, goal, force } => run_new(&name, goal.as_deref().unwrap_or(""), force),
+        Commands::New { name, goal, force, checklist } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist),
         Commands::Start { name } => run_status(&name, "start", false),
         Commands::Complete { name, force } => run_status(&name, "complete", force),
         Commands::Block { name } => run_status(&name, "block", false),
@@ -206,6 +244,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Recover { name } => run_recover(&name),
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path()),
         Commands::Close { name } => run_close(&name),
+        Commands::Checklist { name, init } => run_checklist(&name, init),
+        Commands::Check { name, item, status } => run_check(&name, &item, &status),
         Commands::NoteCheck => run_note_check(),
         Commands::CleanAll => run_clean_all(&home, &workspace_path()),
         Commands::Archive { name } => run_archive(&name, &home, &workspace_path()),
@@ -729,7 +769,7 @@ fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path) -> anyho
 }
 
 /// `ccsm new <name> [goal]` — create a new session entry.
-fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
+fn run_new(name: &str, goal: &str, force: bool, checklist: bool) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
 
@@ -809,6 +849,11 @@ fn run_new(name: &str, goal: &str, force: bool) -> anyhow::Result<()> {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 let _ = std::fs::write(&detail_path, populated);
+                // If --checklist, append ## Checklist section
+                if checklist {
+                    let checklist_section = "\n## Checklist\n\n<!--\n  All items must be resolved before close gate allows completion.\n  Status: pending | done | skipped | blocked\n  Checkbox chars: - [ ] pending, - [x] done, - [~] skipped, - [!] blocked\n-->\n\n(no items yet — use `ccsm check <name> <text> --status pending` to add one)\n";
+                    let _ = std::fs::write(&detail_path, std::fs::read_to_string(&detail_path).unwrap_or_default() + checklist_section);
+                }
             }
     }
 
@@ -1488,6 +1533,32 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
         failures.push("  Live Session Data still has template placeholders".into());
     }
 
+    // Checklist gate: block if pending or blocked items exist
+    let checklist_body = sections
+        .iter()
+        .find(|(h, _)| h.to_lowercase().contains("checklist"))
+        .map(|(_, b)| b.as_str())
+        .unwrap_or("");
+    let cl_items = parse_checklist(checklist_body);
+    let pending: Vec<_> = cl_items.iter().filter(|i| i.status == "pending").collect();
+    let blocked: Vec<_> = cl_items.iter().filter(|i| i.status == "blocked").collect();
+    if !pending.is_empty() {
+        failures.push(format!(
+            "  Checklist: {} pending item{}: {}",
+            pending.len(),
+            if pending.len() == 1 { "" } else { "s" },
+            pending.iter().map(|i| format!("#{}. {}", i.index, i.text)).collect::<Vec<_>>().join(", "),
+        ));
+    }
+    if !blocked.is_empty() {
+        failures.push(format!(
+            "  Checklist: {} blocked item{}: {}",
+            blocked.len(),
+            if blocked.len() == 1 { "" } else { "s" },
+            blocked.iter().map(|i| format!("#{}. {}", i.index, i.text)).collect::<Vec<_>>().join(", "),
+        ));
+    }
+
     if failures.is_empty() {
         Ok(())
     } else {
@@ -1527,6 +1598,272 @@ fn run_close(name: &str) -> anyhow::Result<()> {
     );
 
     Ok(())
+}
+
+// ── Checklist subcommands ──────────────────────────────────────────────
+
+/// Represents a single checklist item with its status.
+#[derive(Debug)]
+struct ChecklistItem {
+    index: usize,
+    status: String, // pending | done | skipped | blocked
+    text: String,
+}
+
+const CHECKBOX_CHARS: &[(char, &str); 4] = &[
+    (' ', "pending"),
+    ('x', "done"),
+    ('~', "skipped"),
+    ('!', "blocked"),
+];
+
+fn status_to_char(status: &str) -> char {
+    CHECKBOX_CHARS
+        .iter()
+        .find(|(_, s)| *s == status)
+        .map(|(c, _)| *c)
+        .unwrap_or(' ')
+}
+
+fn char_to_status(c: char) -> &'static str {
+    CHECKBOX_CHARS
+        .iter()
+        .find(|(ch, _)| *ch == c)
+        .map(|(_, s)| *s)
+        .unwrap_or("pending")
+}
+
+/// Parse `## Checklist` section lines into `ChecklistItem`s.
+fn parse_checklist(body: &str) -> Vec<ChecklistItem> {
+    let mut items = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        // Match "- [X] text..." or "- [X]text..."
+        if let Some(rest) = trimmed.strip_prefix("- [") {
+            if rest.len() >= 2 {
+                let ch = rest.chars().next().unwrap();
+                let after_check = &rest[1..]; // skip the checkbox char
+                let desc = after_check.trim_start_matches("] ").trim_start_matches(']');
+                let status = char_to_status(ch);
+                let idx = items.len() + 1;
+                items.push(ChecklistItem {
+                    index: idx,
+                    status: status.to_string(),
+                    text: desc.trim().to_string(),
+                });
+            }
+        }
+    }
+    items
+}
+
+/// `ccsm checklist <name> [--init]` — list items or add section.
+fn run_checklist(name: &str, init: bool) -> anyhow::Result<()> {
+    let workspace = std::env::current_dir()?;
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", name));
+
+    if !detail_path.exists() {
+        anyhow::bail!(
+            "no detail file for session '{}' at {}",
+            name,
+            detail_path.display()
+        );
+    }
+
+    // --init: add ## Checklist section if absent
+    let mut contents = std::fs::read_to_string(&detail_path)?;
+    let sections_before = parse_sections(&contents);
+    let has_checklist = sections_before
+        .iter()
+        .any(|(h, _)| h.to_lowercase().contains("checklist"));
+
+    if init {
+        if has_checklist {
+            println!("session '{}' already has a ## Checklist section", name);
+            return Ok(());
+        }
+        let checklist_section = "\n## Checklist\n\n<!--\n  All items must be resolved before close gate allows completion.\n  Status: pending | done | skipped | blocked\n  Checkbox chars: - [ ] pending, - [x] done, - [~] skipped, - [!] blocked\n-->\n\n(no items yet — use `ccsm check <name> <text> --status pending` to add one)\n";
+        contents.push_str(checklist_section);
+        std::fs::write(&detail_path, &contents)?;
+        println!("added ## Checklist section to {}", name);
+        return Ok(());
+    }
+
+    let sections = sections_before;
+    let checklist_body = sections
+        .iter()
+        .find(|(h, _)| h.to_lowercase().contains("checklist"))
+        .map(|(_, b)| b.as_str())
+        .unwrap_or("");
+
+    let items = parse_checklist(checklist_body);
+    if items.is_empty() {
+        println!("(no checklist items)");
+        return Ok(());
+    }
+
+    let _name_width = name.len().min(24);
+    for item in &items {
+        let icon = match item.status.as_str() {
+            "done" => "✔",
+            "skipped" => "⏭",
+            "blocked" => "✗",
+            _ => "·",
+        };
+        println!(
+            "{:>3} [{}] {} {}",
+            item.index, icon, item.text, dim_status(&item.status)
+        );
+    }
+
+    // Summary line
+    let counts = |s: &str| items.iter().filter(|i| i.status == s).count();
+    println!(
+        "{} items: {} pending, {} done, {} skipped, {} blocked",
+        items.len(),
+        counts("pending"),
+        counts("done"),
+        counts("skipped"),
+        counts("blocked"),
+    );
+    Ok(())
+}
+
+fn dim_status(status: &str) -> String {
+    format!("\x1b[2m({})\x1b[0m", status)
+}
+
+/// `ccsm check <name> <item> --status <pending|done|skipped|blocked>` — set item status.
+fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
+    // Validate status
+    if !CHECKBOX_CHARS.iter().any(|(_, s)| *s == status) {
+        anyhow::bail!(
+            "invalid status '{}' — use: pending, done, skipped, blocked",
+            status
+        );
+    }
+
+    let workspace = std::env::current_dir()?;
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", name));
+
+    if !detail_path.exists() {
+        anyhow::bail!(
+            "no detail file for session '{}' at {}",
+            name,
+            detail_path.display()
+        );
+    }
+
+    let contents = std::fs::read_to_string(&detail_path)?;
+    let sections = parse_sections(&contents);
+    let checklist_body = sections
+        .iter()
+        .find(|(h, _)| h.to_lowercase().contains("checklist"))
+        .map(|(_, b)| b.as_str())
+        .unwrap_or("");
+
+    let items = parse_checklist(checklist_body);
+    if items.is_empty() {
+        anyhow::bail!("no checklist items found in session '{}'", name);
+    }
+
+    // Resolve item: numeric index (1-based) or text substring match
+    let target_idx: usize = if let Ok(n) = item_ref.parse::<usize>() {
+        if n < 1 || n > items.len() {
+            anyhow::bail!(
+                "item {} out of range ({} items, 1-{})",
+                n,
+                items.len(),
+                items.len()
+            );
+        }
+        n
+    } else {
+        // Substring match
+        let matches: Vec<_> = items
+            .iter()
+            .filter(|i| i.text.to_lowercase().contains(&item_ref.to_lowercase()))
+            .collect();
+        if matches.is_empty() {
+            anyhow::bail!(
+                "no checklist item matching '{}' in session '{}'",
+                item_ref,
+                name
+            );
+        }
+        if matches.len() > 1 {
+            eprintln!("Multiple matches for '{}':", item_ref);
+            for m in &matches {
+                eprintln!("  {:>3}. {}", m.index, m.text);
+            }
+            anyhow::bail!("be more specific (use number or unique text)");
+        }
+        matches[0].index
+    };
+
+    let new_char = status_to_char(status);
+
+    // Edit: update the checkbox character in the detail file
+    let mut lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
+    let mut checklist_start: Option<usize> = None;
+    let mut item_count = 0usize;
+
+    // Find the ## Checklist section, then find the Nth checkbox line
+    for (li, line) in lines.iter().enumerate() {
+        if line.trim_start().starts_with("## ") {
+            if checklist_start.is_some() {
+                break; // next section — stop
+            }
+            if line.trim_start().to_lowercase().contains("checklist") {
+                checklist_start = Some(li);
+            }
+        }
+    }
+
+    let start = checklist_start.unwrap_or(0);
+    for li in start..lines.len() {
+        let line = &lines[li];
+        // Stop at next ## section
+        if li > start && line.trim_start().starts_with("## ") {
+            break;
+        }
+        if line.trim_start().starts_with("- [") && line.trim_start().len() >= 4 {
+            item_count += 1;
+            if item_count == target_idx {
+                // Replace the checkbox character
+                let old = &lines[li];
+                let prefix_end = old.find("[").unwrap() + 1;
+                let prefix = &old[..prefix_end];
+                let rest = &old[prefix_end + 1..]; // skip old checkbox char
+                lines[li] = format!("{}{}{}", prefix, new_char, rest);
+                break;
+            }
+        }
+    }
+
+    std::fs::write(&detail_path, lines.join("\n") + "\n")?;
+
+    let target_item = &items[target_idx - 1];
+    println!(
+        "{} #{}. [{}] {} → {}",
+        name, target_idx, icon_char(new_char), target_item.text, status,
+    );
+    Ok(())
+}
+
+fn icon_char(c: char) -> &'static str {
+    match c {
+        'x' => "✔",
+        '~' => "⏭",
+        '!' => "✗",
+        _ => "·",
+    }
 }
 
 // ── Completions subcommand ─────────────────────────────────────────────
