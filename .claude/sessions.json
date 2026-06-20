@@ -1,5 +1,5 @@
 {
-  "updated": "day20624T15:12:11Z",
+  "updated": "day20624T15:15:11Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -193,9 +193,7 @@
       "goal": "Evaluate agents's acknowledge about their CCSM session to improve inject-scope",
       "scope": "",
       "status": "completed",
-      "pids": [
-        22966
-      ],
+      "pids": [],
       "tags": [
         "inject-scope",
         "session-identity",
@@ -207,6 +205,42 @@
       ],
       "started": "day20624T15:09Z",
       "completed": "day20624T15:12:11Z",
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "3b65d05b-1e59-48fa-bc6d-c60d6c79ab49",
+      "name": "checklist-feat",
+      "goal": "Each session can have a checklist — all items must be done before the close gate allows completion",
+      "scope": "Add checklist section to session detail files. CLI: ccsm checklist <name> (list items), ccsm check <name> <item> --status <pending|done|skipped|blocked> (toggle). ccsm close gate blocks completion if any item is pending/blocked. Detail file gets ## Checklist section with markdown checkboxes. In: CLI, detail file section, close-gate integration. Out: TUI rendering, templates, cross-session aggregation.",
+      "status": "in_progress",
+      "pids": [
+        27712
+      ],
+      "tags": [
+        "checklist",
+        "close-gate",
+        "session-lifecycle",
+        "detail-file"
+      ],
+      "started": "day20624T15:15Z",
+      "completed": "",
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "",
+      "name": "session-group",
+      "goal": "-g Group related sessions together with ordering — free (any order) or numeric rank",
+      "scope": "Add group field to session entries: group.name (kebab slug) + group.rank (free | number). CLI: ccsm group <name> --group <g> [--rank free|<n>]. Query: ccsm list --group <g> [--by-rank]. Registry schema gets optional group object. free = order doesn't matter, numeric = ordinal priority within group. In: CLI, registry schema, list filtering, detail file section. Out: dependency graph, cross-group constraints, TUI rendering.",
+      "status": "pending",
+      "pids": [],
+      "tags": [
+        "grouping",
+        "ordering",
+        "session-lifecycle",
+        "registry"
+      ],
+      "started": "",
+      "completed": "",
       "retired_session_ids": []
     }
   ]
