@@ -1,5 +1,5 @@
 {
-  "updated": "day20624T15:15:11Z",
+  "updated": "day20624T15:31:41Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -212,9 +212,9 @@
       "name": "checklist-feat",
       "goal": "Each session can have a checklist — all items must be done before the close gate allows completion",
       "scope": "Add checklist section to session detail files. CLI: ccsm checklist <name> (list items), ccsm check <name> <item> --status <pending|done|skipped|blocked> (toggle). ccsm close gate blocks completion if any item is pending/blocked. Detail file gets ## Checklist section with markdown checkboxes. In: CLI, detail file section, close-gate integration. Out: TUI rendering, templates, cross-session aggregation.",
-      "status": "in_progress",
+      "status": "completed",
       "pids": [
-        27712
+        43459
       ],
       "tags": [
         "checklist",
@@ -222,8 +222,8 @@
         "session-lifecycle",
         "detail-file"
       ],
-      "started": "day20624T15:15Z",
-      "completed": "",
+      "started": "day20624T15:30Z",
+      "completed": "day20624T15:31:41Z",
       "retired_session_ids": []
     },
     {

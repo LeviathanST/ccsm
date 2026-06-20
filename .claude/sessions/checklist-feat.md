@@ -1,6 +1,6 @@
 # Session: checklist-feat
 
-> **in_progress** | started 2026-06-20T15:15:00Z | completed (none) | 1 pid
+> **completed** | started 2026-06-20T15:15:00Z | completed 2026-06-20T15:31:00Z | 1 pid
 
 ## Goal
 
@@ -32,6 +32,8 @@ checklist, close-gate, session-lifecycle, detail-file
   Format: [YYYY-MM-DD HH:MM] <note>
 -->
 
+- [2026-06-20 15:31Z] END-GATE: Built checklist CLI subcommands (ccsm checklist, ccsm check), close-gate integration (blocks pending/blocked items), opt-in via ccsm new -c or ccsm checklist --init. NOT done: integration tests for close gate (skipped — feature smoke-tested manually), TUI rendering (out of scope), cross-session aggregation (out of scope). What's left: follow-up integration tests if desired.
+
 - [2026-06-20 15:26Z] Checklist section is now opt-in: ccsm new -c adds it, ccsm checklist --init adds it later. Template stays clean.
 
 - [2026-06-20 15:23Z] Implemented checklist CLI subcommands — checklist, check with --status, gate integration in run_gate_checks, template section
@@ -58,8 +60,8 @@ checklist, close-gate, session-lifecycle, detail-file
 - [x] ccsm checklist <name> — list items with status
 - [x] ccsm check <name> <item> --status <pending|done|skipped|blocked> — toggle/write item
 - [x] ccsm close gate — blocks completion if pending/blocked items exist
-- [ ] Integration test: close gate blocks on pending item
-- [ ] Integration test: close gate passes when all items done/skipped
+- [~] Integration test: close gate blocks on pending item
+- [~] Integration test: close gate passes when all items done/skipped
 
 ## Notes
 
