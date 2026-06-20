@@ -43,6 +43,12 @@ enum Commands {
         /// Verbose: show full goal + tags (teammate scan mode)
         #[arg(short = 'v', long)]
         verbose: bool,
+        /// Filter by group name
+        #[arg(short = 'g', long)]
+        group: Option<String>,
+        /// Sort by rank within group
+        #[arg(long)]
+        by_rank: bool,
     },
     /// Show goal, scope, tags, session_id, pids, timestamps for a session
     Show {
@@ -94,6 +100,32 @@ enum Commands {
         name: String,
         #[arg(num_args = 1..)]
         tags: Vec<String>,
+    },
+    /// Set, clear, or overview a session group.
+    ///
+    /// `ccsm group <name>` — show all sessions in the group.
+    /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
+    /// `ccsm group <session> --clear` — remove from group.
+    Group {
+        /// Session name (for --group/--clear) or group name (overview, when no flags given)
+        name: String,
+        /// Assign session to this group
+        #[arg(short = 'g', long)]
+        group: Option<String>,
+        /// Rank: "free" or a number (lower = higher priority)
+        #[arg(short = 'r', long)]
+        rank: Option<String>,
+        /// Remove session from its group
+        #[arg(long)]
+        clear: bool,
+    },
+    /// Print the next session to work on in a group.
+    ///
+    /// Priority: in_progress > pending by rank (numeric: lowest first, free: alphabetical).
+    /// Exits 0 with no output if all sessions in the group are done.
+    Next {
+        /// Group name
+        group: String,
     },
     /// Manually link a Claude session_id. Auto-managed by `resume`.
     Attach {
@@ -226,7 +258,7 @@ fn main() -> anyhow::Result<()> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
 
     match cli.command {
-        Commands::List { active, summary, status, verbose } => run_list(active, summary, verbose, status.as_deref()),
+        Commands::List { active, summary, status, verbose, group, by_rank } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank),
         Commands::Show { name, section } => run_show(&name, section.as_deref()),
         Commands::New { name, goal, force, checklist } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist),
         Commands::Start { name } => run_status(&name, "start", false),
@@ -236,6 +268,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Pending { name } => run_pending(&name),
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
+        Commands::Group { name, group, rank, clear } => run_group(&name, group.as_deref(), rank.as_deref(), clear),
+        Commands::Next { group } => run_next(&group),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
         Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path()),
         Commands::Resume { name } => commands::resume::run_resume(&name, &workspace_path(), &home),
@@ -269,8 +303,8 @@ fn load_workspace_registry() -> anyhow::Result<crate::registry::WorkspaceRegistr
     crate::registry::WorkspaceRegistry::load(&workspace_path())
 }
 
-/// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter / --verbose.
-fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&str>) -> anyhow::Result<()> {
+/// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter / --verbose / --group / --by-rank.
+fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&str>, group_filter: Option<&str>, by_rank: bool) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let reg = load_workspace_registry()?;
 
@@ -306,6 +340,10 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             if filter.is_some() && filter != Some(s.status) {
                 continue;
             }
+            if let Some(g) = group_filter
+                && !s.group.as_ref().is_some_and(|grp| grp.name == g) {
+                    continue;
+                }
             *counts.entry(s.status).or_insert(0) += 1;
         }
         let total: usize = counts.values().sum();
@@ -327,13 +365,36 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
         println!("(no sessions)");
         return Ok(());
     }
+
+    // Collect and optionally sort by rank
+    let mut sessions: Vec<&crate::registry::WorkspaceSession> = reg.sessions.iter().collect();
+    if by_rank && group_filter.is_some() {
+        let g = group_filter.unwrap();
+        sessions.retain(|s| s.group.as_ref().is_some_and(|grp| grp.name == g));
+        sessions.sort_by(|a, b| {
+            let ra = a.group.as_ref().map(|grp| &grp.rank);
+            let rb = b.group.as_ref().map(|grp| &grp.rank);
+            match (ra, rb) {
+                (Some(crate::registry::GroupRank::Number(na)), Some(crate::registry::GroupRank::Number(nb))) => na.cmp(nb),
+                (Some(crate::registry::GroupRank::Number(_)), Some(crate::registry::GroupRank::Free)) => std::cmp::Ordering::Greater,
+                (Some(crate::registry::GroupRank::Free), Some(crate::registry::GroupRank::Number(_))) => std::cmp::Ordering::Less,
+                _ => a.name.cmp(&b.name),
+            }
+        });
+    }
+
     let mut printed = 0;
-    for s in &reg.sessions {
+    for s in &sessions {
         if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked) {
             continue;
         }
         if let Some(fs) = filter
             && s.status != fs { continue; }
+        if let Some(g) = group_filter
+            && !s.group.as_ref().is_some_and(|grp| grp.name == g) {
+                continue;
+            }
+        let group_tag = s.group.as_ref().map(|grp| format!(" [{}:{}]", grp.name, grp.rank)).unwrap_or_default();
         if verbose {
             // Teammate scan mode: full goal + tags, one line per session
             let goal = if s.goal.is_empty() { "" } else { " — " };
@@ -342,7 +403,7 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             } else {
                 format!("  [{}]", s.tags.join(", "))
             };
-            println!("{:12}  {:30}  {}{}{}", s.status.to_string(), s.name, goal, s.goal, tags);
+            println!("{:12}  {:30}  {}{}{}{}", s.status.to_string(), s.name, goal, s.goal, tags, group_tag);
         } else {
             let goal = if s.goal.is_empty() { "" } else { " — " };
             let goal_text = if s.goal.len() > 80 {
@@ -350,7 +411,7 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             } else {
                 format!("{}{}", goal, &s.goal)
             };
-            println!("{:12}  {:30}  {}", s.status.to_string(), s.name, goal_text.trim());
+            println!("{:12}  {:30}  {}{}", s.status.to_string(), s.name, goal_text.trim(), group_tag);
         }
         printed += 1;
     }
@@ -814,6 +875,7 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: bool) -> anyhow::Resu
         tags: vec![],
         started: String::new(),
         completed: String::new(),
+        group: None,
                 retired_session_ids: vec![],
     });
     reg.updated = crate::registry::now_iso();
@@ -1124,6 +1186,172 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `ccsm group <name>` — overview of all sessions in a group.
+/// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
+/// `ccsm group <session> --clear` — remove from group.
+fn run_group(name: &str, group: Option<&str>, rank: Option<&str>, clear: bool) -> anyhow::Result<()> {
+    use crate::registry::{Group, GroupRank};
+
+    let workspace = std::env::current_dir()?;
+
+    if clear {
+        // Remove session from its group
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+        let entry = reg
+            .sessions
+            .iter_mut()
+            .find(|s| s.name == name)
+            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+        if entry.group.is_none() {
+            println!("{} is not in a group", name);
+            return Ok(());
+        }
+        let old_group = entry.group.take().unwrap();
+        reg.updated = crate::registry::now_iso();
+        reg.save(&workspace)?;
+        println!("{}  ← removed from group '{}'", name, old_group.name);
+        return Ok(());
+    }
+
+    if let Some(group_name) = group {
+        // Assign session to a group
+        if !crate::registry::is_kebab_case(group_name) {
+            anyhow::bail!("group name '{}' must be kebab-case", group_name);
+        }
+        let rank = match rank {
+            None => GroupRank::Free,
+            Some("free") => GroupRank::Free,
+            Some(n) => {
+                let num: u32 = n.parse()
+                    .map_err(|_| anyhow::anyhow!("rank must be 'free' or a number, got '{}'", n))?;
+                GroupRank::Number(num)
+            }
+        };
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+        let entry = reg
+            .sessions
+            .iter_mut()
+            .find(|s| s.name == name)
+            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+        entry.group = Some(Group {
+            name: group_name.to_string(),
+            rank,
+        });
+        reg.updated = crate::registry::now_iso();
+        reg.save(&workspace)?;
+
+        // Update detail file — add/update ## Group section
+        let detail_path = workspace
+            .join(".claude")
+            .join("sessions")
+            .join(format!("{}.md", name));
+        if detail_path.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&detail_path) {
+                let body = format!("- **Group:** {}\n- **Rank:** {}", group_name, rank);
+                let updated = crate::registry::replace_detail_section(&contents, "## Group", &body);
+                let _ = std::fs::write(&detail_path, updated);
+            }
+        }
+
+        println!("{}  ← group '{}' (rank: {})", name, group_name, rank);
+        return Ok(());
+    }
+
+    // Neither --clear nor --group: treat `name` as a group name, show overview
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let mut members: Vec<_> = reg
+        .sessions
+        .iter()
+        .filter(|s| s.group.as_ref().is_some_and(|g| g.name == name))
+        .collect();
+
+    if members.is_empty() {
+        println!("(no sessions in group '{}')", name);
+        return Ok(());
+    }
+
+    // Sort: by rank (numeric first, then free alphabetical)
+    members.sort_by(|a, b| {
+        let ra = a.group.as_ref().map(|g| &g.rank);
+        let rb = b.group.as_ref().map(|g| &g.rank);
+        match (ra, rb) {
+            (Some(GroupRank::Number(na)), Some(GroupRank::Number(nb))) => na.cmp(nb),
+            (Some(GroupRank::Number(_)), Some(GroupRank::Free)) => std::cmp::Ordering::Greater,
+            (Some(GroupRank::Free), Some(GroupRank::Number(_))) => std::cmp::Ordering::Less,
+            _ => a.name.cmp(&b.name),
+        }
+    });
+
+    println!("group '{}':", name);
+    for m in &members {
+        let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
+        println!("  {:12}  {:30}  rank: {}", m.status.to_string(), m.name, rank_str);
+    }
+    println!("{} member{}", members.len(), if members.len() == 1 { "" } else { "s" });
+    Ok(())
+}
+
+/// `ccsm next <group>` — print the next session to work on in a group.
+///
+/// Priority: in_progress > pending by rank (numeric: lowest first, free: alphabetical).
+/// Tie-break: alphabetical by name within same rank.
+/// Exits 0 with no output if all sessions in the group are done.
+fn run_next(group_name: &str) -> anyhow::Result<()> {
+    use crate::registry::{GroupRank, SessionStatus};
+
+    let workspace = std::env::current_dir()?;
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+
+    let mut members: Vec<_> = reg
+        .sessions
+        .iter()
+        .filter(|s| s.group.as_ref().is_some_and(|g| g.name == group_name))
+        .collect();
+
+    if members.is_empty() {
+        anyhow::bail!("no sessions in group '{}'", group_name);
+    }
+
+    // Sort for deterministic selection
+    members.sort_by(|a, b| {
+        let ra = a.group.as_ref().map(|g| &g.rank);
+        let rb = b.group.as_ref().map(|g| &g.rank);
+        match (ra, rb) {
+            (Some(GroupRank::Number(na)), Some(GroupRank::Number(nb))) => na.cmp(nb),
+            (Some(GroupRank::Number(_)), Some(GroupRank::Free)) => std::cmp::Ordering::Greater,
+            (Some(GroupRank::Free), Some(GroupRank::Number(_))) => std::cmp::Ordering::Less,
+            _ => a.name.cmp(&b.name),
+        }
+    });
+
+    // 1. Prefer in_progress
+    let in_progress: Vec<_> = members.iter().filter(|m| m.status == SessionStatus::InProgress).collect();
+    if in_progress.len() == 1 {
+        println!("{}", in_progress[0].name);
+        return Ok(());
+    }
+    if in_progress.len() > 1 {
+        eprintln!("warning: {} in_progress sessions in group '{}'", in_progress.len(), group_name);
+        // Pick most recently started (fallback: first by sort order)
+        let pick = in_progress
+            .iter()
+            .max_by_key(|m| &m.started)
+            .unwrap_or(&in_progress[0]);
+        println!("{}", pick.name);
+        return Ok(());
+    }
+
+    // 2. First pending by rank
+    let pending: Vec<_> = members.iter().filter(|m| m.status == SessionStatus::Pending).collect();
+    if let Some(pick) = pending.first() {
+        println!("{}", pick.name);
+        return Ok(());
+    }
+
+    // 3. All done — nothing to do
+    Ok(()) // exit 0, no output
+}
+
 /// `ccsm show <name>` — registry fields + detail file section list.
 /// `ccsm show <name> --section <s>` — extract one section from detail file.
 fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
@@ -1174,6 +1402,9 @@ fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
     }
     if !session.tags.is_empty() {
         println!("tags:       {}", session.tags.join(", "));
+    }
+    if let Some(ref g) = session.group {
+        println!("group:      {} (rank: {})", g.name, g.rank);
     }
     if !session.session_id.is_empty() {
         println!("session_id: {}", session.session_id);

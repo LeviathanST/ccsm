@@ -21,6 +21,8 @@ pub enum SeqOp {
     Trash { name: String },
     Recover { name: String },
     Attach { name: String, session_id: String },
+    Group { name: String, group: Option<String>, rank: Option<String>, clear: bool },
+    Next { group: String },
 }
 
 impl SeqOp {
@@ -94,10 +96,38 @@ impl SeqOp {
                     session_id: args[1].clone(),
                 })
             }
+            "group" => {
+                ensure_at_least(args, 1, "group", "<name> [--group <g>] [--rank <r>] [--clear]")?;
+                let name = args[0].clone();
+                let mut group = None;
+                let mut rank = None;
+                let mut clear = false;
+                let mut i = 1;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--group" | "-g" => {
+                            i += 1;
+                            if i < args.len() { group = Some(args[i].clone()); }
+                        }
+                        "--rank" | "-r" => {
+                            i += 1;
+                            if i < args.len() { rank = Some(args[i].clone()); }
+                        }
+                        "--clear" => clear = true,
+                        other => anyhow::bail!("unknown flag '{}' in group", other),
+                    }
+                    i += 1;
+                }
+                Ok(Self::Group { name, group, rank, clear })
+            }
+            "next" => {
+                ensure_exact(args, 1, "next", "<group>")?;
+                Ok(Self::Next { group: args[0].clone() })
+            }
             unknown => {
                 anyhow::bail!(
                     "unknown sequence command '{}'. Supported: start, complete, block, abandon, \
-                     pending, scope, tag, new, trash, recover, attach",
+                     pending, scope, tag, new, trash, recover, attach, group, next",
                     unknown
                 );
             }
@@ -199,6 +229,7 @@ pub(crate) fn apply_op(
                 tags: vec![],
                 started: String::new(),
                 completed: String::new(),
+                group: None,
                 retired_session_ids: vec![],
             });
             Ok(vec![format!("pending     {}  ← created", name)])
@@ -221,6 +252,73 @@ pub(crate) fn apply_op(
             s.session_id = session_id.clone();
             let short = &session_id[..session_id.len().min(8)];
             Ok(vec![format!("attached    {}  ← session {}", name, short)])
+        }
+        SeqOp::Group { name, group, rank, clear } => {
+            use crate::registry::{Group, GroupRank};
+            let s = get_mut(&mut reg.sessions, name)?;
+            if *clear {
+                if let Some(old) = s.group.take() {
+                    Ok(vec![format!("{}  ← removed from group '{}'", name, old.name)])
+                } else {
+                    Ok(vec![format!("{} is not in a group", name)])
+                }
+            } else if let Some(group_name) = group {
+                let rank = match rank.as_deref() {
+                    None => GroupRank::Free,
+                    Some("free") => GroupRank::Free,
+                    Some(n) => {
+                        let num: u32 = n.parse()
+                            .map_err(|_| anyhow::anyhow!("rank must be 'free' or a number, got '{}'", n))?;
+                        GroupRank::Number(num)
+                    }
+                };
+                s.group = Some(Group { name: group_name.clone(), rank });
+                Ok(vec![format!("{}  ← group '{}' (rank: {})", name, group_name, rank)])
+            } else {
+                // Overview: list sessions in this group
+                let members: Vec<_> = reg.sessions.iter()
+                    .filter(|s| s.group.as_ref().is_some_and(|g| g.name == *name))
+                    .collect();
+                let mut lines = vec![format!("group '{}':", name)];
+                for m in &members {
+                    let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
+                    lines.push(format!("  {:12}  {:30}  rank: {}", m.status.to_string(), m.name, rank_str));
+                }
+                lines.push(format!("{} member{}", members.len(), if members.len() == 1 { "" } else { "s" }));
+                Ok(lines)
+            }
+        }
+        SeqOp::Next { group } => {
+            use crate::registry::{GroupRank, SessionStatus};
+            let mut members: Vec<_> = reg.sessions.iter()
+                .filter(|s| s.group.as_ref().is_some_and(|g| g.name == *group))
+                .collect();
+            if members.is_empty() {
+                anyhow::bail!("no sessions in group '{}'", group);
+            }
+            members.sort_by(|a, b| {
+                let ra = a.group.as_ref().map(|g| &g.rank);
+                let rb = b.group.as_ref().map(|g| &g.rank);
+                match (ra, rb) {
+                    (Some(GroupRank::Number(na)), Some(GroupRank::Number(nb))) => na.cmp(nb),
+                    (Some(GroupRank::Number(_)), Some(GroupRank::Free)) => std::cmp::Ordering::Greater,
+                    (Some(GroupRank::Free), Some(GroupRank::Number(_))) => std::cmp::Ordering::Less,
+                    _ => a.name.cmp(&b.name),
+                }
+            });
+            let in_progress: Vec<_> = members.iter().filter(|m| m.status == SessionStatus::InProgress).collect();
+            let pick = if in_progress.len() == 1 {
+                in_progress[0]
+            } else if in_progress.len() > 1 {
+                in_progress.iter().max_by_key(|m| &m.started).unwrap_or(&in_progress[0])
+            } else {
+                let pending: Vec<_> = members.iter().filter(|m| m.status == SessionStatus::Pending).collect();
+                match pending.first() {
+                    Some(p) => *p,
+                    None => return Ok(vec![]), // all done — no output
+                }
+            };
+            Ok(vec![pick.name.clone()])
         }
     }
 }
@@ -422,6 +520,7 @@ mod tests {
             tags: vec![],
             started: String::new(),
             completed: String::new(),
+            group: None,
                 retired_session_ids: vec![],
         });
         reg

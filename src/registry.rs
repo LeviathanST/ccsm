@@ -4,6 +4,36 @@ use serde::{Deserialize, Serialize};
 
 use crate::session::Session;
 
+// ── Group ─────────────────────────────────────────────────────────────
+
+/// Ordering within a session group.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(untagged)]
+pub enum GroupRank {
+    /// No ordering — tie-break alphabetically.
+    #[default]
+    Free,
+    /// Numeric rank — lower = higher priority.
+    Number(u32),
+}
+
+impl std::fmt::Display for GroupRank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Free => write!(f, "free"),
+            Self::Number(n) => write!(f, "{}", n),
+        }
+    }
+}
+
+/// A named group a session belongs to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Group {
+    pub name: String,
+    #[serde(default)]
+    pub rank: GroupRank,
+}
+
 // ── Tier 1: Global Overview ─────────────────────────────────────────
 
 /// Global session registry at `~/.claude/sessions.json`.
@@ -149,6 +179,9 @@ pub struct WorkspaceSession {
     pub started: String,
     #[serde(default)]
     pub completed: String,
+    /// Group this session belongs to (optional).
+    #[serde(default)]
+    pub group: Option<Group>,
     /// Retired Claude session_ids — one ccsm session may chain through
     /// multiple Claude sessions as the context window fills up.
     #[serde(default)]
@@ -389,6 +422,7 @@ impl WorkspaceRegistry {
                 tags: vec!["pty".into(), "ratatui".into(), "vt100".into(), "phase-1".into()],
                 started: String::new(),
                 completed: String::new(),
+                group: None,
                 retired_session_ids: vec![],
             },
             WorkspaceSession {
@@ -401,6 +435,7 @@ impl WorkspaceRegistry {
                 tags: vec!["sidebar".into(), "ratatui".into(), "sessions".into(), "phase-2".into()],
                 started: String::new(),
                 completed: String::new(),
+                group: None,
                 retired_session_ids: vec![],
             },
             WorkspaceSession {
@@ -413,6 +448,7 @@ impl WorkspaceRegistry {
                 tags: vec!["transcript".into(), "replay".into(), "phase-3".into()],
                 started: String::new(),
                 completed: String::new(),
+                group: None,
                 retired_session_ids: vec![],
             },
             WorkspaceSession {
@@ -425,6 +461,7 @@ impl WorkspaceRegistry {
                 tags: vec!["registry".into(), "sessions".into(), "team".into()],
                 started: String::new(),
                 completed: String::new(),
+                group: None,
                 retired_session_ids: vec![],
             },
         ]
@@ -835,6 +872,7 @@ mod tests {
                 tags: vec!["test".into()],
                 started: "day0T00:00:00Z".into(),
                 completed: String::new(),
+                group: None,
                 retired_session_ids: vec![],
             }],
         };
@@ -875,6 +913,7 @@ mod tests {
             tags: vec![],
             started: String::new(),
             completed: String::new(),
+            group: None,
             retired_session_ids: vec![],
         });
         reg.save(&workspace).unwrap();
@@ -913,6 +952,7 @@ mod tests {
                     tags: vec![format!("t{}", i)],
                     started: String::new(),
                     completed: String::new(),
+                    group: None,
                     retired_session_ids: vec![],
                 });
                 reg.save(&ws).unwrap();
@@ -963,6 +1003,7 @@ mod tests {
                     tags: vec![],
                     started: String::new(),
                     completed: String::new(),
+                    group: None,
                     retired_session_ids: vec![],
                 });
                 let _ = reg.save(&ws);

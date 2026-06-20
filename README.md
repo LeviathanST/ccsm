@@ -20,8 +20,11 @@ ccsm setup
 | `ccsm list --active` | in_progress + blocked |
 | `ccsm list --summary` | Counts per status |
 | `ccsm list --status <s>` | Filter by status. Pass `help` for legend |
+| `ccsm list --group <g> [--by-rank]` | Filter by group, optionally sort by rank |
 | `ccsm show <name>` | Registry fields + detail file section headlines |
 | `ccsm show <name> --section <s>` | Extract one section from the detail file |
+| `ccsm group <name>` | Overview — list all sessions in group |
+| `ccsm next <group>` | Print next session to work on in group |
 
 ### Mutate
 
@@ -35,6 +38,8 @@ ccsm setup
 | `ccsm pending <name>` | Reset to pending |
 | `ccsm scope <name> <text>` | Set scope |
 | `ccsm tag <name> <tags...>` | Replace tags |
+| `ccsm group <name> -g <group> [-r free\|<n>]` | Assign session to group |
+| `ccsm group <name> --clear` | Remove session from group |
 | `ccsm attach <name>` | Auto-discover & link live session. `--pid <pid>` for explicit, `<uuid>` for scripting |
 | `ccsm note <name> <text>` | Append to progress log |
 | `ccsm sequence -q <cmd> <args...> -q <cmd> ...` | Batch mutations in a single lock/save |

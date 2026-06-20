@@ -112,6 +112,10 @@ ccsm close     <name>            # pre-completion gate: check detail file comple
 ccsm checklist <name>            # list checklist items (--init adds section)
 ccsm check     <name> <item> -s <pending|done|skipped|blocked>  # set checklist item status
 ccsm note      <name> <text>     # append timestamped entry to progress log
+ccsm group     <name> -g <group> [-r free|<n>]  # assign session to group
+ccsm group     <name> --clear    # remove session from group
+ccsm group     <name>            # overview — list all sessions in group
+ccsm next      <group>           # print next session to work on in group
 ccsm note-check                  # (hook) remind if tree dirty + detail file stale
 ccsm archive   <name>            # delete transcript, keep entry as work log
 ccsm archive-all                 # archive all completed sessions
@@ -133,6 +137,22 @@ ccsm check my-session 3 -s blocked  # mark item #3 blocked
 
 Checkbox chars in the detail file: `- [ ]` pending, `- [x]` done, `- [~]` skipped, `- [!]` blocked.
 The close gate blocks completion while pending or blocked items remain.
+
+### Grouping
+
+Sessions can be grouped with ordering — free (any order) or numeric rank (lower = higher priority).
+
+```
+ccsm group <session> -g <group> [-r free|<n>]  # assign to group with rank
+ccsm group <session> --clear                    # remove from group
+ccsm group <name>                               # overview — all sessions in group
+ccsm next <group>                               # print next session to work on
+ccsm list --group <g> [--by-rank]              # filter list by group
+```
+
+`next` priority: in_progress > pending by rank (numeric lowest first, free alphabetical). Rank collisions accepted — tie-breaks alphabetically.
+
+Detail file gets a `## Group` section when a session is assigned (opt-in — no template change).
 
 ### Batch (single lock/save cycle)
 
