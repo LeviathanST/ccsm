@@ -1,5 +1,5 @@
 {
-  "updated": "day20624T15:31:41Z",
+  "updated": "day20624T15:54:02Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -15,6 +15,7 @@
       ],
       "started": "day20618T11:26Z",
       "completed": "day20620T13:35:25Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -27,6 +28,7 @@
       "tags": [],
       "started": "day20620T08:47Z",
       "completed": "day20620T09:02:56Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -45,6 +47,7 @@
       ],
       "started": "day20620T14:30Z",
       "completed": "day20620T14:39:09Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -62,6 +65,7 @@
       ],
       "started": "day20620T10:41Z",
       "completed": "day20620T10:58:46Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -79,6 +83,7 @@
       ],
       "started": "day20620T13:43Z",
       "completed": "day20620T10:31:52Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -99,6 +104,7 @@
       ],
       "started": "day20621T04:38Z",
       "completed": "day20621T06:18:21Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -111,34 +117,7 @@
       "tags": [],
       "started": "day20621T04:56Z",
       "completed": "day20621T04:59:51Z",
-      "retired_session_ids": []
-    },
-    {
-      "session_id": "",
-      "name": "integration-tests",
-      "goal": "Add integration tests to ccsm: CLI end-to-end, lifecycle, locking, edge cases",
-      "scope": "Add integration tests to ccsm CLI. Use assert_cmd or std::process::Command to invoke the ccsm binary. Test: new→start→note→complete lifecycle, sequence batch operations, attach modes (auto-discover, --pid, UUID), rename with -g/-s, trash/recover, clean-all. Test locking: concurrent mutations don't race. Test edge cases: missing sessions, invalid names, duplicate detection. Target: ~15-20 integration tests that exercise the full CLI surface.",
-      "status": "completed",
-      "pids": [],
-      "tags": [
-        "testing",
-        "integration",
-        "quality"
-      ],
-      "started": "",
-      "completed": "day20621T06:51:25Z",
-      "retired_session_ids": []
-    },
-    {
-      "session_id": "",
-      "name": "playbook",
-      "goal": "Document common ccsm sequence chains and workflows as reusable recipes",
-      "scope": "",
-      "status": "pending",
-      "pids": [],
-      "tags": [],
-      "started": "",
-      "completed": "",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -151,23 +130,7 @@
       "tags": [],
       "started": "day20622T12:43Z",
       "completed": "day20622T13:45:55Z",
-      "retired_session_ids": []
-    },
-    {
-      "session_id": "",
-      "name": "unified-data-directory",
-      "goal": "Refactor data directory from Claude-specific .claude/sessions to agent-neutral .ccsm/ layout supporting multiple agents (Claude Code, Codex, Gemini, etc.)",
-      "scope": "Current state: ccsm hardcodes .claude/sessions.json, ~/.claude/sessions/<pid>.json, ~/.claude/projects/<slug>/. Goal: design and implement a unified data layout that works across agent platforms while maintaining backward compatibility with existing Claude Code sessions.\n\nKey questions to resolve:\n- New directory root? (.ccsm/ at workspace and ~/.ccsm/ at home)\n- How to namespace per-agent sessions? (.ccsm/sessions/claude/, .ccsm/sessions/codex/, etc.)\n- Transcript format differs by agent — do we care or just store them?\n- Migration path for existing .claude/ data\n- Hook compatibility — do other agents have hook equivalents?\n\nApproach: read current code paths, enumerate all .claude/ references, design the new layout, implement a configurable root with claude as default, add migration subcommand.",
-      "status": "pending",
-      "pids": [],
-      "tags": [
-        "data-directory",
-        "migration",
-        "multi-agent",
-        "architecture"
-      ],
-      "started": "",
-      "completed": "",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -185,6 +148,7 @@
       ],
       "started": "day20622T14:44Z",
       "completed": "day20622T15:03:01Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -205,6 +169,7 @@
       ],
       "started": "day20624T15:09Z",
       "completed": "day20624T15:12:11Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
@@ -213,9 +178,7 @@
       "goal": "Each session can have a checklist — all items must be done before the close gate allows completion",
       "scope": "Add checklist section to session detail files. CLI: ccsm checklist <name> (list items), ccsm check <name> <item> --status <pending|done|skipped|blocked> (toggle). ccsm close gate blocks completion if any item is pending/blocked. Detail file gets ## Checklist section with markdown checkboxes. In: CLI, detail file section, close-gate integration. Out: TUI rendering, templates, cross-session aggregation.",
       "status": "completed",
-      "pids": [
-        43459
-      ],
+      "pids": [],
       "tags": [
         "checklist",
         "close-gate",
@@ -224,23 +187,45 @@
       ],
       "started": "day20624T15:30Z",
       "completed": "day20624T15:31:41Z",
+      "group": null,
       "retired_session_ids": []
     },
     {
-      "session_id": "",
+      "session_id": "6c355ed8-7734-4480-8a54-a9cb112f4873",
       "name": "session-group",
       "goal": "-g Group related sessions together with ordering — free (any order) or numeric rank",
-      "scope": "Add group field to session entries: group.name (kebab slug) + group.rank (free | number). CLI: ccsm group <name> --group <g> [--rank free|<n>]. Query: ccsm list --group <g> [--by-rank]. Registry schema gets optional group object. free = order doesn't matter, numeric = ordinal priority within group. In: CLI, registry schema, list filtering, detail file section. Out: dependency graph, cross-group constraints, TUI rendering.",
-      "status": "pending",
-      "pids": [],
+      "scope": "Add group field to session entries: group.name (kebab slug) + group.rank (free | number). CLI surface: (1) ccsm group <name> --group <g> [--rank free|<n>] — set group+rank, (2) ccsm group <name> --clear — remove from group, (3) ccsm group <name> — overview of all sessions in that group, (4) ccsm next <group> — print next session to work on (in_progress > pending by rank/alpha), (5) ccsm list --group <g> [--by-rank] — filter. Rank collisions accepted (tie-break alphabetical). Registry schema gets optional group object. In: CLI, registry schema, list filtering, detail file section. Out: dependency graph, cross-group constraints, TUI rendering.",
+      "status": "completed",
+      "pids": [
+        45694
+      ],
       "tags": [
         "grouping",
         "ordering",
         "session-lifecycle",
         "registry"
       ],
+      "started": "day20624T15:32Z",
+      "completed": "day20624T15:54:02Z",
+      "group": {
+        "name": "features",
+        "rank": 1
+      },
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "",
+      "name": "group-detail",
+      "goal": "Central group markdown files at .claude/session-group/<name>.md",
+      "scope": "Add .claude/session-group/ directory with per-group markdown files matching the session detail pattern. Auto-create file when first session joins a group. Populate with ## Goal / ## Scope / ## Members (auto-generated list) / ## Notes sections. Delete file when last session leaves (auto-clean). Update ccsm group <name> overview to read and display the group detail file. CLI: ccsm group <name> --goal <text> sets the group goal. No new registry format — markdown files only.",
+      "status": "pending",
+      "pids": [],
+      "tags": [
+        "grouping, detail-files, markdown, session-lifecycle"
+      ],
       "started": "",
       "completed": "",
+      "group": null,
       "retired_session_ids": []
     }
   ]
