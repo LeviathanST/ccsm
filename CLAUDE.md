@@ -112,9 +112,10 @@ ccsm close     <name>            # pre-completion gate: check detail file comple
 ccsm checklist <name>            # list checklist items (--init adds section)
 ccsm check     <name> <item> -s <pending|done|skipped|blocked>  # set checklist item status
 ccsm note      <name> <text>     # append timestamped entry to progress log
-ccsm group     <name> -g <group> [-r free|<n>]  # assign session to group
-ccsm group     <name> --clear    # remove session from group
-ccsm group     <name>            # overview — list all sessions in group
+ccsm group     <name> -g <group> [-r free|<n>]  # assign session to group (auto-creates .claude/session-group/<group>.md)
+ccsm group     <name> --clear    # remove session from group (auto-deletes group file when last leaves)
+ccsm group     <name>            # overview — list sessions + show goal from group detail file
+ccsm group     <name> --goal <text>  # set group goal in .claude/session-group/<name>.md
 ccsm next      <group>           # print next session to work on in group
 ccsm note-check                  # (hook) remind if tree dirty + detail file stale
 ccsm archive   <name>            # delete transcript, keep entry as work log
@@ -145,7 +146,8 @@ Sessions can be grouped with ordering — free (any order) or numeric rank (lowe
 ```
 ccsm group <session> -g <group> [-r free|<n>]  # assign to group with rank
 ccsm group <session> --clear                    # remove from group
-ccsm group <name>                               # overview — all sessions in group
+ccsm group <name>                               # overview — sessions + goal from group detail
+ccsm group <name> --goal <text>                 # set group goal
 ccsm next <group>                               # print next session to work on
 ccsm list --group <g> [--by-rank]              # filter list by group
 ```
@@ -153,6 +155,18 @@ ccsm list --group <g> [--by-rank]              # filter list by group
 `next` priority: in_progress > pending by rank (numeric lowest first, free alphabetical). Rank collisions accepted — tie-breaks alphabetically.
 
 Detail file gets a `## Group` section when a session is assigned (opt-in — no template change).
+
+### Group Detail Files
+
+Each group gets a central markdown file at `.claude/session-group/<name>.md` with sections:
+
+- **## Goal** — set via `ccsm group <name> --goal <text>`
+- **## Scope** — free-text (edit directly)
+- **## Members** — auto-generated list of sessions with status + rank
+- **## Notes** — free-text (edit directly)
+
+Auto-created when the first session joins a group. Auto-deleted when the last session leaves.
+Group overview (`ccsm group <name>`) displays the Goal when set.
 
 ### Batch (single lock/save cycle)
 

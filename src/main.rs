@@ -103,9 +103,13 @@ enum Commands {
     },
     /// Set, clear, or overview a session group.
     ///
-    /// `ccsm group <name>` — show all sessions in the group.
+    /// `ccsm group <name>` — show all sessions in the group + goal from group detail file.
+    /// `ccsm group <name> --goal <text>` — set the group goal in the group detail file.
     /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
     /// `ccsm group <session> --clear` — remove from group.
+    ///
+    /// Group detail files live at `.claude/session-group/<name>.md`.
+    /// Auto-created on first join, auto-deleted when the last session leaves.
     Group {
         /// Session name (for --group/--clear) or group name (overview, when no flags given)
         name: String,
@@ -118,6 +122,9 @@ enum Commands {
         /// Remove session from its group
         #[arg(long)]
         clear: bool,
+        /// Set the group goal (use with group name, not --group/--clear)
+        #[arg(long)]
+        goal: Option<String>,
     },
     /// Print the next session to work on in a group.
     ///
@@ -268,7 +275,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Pending { name } => run_pending(&name),
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
-        Commands::Group { name, group, rank, clear } => run_group(&name, group.as_deref(), rank.as_deref(), clear),
+        Commands::Group { name, group, rank, clear, goal } => run_group(&name, group.as_deref(), rank.as_deref(), clear, goal.as_deref()),
         Commands::Next { group } => run_next(&group),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
         Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path()),
@@ -1189,10 +1196,20 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
 /// `ccsm group <name>` — overview of all sessions in a group.
 /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
 /// `ccsm group <session> --clear` — remove from group.
-fn run_group(name: &str, group: Option<&str>, rank: Option<&str>, clear: bool) -> anyhow::Result<()> {
+fn run_group(name: &str, group: Option<&str>, rank: Option<&str>, clear: bool, goal: Option<&str>) -> anyhow::Result<()> {
     use crate::registry::{Group, GroupRank};
 
     let workspace = std::env::current_dir()?;
+
+    // --goal: set group goal (name = group name, not session name)
+    if let Some(goal_text) = goal {
+        if group.is_some() || clear {
+            anyhow::bail!("--goal can't be combined with --group or --clear. Use: ccsm group <group-name> --goal <text>");
+        }
+        set_group_goal(name, goal_text, &workspace)?;
+        println!("group '{}' goal set", name);
+        return Ok(());
+    }
 
     if clear {
         // Remove session from its group
@@ -1209,7 +1226,12 @@ fn run_group(name: &str, group: Option<&str>, rank: Option<&str>, clear: bool) -
         let old_group = entry.group.take().unwrap();
         reg.updated = crate::registry::now_iso();
         reg.save(&workspace)?;
-        println!("{}  ← removed from group '{}'", name, old_group.name);
+        let deleted = update_group_members(&old_group.name, &reg, &workspace)?;
+        if deleted {
+            println!("{}  ← removed from group '{}' (group file deleted — no members left)", name, old_group.name);
+        } else {
+            println!("{}  ← removed from group '{}'", name, old_group.name);
+        }
         return Ok(());
     }
 
@@ -1253,6 +1275,9 @@ fn run_group(name: &str, group: Option<&str>, rank: Option<&str>, clear: bool) -
             }
         }
 
+        // Create or update the group detail file
+        ensure_group_file(group_name, &reg, &workspace)?;
+
         println!("{}  ← group '{}' (rank: {})", name, group_name, rank);
         return Ok(());
     }
@@ -1288,6 +1313,155 @@ fn run_group(name: &str, group: Option<&str>, rank: Option<&str>, clear: bool) -
         println!("  {:12}  {:30}  rank: {}", m.status.to_string(), m.name, rank_str);
     }
     println!("{} member{}", members.len(), if members.len() == 1 { "" } else { "s" });
+
+    // Display group detail file if it exists
+    let gpath = group_file_path(&workspace, name);
+    if gpath.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&gpath) {
+            let sections = crate::registry::parse_sections(&contents);
+            if let Some((_, goal_body)) = sections.iter().find(|(h, _)| h == "Goal") {
+                let goal = goal_body.trim();
+                if !goal.is_empty() && !goal.starts_with('_') {
+                    println!("  Goal: {}", goal);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Group Detail File Helpers ───────────────────────────────────────
+
+const GROUP_DIR: &str = ".claude/session-group";
+
+fn group_file_path(workspace: &std::path::Path, group_name: &str) -> std::path::PathBuf {
+    workspace.join(GROUP_DIR).join(format!("{}.md", group_name))
+}
+
+/// Create or update the group detail file. Called when a session joins a group.
+fn ensure_group_file(
+    group_name: &str,
+    reg: &crate::registry::WorkspaceRegistry,
+    workspace: &std::path::Path,
+) -> anyhow::Result<()> {
+    let members: Vec<_> = reg
+        .sessions
+        .iter()
+        .filter(|s| s.group.as_ref().is_some_and(|g| g.name == group_name))
+        .collect();
+
+    let members_body = if members.is_empty() {
+        "_No members yet._".to_string()
+    } else {
+        members
+            .iter()
+            .map(|m| {
+                let rank_str = m
+                    .group
+                    .as_ref()
+                    .map(|g| g.rank.to_string())
+                    .unwrap_or_default();
+                format!("- {} ({}) [rank: {}]", m.name, m.status, rank_str)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let dir = workspace.join(GROUP_DIR);
+    std::fs::create_dir_all(&dir)?;
+
+    let path = group_file_path(workspace, group_name);
+    if path.exists() {
+        let contents = std::fs::read_to_string(&path)?;
+        let updated =
+            crate::registry::replace_detail_section(&contents, "## Members", &members_body);
+        std::fs::write(&path, updated)?;
+    } else {
+        let template = format!(
+            "<!--\n  Group: {name}\n  Sessions: {count}\n-->\n\n## Goal\n\n\
+             _No goal set. Use `ccsm group {name} --goal <text>` to set one._\n\n\
+             ## Scope\n\n\n\n## Members\n\n\
+             <!-- Auto-generated — do not edit -->\n\n{members_body}\n\n## Notes\n\n\n",
+            name = group_name,
+            count = members.len(),
+            members_body = members_body
+        );
+        std::fs::write(&path, template)?;
+    }
+    Ok(())
+}
+
+/// Refresh the Members section of a group detail file. Called when a session leaves a group.
+/// Returns true if the file was deleted (no members left).
+fn update_group_members(
+    group_name: &str,
+    reg: &crate::registry::WorkspaceRegistry,
+    workspace: &std::path::Path,
+) -> anyhow::Result<bool> {
+    let path = group_file_path(workspace, group_name);
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let members: Vec<_> = reg
+        .sessions
+        .iter()
+        .filter(|s| s.group.as_ref().is_some_and(|g| g.name == group_name))
+        .collect();
+
+    if members.is_empty() {
+        // Auto-clean: delete the group detail file
+        std::fs::remove_file(&path)?;
+        // Try to remove the directory if empty (ignore errors)
+        let _ = std::fs::remove_dir(path.parent().unwrap());
+        return Ok(true);
+    }
+
+    let members_body = members
+        .iter()
+        .map(|m| {
+            let rank_str = m
+                .group
+                .as_ref()
+                .map(|g| g.rank.to_string())
+                .unwrap_or_default();
+            format!("- {} ({}) [rank: {}]", m.name, m.status, rank_str)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let contents = std::fs::read_to_string(&path)?;
+    let updated =
+        crate::registry::replace_detail_section(&contents, "## Members", &members_body);
+    std::fs::write(&path, updated)?;
+    Ok(false)
+}
+
+/// Set the ## Goal section of a group detail file.
+fn set_group_goal(
+    group_name: &str,
+    goal: &str,
+    workspace: &std::path::Path,
+) -> anyhow::Result<()> {
+    let path = group_file_path(workspace, group_name);
+    if path.exists() {
+        let contents = std::fs::read_to_string(&path)?;
+        let updated = crate::registry::replace_detail_section(&contents, "## Goal", goal);
+        std::fs::write(&path, updated)?;
+    } else {
+        // Create a minimal file with just the goal set
+        let dir = workspace.join(GROUP_DIR);
+        std::fs::create_dir_all(&dir)?;
+        let template = format!(
+            "<!--\n  Group: {name}\n  Sessions: 0\n-->\n\n## Goal\n\n{goal}\n\n\
+             ## Scope\n\n\n\n## Members\n\n\
+             <!-- Auto-generated — do not edit -->\n\n_No members yet._\n\n## Notes\n\n\n",
+            name = group_name,
+            goal = goal
+        );
+        std::fs::write(&path, template)?;
+    }
     Ok(())
 }
 
