@@ -1,5 +1,5 @@
 {
-  "updated": "day20622T13:45:55Z",
+  "updated": "day20624T15:12:11Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -147,9 +147,7 @@
       "goal": "Enable multiple claude session for a ccsm session to avoid chaos, large context window or produce some approaches",
       "scope": "Implement ccsm refresh: retire current Claude session to retired_session_ids list, spawn fresh claude (no --resume), inject CCSM_SESSION env var for agent self-awareness. New CLI subcommand: ccsm refresh <name> [--reason]. Registry schema adds retired_session_ids: [{id, retired_at, reason}]. One ccsm session → one active Claude session at a time, with history of retired ones.",
       "status": "completed",
-      "pids": [
-        2543
-      ],
+      "pids": [],
       "tags": [],
       "started": "day20622T12:43Z",
       "completed": "day20622T13:45:55Z",
@@ -170,6 +168,45 @@
       ],
       "started": "",
       "completed": "",
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "3fdf201b-b8ed-4908-9feb-109df5451bc7",
+      "name": "persisted-session-details",
+      "goal": "Decide whether to persist ccsm session details on GitHub per-project, answered via 5W1H model",
+      "scope": "Current state: session detail files live in .claude/sessions/*.md per workspace — local only, not shared. The question: should these be committed and pushed to GitHub per project? Evaluate using 5W1H framework:\n\n**What** — what artifacts would be persisted? (sessions.json, detail .md files, retired session history)\n**Why** — team visibility, cross-machine resume, audit trail, backup. Tradeoff: clutter in git log, potential merge conflicts on sessions.json\n**When** — on every session lifecycle event? only at completion? at session start?\n**Who** — who sees/uses persisted details? teammates, future self, CI systems?\n**Where** — same repo? separate tracking repo? ccsm-specific branch?\n**How** — auto-commit from hooks? manual via agent? ccsm subcommand?\n\nExpected output: clear recommendation with rationale, edge cases flagged, no code changes (decision doc only).",
+      "status": "abandoned",
+      "pids": [],
+      "tags": [
+        "decision",
+        "5w1h",
+        "documentation",
+        "team-visibility"
+      ],
+      "started": "day20622T14:44Z",
+      "completed": "day20622T15:03:01Z",
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "05f61f98-558e-4c06-8513-33e4a14e6c1c",
+      "name": "CCSM session acknowlege",
+      "goal": "Evaluate agents's acknowledge about their CCSM session to improve inject-scope",
+      "scope": "",
+      "status": "completed",
+      "pids": [
+        22966
+      ],
+      "tags": [
+        "inject-scope",
+        "session-identity",
+        "env-var",
+        "deterministic",
+        "gate-check",
+        "note-check",
+        "hook"
+      ],
+      "started": "day20624T15:09Z",
+      "completed": "day20624T15:12:11Z",
       "retired_session_ids": []
     }
   ]
