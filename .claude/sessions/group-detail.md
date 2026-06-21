@@ -32,6 +32,10 @@ grouping, detail-files, markdown, session-lifecycle
   Format: [YYYY-MM-DD HH:MM] <note>
 -->
 
+- [2026-06-21 02:57Z] END-GATE: Built depends_on field + ccsm depend (add/clear/list with same-group validation) + dep-aware ccsm next (skips blocked) + ccsm group-deps (tree render). All 65 tests pass. Group detail files + --list + --goal from prior scope also done. Nothing left.
+
+- [2026-06-21 02:56Z] Built depends_on: Vec<String> field, ccsm depend subcommand (add/clear/list with same-group validation), dep-aware ccsm next (skips blocked), ccsm group-deps (dependency tree). All 65 tests pass.
+
 - [2026-06-20 16:13Z] END-GATE: Built group detail markdown files — auto-create on join, auto-clean on last leave, --goal flag, overview display. All 65 tests pass. Docs updated (--help + CLAUDE.md). Nothing left undone.
 
 - [2026-06-20 16:08Z] Built group detail markdown files — auto-create on first join, auto-clean on last leave, --goal flag, overview display integration. All 65 tests pass.
