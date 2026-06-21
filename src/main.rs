@@ -2197,10 +2197,41 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
         .join(format!("{}.md", name));
 
     if !detail_path.exists() {
-        anyhow::bail!(
-            "no detail file for '{}'. Create one:\n  cp .claude/session-detail-template.md .claude/sessions/{}.md",
-            name, name
-        );
+        // Auto-create detail file from registry data + template
+        let session = reg.sessions.iter().find(|s| s.name == name).unwrap();
+        let template_path = workspace
+            .join(".claude")
+            .join("session-detail-template.md");
+        // Ensure template exists
+        if !template_path.exists() {
+            let _ = std::fs::write(&template_path, crate::commands::doctor::TEMPLATE_CONTENT);
+        }
+        if template_path.exists()
+            && let Ok(template) = std::fs::read_to_string(&template_path) {
+                let status = session.status.to_string();
+                let tags = if session.tags.is_empty() { "(none)".into() } else { session.tags.join(", ") };
+                let pids = if session.pids.is_empty() { "(none)".into() } else { session.pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ") };
+                let populated = template
+                    .replace("{{name}}", name)
+                    .replace("{{goal}}", &session.goal)
+                    .replace("{{status}}", &status)
+                    .replace("{{scope}}", &session.scope)
+                    .replace("{{tags}}", &tags)
+                    .replace("{{session_id}}", &if session.session_id.is_empty() { "(auto — ccsm manages)".into() } else { session.session_id.clone() })
+                    .replace("{{cwd}}", &workspace.to_string_lossy())
+                    .replace("{{pids}}", &pids)
+                    .replace("{{kind}}", "(auto)")
+                    .replace("{{version}}", "(auto)")
+                    .replace("{{waiting_for}}", "(none)")
+                    .replace("{{dependencies}}", &if session.depends_on.is_empty() { "(none)".into() } else { session.depends_on.join(", ") })
+                    .replace("{{now}}", &crate::registry::note_timestamp())
+                    .replace("{{note}}", "Session detail file auto-created by ccsm note (was missing)");
+                if let Some(parent) = detail_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&detail_path, populated);
+                eprintln!("  (auto-created missing detail file for '{}')", name);
+            }
     }
 
     let contents = std::fs::read_to_string(&detail_path)?;
