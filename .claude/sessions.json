@@ -1,5 +1,5 @@
 {
-  "updated": "day20625T02:56:27Z",
+  "updated": "day20625T03:12:06Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -198,9 +198,7 @@
       "started": "day20624T15:30Z",
       "completed": "day20624T15:31:41Z",
       "group": null,
-      "depends_on": [
-        "groups-list"
-      ],
+      "depends_on": [],
       "retired_session_ids": []
     },
     {
@@ -227,33 +225,34 @@
       "name": "group-detail",
       "goal": "Central group markdown files at .claude/session-group/<name>.md",
       "scope": "Extended scope: Add depends_on: Vec<String> to WorkspaceSession. CLI: ccsm depend <name> --on <dep> / --clear. ccsm next skips sessions with incomplete deps. ccsm group deps <name> renders dependency tree. Deps stored in sessions.json + detail file ## Dependencies section. Previous scope: group detail markdown files at .claude/session-group/<name>.md with auto-create/auto-clean, --goal flag, --list flag.",
-      "status": "in_progress",
-      "pids": [
-        114454
-      ],
+      "status": "completed",
+      "pids": [],
       "tags": [
         "grouping, detail-files, markdown, session-lifecycle"
       ],
       "started": "day20625T02:20Z",
-      "completed": "day20624T16:13:35Z",
+      "completed": "day20625T02:57:08Z",
       "group": null,
       "depends_on": [],
       "retired_session_ids": []
     },
     {
-      "session_id": "",
-      "name": "groups-list",
-      "goal": "Add --list flag to ccsm group to list all groups in workspace",
-      "scope": "Add a  flag to the  command that scans the registry for all unique group names and prints each with member count and goal snippet. No new subcommand — reuse the existing group command.",
-      "status": "completed",
-      "pids": [],
+      "session_id": "9862a1e8-60d3-42ab-9e5c-b0a7e3791531",
+      "name": "group-roadmap",
+      "goal": "Auto-render group roadmap markdown from session data",
+      "scope": "ccsm group roadmap <name> reads group detail file + all member sessions, generates a markdown table with rank, status, goal, scope per session. Renders dependency graph if depends_on exists. Output goes to stdout (pipeable to file). No new data stores — pure render from existing registry + detail files + depends_on.",
+      "status": "in_progress",
+      "pids": [
+        134148
+      ],
       "tags": [
         "grouping",
-        "cli",
-        "discovery"
+        "rendering",
+        "markdown",
+        "ergonomics"
       ],
-      "started": "",
-      "completed": "day20625T02:23:47Z",
+      "started": "day20625T03:02Z",
+      "completed": "",
       "group": null,
       "depends_on": [],
       "retired_session_ids": []

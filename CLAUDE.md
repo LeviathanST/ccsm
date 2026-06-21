@@ -185,6 +185,17 @@ ccsm --version  # print version
 ccsm --help     # full command list with descriptions
 ```
 
+## Documentation Discipline
+
+Every new CLI feature (command, flag, field, workflow) **must** be documented in the skill reference files before the session is closed. Agents discover capabilities through these docs — stale docs mean agents don't know features exist.
+
+- `.claude/skills/session-manager/reference/cli-commands.md` — new commands/flags
+- `.claude/skills/session-manager/reference/registry-schema.md` — new fields, schema changes
+- `.claude/skills/session-manager/SKILL.md` — new workflows or protocols
+- `CLAUDE.md` — project-level architecture changes only (not agent instructions)
+
+Run `ls .claude/skills/session-manager/reference/` to discover all doc files. Verify with `grep` that every new term appears. Commit docs with code in the same push.
+
 ## Build & Run
 
 ```bash

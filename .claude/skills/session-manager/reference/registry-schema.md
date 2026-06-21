@@ -17,7 +17,12 @@
       "pids": [],              // AUTO — ccsm manages this
       "tags": ["ui", "pty"],   // MANUAL — lowercase tags
       "started": "",           // AUTO — ccsm manages this
-      "completed": ""          // MANUAL — set when status → completed
+      "completed": "",          // MANUAL — set when status → completed
+      "group": {               // MANUAL — optional group assignment
+        "name": "group-name",  //   kebab-case group identifier
+        "rank": "free"         //   "free" or number (lower = higher priority)
+      },
+      "depends_on": []         // MANUAL — session names that must complete first
     }
   ]
 }
@@ -33,6 +38,8 @@
 | `name`, `goal`, `scope`, `tags` | **You** | On session create, refine as needed |
 | `status` | **You** | Update as work progresses |
 | `completed` | **You** | When status → completed |
+| `group` | **You** | Assign via `ccsm group <name> -g <group>`, clear via `--clear` |
+| `depends_on` | **You** | Manage via `ccsm depend <name> --on <dep>` / `--clear` |
 
 ## Session Lifecycle
 
