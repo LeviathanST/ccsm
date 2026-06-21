@@ -1,6 +1,6 @@
 # Session: group-roadmap
 
-> **pending** | started {{started}} | completed {{completed}} | {{pid_count}} pids
+> **in_progress** | started day20625T03:02Z | completed (not yet) | 1 pid
 
 ## Goal
 
@@ -8,21 +8,21 @@ Auto-render group roadmap markdown from session data
 
 ## Scope / Plan
 
-(fill in — approach, constraints, what's in/out)
+ccsm group roadmap <name> reads group detail file + all member sessions, generates a markdown table with rank, status, goal, scope per session. Renders dependency graph if depends_on exists. Output goes to stdout (pipeable to file). No new data stores — pure render from existing registry + detail files + depends_on. ALSO: ccsm doctor detects missing essential files (session-detail-template.md, .claude/session-group/ dir) and auto-creates them.
 
 ## Tags
 
-(fill in)
+grouping, rendering, markdown, ergonomics
 
 ## Live Session Data
 
 | Field | Value |
 |---|---|
-| session_id | `(auto — ccsm manages)` |
+| session_id | `9862a1e8-60d3-42ab-9e5c-b0a7e3791531` |
 | cwd | `/home/leviathanst/workspaces/cc-tui` |
-| pids | (auto — ccsm manages) |
-| kind | `(auto)` |
-| version | `(auto)` |
+| pids | 134148 |
+| kind | `claude` |
+| version | `0.7.1` |
 | waitingFor | `(none)` |
 
 ## Progress Log
@@ -31,6 +31,10 @@ Auto-render group roadmap markdown from session data
   Append dated entries as work happens. Keep newest at top.
   Format: [YYYY-MM-DD HH:MM] <note>
 -->
+
+- [2026-06-21 03:28Z] END-GATE: Built — (1) ccsm group <name> --roadmap renders markdown table + mermaid dep graph from live registry (2) ccsm doctor auto-creates missing template + .claude/sessions/ dir. Not done — (a) nested subcommand syntax (ccsm group roadmap <name> vs --roadmap flag) was deferred for clap refactor later (b) no test group with real data in this workspace. All 65 tests pass. 4 commits pushed.
+
+- [2026-06-21 03:26Z] feat: doctor auto-creates missing session-detail-template.md + .claude/sessions/ dir. Template embedded as TEMPLATE_CONTENT const. Two paths: (1) ccsm doctor detects → auto-creates → reports in 🔧 section, (2) ccsm new auto-creates silently → detail file creation proceeds normally. Root cause fix: previously template absence caused silent detail-file skip.
 
 - [2026-06-21 03:21Z] Updated skill docs: added group/depends_on to registry-schema.md, added Documentation Discipline rule to CLAUDE.md — every new feature must be documented in skill references.
 
