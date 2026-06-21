@@ -105,6 +105,7 @@ enum Commands {
     ///
     /// `ccsm group --list` — list all groups in the workspace.
     /// `ccsm group <name>` — show all sessions in the group + goal from group detail file.
+    /// `ccsm group <name> --roadmap` — render a markdown roadmap for the group.
     /// `ccsm group <name> --goal <text>` — set the group goal in the group detail file.
     /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
     /// `ccsm group <session> --clear` — remove from group.
@@ -129,6 +130,9 @@ enum Commands {
         /// Set the group goal (use with group name, not --group/--clear)
         #[arg(long)]
         goal: Option<String>,
+        /// Render a markdown roadmap for the group (table + dependency graph, pipeable to file)
+        #[arg(long)]
+        roadmap: bool,
     },
     /// Print the next session to work on in a group.
     ///
@@ -301,7 +305,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Pending { name } => run_pending(&name),
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
-        Commands::Group { name, list, group, rank, clear, goal } => run_group(name.as_deref(), list, group.as_deref(), rank.as_deref(), clear, goal.as_deref()),
+        Commands::Group { name, list, group, rank, clear, goal, roadmap } => run_group(name.as_deref(), list, group.as_deref(), rank.as_deref(), clear, goal.as_deref(), roadmap),
         Commands::Next { group } => run_next(&group),
         Commands::GroupDeps { group } => run_group_deps(&group),
         Commands::Depend { name, on, clear } => run_depend(&name, on.as_deref(), clear),
@@ -1223,9 +1227,10 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
 }
 
 /// `ccsm group <name>` — overview of all sessions in a group.
+/// `ccsm group <name> --roadmap` — render a markdown roadmap for the group.
 /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
 /// `ccsm group <session> --clear` — remove from group.
-fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&str>, clear: bool, goal: Option<&str>) -> anyhow::Result<()> {
+fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&str>, clear: bool, goal: Option<&str>, roadmap: bool) -> anyhow::Result<()> {
     use crate::registry::{Group, GroupRank};
 
     let workspace = std::env::current_dir()?;
@@ -1233,6 +1238,15 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
     // --list: list all groups in the workspace
     if list {
         return run_groups_list(&workspace);
+    }
+
+    // --roadmap: render a markdown roadmap for the group
+    if roadmap {
+        if group.is_some() || clear || goal.is_some() {
+            anyhow::bail!("--roadmap can't be combined with --group, --clear, or --goal. Usage: ccsm group <group-name> --roadmap");
+        }
+        let name = name.ok_or_else(|| anyhow::anyhow!("group NAME is required with --roadmap"))?;
+        return run_group_roadmap(name, &workspace);
     }
 
     // All other modes require a name
@@ -1482,6 +1496,183 @@ fn run_group_deps(group_name: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// `ccsm group <name> --roadmap` — render a markdown roadmap for the group.
+///
+/// Output: group goal header, markdown table (Rank | Session | Status | Goal | Scope),
+/// then a Mermaid dependency graph if any sessions have depends_on.
+fn run_group_roadmap(group_name: &str, workspace: &std::path::Path) -> anyhow::Result<()> {
+    use crate::registry::{GroupRank, SessionStatus};
+
+    let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+
+    let mut members: Vec<&crate::registry::WorkspaceSession> = reg
+        .sessions
+        .iter()
+        .filter(|s| s.group.as_ref().is_some_and(|g| g.name == group_name))
+        .collect();
+
+    if members.is_empty() {
+        anyhow::bail!("no sessions in group '{}'", group_name);
+    }
+
+    // Sort by rank (same as everywhere)
+    members.sort_by(|a, b| {
+        let ra = a.group.as_ref().map(|g| &g.rank);
+        let rb = b.group.as_ref().map(|g| &g.rank);
+        match (ra, rb) {
+            (Some(GroupRank::Number(na)), Some(GroupRank::Number(nb))) => na.cmp(nb),
+            (Some(GroupRank::Number(_)), Some(GroupRank::Free)) => std::cmp::Ordering::Greater,
+            (Some(GroupRank::Free), Some(GroupRank::Number(_))) => std::cmp::Ordering::Less,
+            _ => a.name.cmp(&b.name),
+        }
+    });
+
+    // Read group goal from group detail file
+    let group_goal = {
+        let gpath = group_file_path(workspace, group_name);
+        if gpath.exists() {
+            if let Ok(contents) = std::fs::read_to_string(&gpath) {
+                let sections = crate::registry::parse_sections(&contents);
+                sections
+                    .iter()
+                    .find(|(h, _)| h == "Goal")
+                    .map(|(_, b)| b.trim().to_string())
+                    .filter(|g| !g.is_empty() && !g.starts_with('_'))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    };
+
+    // Header
+    println!("# Group Roadmap: {}", group_name);
+    if !group_goal.is_empty() {
+        println!();
+        println!("**Goal:** {}", group_goal);
+    }
+
+    // Markdown table
+    println!();
+    println!("| Rank | Session | Status | Goal | Scope |");
+    println!("|------|---------|--------|------|-------|");
+
+    for m in &members {
+        let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
+        let icon = status_icon(&m.status);
+
+        let goal = read_session_section(&m.name, workspace, "Goal");
+        let goal = if goal.is_empty() { &m.goal } else { &goal };
+        let scope = read_session_section(&m.name, workspace, "Scope / Plan");
+        let scope = if scope.is_empty() { &m.scope } else { &scope };
+
+        println!(
+            "| {} | {} | {} {} | {} | {} |",
+            rank_str,
+            m.name,
+            icon,
+            m.status,
+            truncate_md(goal, 60),
+            truncate_md(scope, 60),
+        );
+    }
+
+    // Dependency graph (Mermaid) if any
+    let has_deps = members.iter().any(|m| !m.depends_on.is_empty());
+    if has_deps {
+        println!();
+        println!("## Dependencies");
+        println!();
+        println!("```mermaid");
+        println!("graph TD");
+
+        // Collect all nodes (members + deps that might be in other groups)
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+        for m in &members {
+            let node_id = m.name.replace(['-', '.'], "_");
+            if seen.insert(node_id.clone()) {
+                let icon = status_icon(&m.status);
+                println!("    {}[\"{} {}\"]", node_id, icon, m.name);
+            }
+            for dep in &m.depends_on {
+                let dep_id = dep.replace(['-', '.'], "_");
+                let dep_status = reg
+                    .sessions
+                    .iter()
+                    .find(|s| &s.name == dep)
+                    .map(|s| s.status)
+                    .unwrap_or(SessionStatus::Pending);
+                let dep_icon = status_icon(&dep_status);
+                if seen.insert(dep_id.clone()) {
+                    println!("    {}[\"{} {}\"]", dep_id, dep_icon, dep);
+                }
+                // Edge: dep → member (member depends on dep)
+                println!("    {} --> {}", dep_id, node_id);
+            }
+        }
+
+        println!("```");
+    }
+
+    println!();
+    let s = if members.len() == 1 { "" } else { "s" };
+    println!("--- {} session{} ---", members.len(), s);
+
+    Ok(())
+}
+
+/// Status icon for roadmap table + mermaid labels.
+fn status_icon(status: &crate::registry::SessionStatus) -> &'static str {
+    match status {
+        crate::registry::SessionStatus::Completed => "✓",
+        crate::registry::SessionStatus::InProgress => "→",
+        crate::registry::SessionStatus::Pending => "○",
+        crate::registry::SessionStatus::Blocked => "!",
+        _ => "·",
+    }
+}
+
+/// Read a section from a session detail file.
+fn read_session_section(name: &str, workspace: &std::path::Path, header: &str) -> String {
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", name));
+    if detail_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&detail_path) {
+            let sections = crate::registry::parse_sections(&contents);
+            if let Some((_, body)) = sections.iter().find(|(h, _)| h == header) {
+                let trimmed = body.trim();
+                if !trimmed.is_empty()
+                    && !trimmed.starts_with('_')
+                    && !trimmed.starts_with("(fill in")
+                {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Escape pipes in markdown table cells.
+fn md_escape_pipe(s: &str) -> String {
+    s.replace('|', "\\|")
+}
+
+/// Truncate for markdown table readability.
+fn truncate_md(s: &str, max_len: usize) -> String {
+    let escaped = md_escape_pipe(s);
+    if escaped.len() > max_len {
+        format!("{}...", &escaped[..max_len.saturating_sub(3)])
+    } else {
+        escaped
+    }
 }
 
 /// `ccsm depend <name>` — list dependencies.
