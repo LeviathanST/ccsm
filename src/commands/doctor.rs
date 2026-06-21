@@ -1,5 +1,53 @@
 use std::path::Path;
 
+/// Canonical session detail template — embedded so doctor can recreate it.
+pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
+
+> **{{status}}** | started {{started}} | completed {{completed}} | {{pid_count}} pids
+
+## Goal
+
+{{goal}}
+
+## Scope / Plan
+
+{{scope}}
+
+## Tags
+
+{{tags}}
+
+## Live Session Data
+
+| Field | Value |
+|---|---|
+| session_id | `{{session_id}}` |
+| cwd | `{{cwd}}` |
+| pids | {{pids}} |
+| kind | `{{kind}}` |
+| version | `{{version}}` |
+| waitingFor | `{{waiting_for}}` |
+
+## Progress Log
+
+<!--
+  Append dated entries as work happens. Keep newest at top.
+  Format: [YYYY-MM-DD HH:MM] <note>
+-->
+
+- [{{now}}] {{note}}
+
+## Dependencies
+
+<!-- Sessions this work depends on or is blocked by -->
+
+{{dependencies}}
+
+## Notes
+
+<!-- Free-form: decisions, discoveries, gotchas, links -->
+"#;
+
 /// `ccsm doctor` — scan session registry and filesystem for health issues.
 pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
@@ -11,6 +59,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     let mut infos: Vec<String> = Vec::new();
     let mut tips: Vec<String> = Vec::new();
     let mut healthy = 0usize;
+    let mut auto_created: Vec<String> = Vec::new();
 
     let in_progress_count = reg.sessions.iter()
         .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
@@ -153,8 +202,49 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // 10. Auto-create essential files if missing ────────────────────────
+    let claude_dir = workspace.join(".claude");
+    let sessions_dir = claude_dir.join("sessions");
+    let template_path = claude_dir.join("session-detail-template.md");
+    let group_dir = claude_dir.join("session-group");
+
+    // 10a. .claude/sessions/ directory
+    if !sessions_dir.exists() {
+        if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
+            warnings.push(format!(
+                "  cannot create sessions dir  {}\n    {}",
+                sessions_dir.display(), e,
+            ));
+        } else {
+            auto_created.push(format!("  .claude/sessions/"));
+        }
+    }
+
+    // 10b. .claude/session-detail-template.md
+    if !template_path.exists() {
+        if let Err(e) = std::fs::write(&template_path, TEMPLATE_CONTENT) {
+            warnings.push(format!(
+                "  cannot create template  {}\n    {}",
+                template_path.display(), e,
+            ));
+        } else {
+            auto_created.push(format!("  .claude/session-detail-template.md"));
+        }
+    }
+
+    // 10c. .claude/session-group/ directory (non-essential but nice to have)
+    if !group_dir.exists() {
+        let _ = std::fs::create_dir_all(&group_dir);
+    }
+
     // ── Print results ───────────────────────────────────────────────
-    let any_issues = !warnings.is_empty() || !infos.is_empty() || !tips.is_empty();
+    let any_issues = !warnings.is_empty() || !infos.is_empty() || !tips.is_empty() || !auto_created.is_empty();
+
+    if !auto_created.is_empty() {
+        println!("🔧 auto-created");
+        for a in &auto_created { println!("{}", a); }
+        println!();
+    }
 
     if !warnings.is_empty() {
         println!("⚠ warnings (should fix)");

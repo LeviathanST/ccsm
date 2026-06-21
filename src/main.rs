@@ -5,7 +5,7 @@ mod sequence;
 #[allow(dead_code)]
 mod session;
 #[allow(dead_code)]
-mod commands;
+pub(crate) mod commands;
 
 use std::path::PathBuf;
 
@@ -927,11 +927,15 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: bool) -> anyhow::Resu
         .join("sessions")
         .join(format!("{}.md", name));
     if !detail_path.exists() {
-        let template = workspace
+        let template_path = workspace
             .join(".claude")
             .join("session-detail-template.md");
-        if template.exists()
-            && let Ok(contents) = std::fs::read_to_string(&template) {
+        // Auto-create the template if it's missing
+        if !template_path.exists() {
+            let _ = std::fs::write(&template_path, crate::commands::doctor::TEMPLATE_CONTENT);
+        }
+        if template_path.exists()
+            && let Ok(contents) = std::fs::read_to_string(&template_path) {
                 let populated = contents
                     .replace("{{name}}", name)
                     .replace("{{goal}}", goal)
