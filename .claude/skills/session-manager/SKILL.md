@@ -96,6 +96,31 @@ Pull these on demand — don't read them all.
 | Session lifecycle + resume | `reference/session-lifecycle.md` | You need lifecycle or resume mechanics |
 | Anti-patterns | `reference/anti-patterns.md` | You want to avoid common mistakes |
 
+## Grouping & Dependencies
+
+Group related sessions together with ordering, dependencies, and roadmap rendering.
+
+```bash
+ccsm group <session> -g <group> [-r free|<n>]  # assign session to group
+ccsm group <session> --clear                    # remove from group
+ccsm group <name>                               # overview — members + goal
+ccsm group <name> --goal <text>                 # set group goal
+ccsm group <name> --roadmap                     # markdown table + mermaid dep graph → stdout
+ccsm group --list                               # list all groups in workspace
+ccsm next <group>                               # next session to work on (respects deps)
+ccsm group-deps <group>                         # ASCII dependency tree
+ccsm depend <name> --on <dep>                   # add dependency
+ccsm depend <name> --clear                      # clear all dependencies
+```
+
+Group detail files live at `.claude/session-group/<name>.md`. Auto-created on first join, auto-deleted when last session leaves.
+
+**Roadmap** (`ccsm group <name> --roadmap`) renders a live markdown document from registry state:
+- Markdown table: rank, session, status icon (✓→○!·), goal, scope
+- Mermaid `graph TD` if any session has `depends_on`
+- Pipeable: `ccsm group sprint-5 --roadmap > ROADMAP.md`
+- Always current — reads from registry, never drifts
+
 ## Context Budget Rules
 
 - **`ccsm list --summary`** — sub-50 tokens, quickest overview

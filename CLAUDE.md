@@ -116,6 +116,7 @@ ccsm group     <name> -g <group> [-r free|<n>]  # assign session to group (auto-
 ccsm group     <name> --clear    # remove session from group (auto-deletes group file when last leaves)
 ccsm group     <name>            # overview — list sessions + show goal from group detail file
 ccsm group     <name> --goal <text>  # set group goal in .claude/session-group/<name>.md
+ccsm group     <name> --roadmap      # render markdown roadmap (table + mermaid dep graph)
 ccsm next      <group>           # print next session to work on in group
 ccsm note-check                  # (hook) remind if tree dirty + detail file stale
 ccsm archive   <name>            # delete transcript, keep entry as work log
