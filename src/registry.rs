@@ -182,6 +182,9 @@ pub struct WorkspaceSession {
     /// Group this session belongs to (optional).
     #[serde(default)]
     pub group: Option<Group>,
+    /// Session names this session depends on (must complete first).
+    #[serde(default)]
+    pub depends_on: Vec<String>,
     /// Retired Claude session_ids — one ccsm session may chain through
     /// multiple Claude sessions as the context window fills up.
     #[serde(default)]
@@ -423,6 +426,7 @@ impl WorkspaceRegistry {
                 started: String::new(),
                 completed: String::new(),
                 group: None,
+                depends_on: vec![],
                 retired_session_ids: vec![],
             },
             WorkspaceSession {
@@ -436,6 +440,7 @@ impl WorkspaceRegistry {
                 started: String::new(),
                 completed: String::new(),
                 group: None,
+                depends_on: vec![],
                 retired_session_ids: vec![],
             },
             WorkspaceSession {
@@ -449,6 +454,7 @@ impl WorkspaceRegistry {
                 started: String::new(),
                 completed: String::new(),
                 group: None,
+                depends_on: vec![],
                 retired_session_ids: vec![],
             },
             WorkspaceSession {
@@ -462,6 +468,7 @@ impl WorkspaceRegistry {
                 started: String::new(),
                 completed: String::new(),
                 group: None,
+                depends_on: vec![],
                 retired_session_ids: vec![],
             },
         ]
@@ -873,6 +880,7 @@ mod tests {
                 started: "day0T00:00:00Z".into(),
                 completed: String::new(),
                 group: None,
+                depends_on: vec![],
                 retired_session_ids: vec![],
             }],
         };
@@ -914,6 +922,7 @@ mod tests {
             started: String::new(),
             completed: String::new(),
             group: None,
+            depends_on: vec![],
             retired_session_ids: vec![],
         });
         reg.save(&workspace).unwrap();
@@ -953,6 +962,7 @@ mod tests {
                     started: String::new(),
                     completed: String::new(),
                     group: None,
+                    depends_on: vec![],
                     retired_session_ids: vec![],
                 });
                 reg.save(&ws).unwrap();
@@ -1004,6 +1014,7 @@ mod tests {
                     started: String::new(),
                     completed: String::new(),
                     group: None,
+                    depends_on: vec![],
                     retired_session_ids: vec![],
                 });
                 let _ = reg.save(&ws);

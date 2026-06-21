@@ -138,6 +138,28 @@ enum Commands {
         /// Group name
         group: String,
     },
+    /// Show dependency tree for a group.
+    ///
+    /// `ccsm group-deps <name>` — render the dependency graph for all sessions in a group.
+    GroupDeps {
+        /// Group name
+        group: String,
+    },
+    /// Manage session dependencies.
+    ///
+    /// `ccsm depend <name> --on <dep>` — add a dependency.
+    /// `ccsm depend <name> --clear` — remove all dependencies.
+    /// `ccsm depend <name>` — list dependencies.
+    Depend {
+        /// Session name
+        name: String,
+        /// Add a dependency (session must complete first)
+        #[arg(long)]
+        on: Option<String>,
+        /// Remove all dependencies
+        #[arg(long)]
+        clear: bool,
+    },
     /// Manually link a Claude session_id. Auto-managed by `resume`.
     Attach {
         name: String,
@@ -281,6 +303,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
         Commands::Group { name, list, group, rank, clear, goal } => run_group(name.as_deref(), list, group.as_deref(), rank.as_deref(), clear, goal.as_deref()),
         Commands::Next { group } => run_next(&group),
+        Commands::GroupDeps { group } => run_group_deps(&group),
+        Commands::Depend { name, on, clear } => run_depend(&name, on.as_deref(), clear),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
         Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path()),
         Commands::Resume { name } => commands::resume::run_resume(&name, &workspace_path(), &home),
@@ -887,7 +911,8 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: bool) -> anyhow::Resu
         started: String::new(),
         completed: String::new(),
         group: None,
-                retired_session_ids: vec![],
+        depends_on: vec![],
+        retired_session_ids: vec![],
     });
     reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
@@ -1404,6 +1429,177 @@ fn run_groups_list(workspace: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `ccsm group-deps <name>` — render the dependency tree for all sessions in a group.
+fn run_group_deps(group_name: &str) -> anyhow::Result<()> {
+    use crate::registry::SessionStatus;
+
+    let workspace = std::env::current_dir()?;
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+
+    let members: Vec<_> = reg
+        .sessions
+        .iter()
+        .filter(|s| s.group.as_ref().is_some_and(|g| g.name == group_name))
+        .collect();
+
+    if members.is_empty() {
+        anyhow::bail!("no sessions in group '{}'", group_name);
+    }
+
+    println!("dependency tree for group '{}':\n", group_name);
+
+    for m in &members {
+        let status_marker = match m.status {
+            SessionStatus::Completed => "✓",
+            SessionStatus::InProgress => "→",
+            SessionStatus::Pending => "○",
+            SessionStatus::Blocked => "!",
+            _ => "·",
+        };
+        println!("  {} {}  {}", status_marker, m.name, m.goal);
+
+        if m.depends_on.is_empty() {
+            println!("    (no dependencies)");
+        } else {
+            for dep in &m.depends_on {
+                let dep_status = reg
+                    .sessions
+                    .iter()
+                    .find(|s| &s.name == dep)
+                    .map(|s| s.status.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let dep_marker = if dep_status == "completed" {
+                    "✓"
+                } else if dep_status == "in_progress" {
+                    "→"
+                } else {
+                    "○"
+                };
+                println!("    {} depends on {} {} ({})", "├─", dep_marker, dep, dep_status);
+            }
+        }
+        println!();
+    }
+
+    Ok(())
+}
+
+/// `ccsm depend <name>` — list dependencies.
+/// `ccsm depend <name> --on <dep>` — add a dependency.
+/// `ccsm depend <name> --clear` — remove all dependencies.
+fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
+    let workspace = std::env::current_dir()?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+
+    // Check session exists first (immutable borrow)
+    if !reg.sessions.iter().any(|s| s.name == name) {
+        anyhow::bail!("no session named '{}'", name);
+    }
+
+    if clear {
+        // Mutate, extract deps, save
+        let deps = {
+            let entry = reg.sessions.iter_mut().find(|s| s.name == name).unwrap();
+            if entry.depends_on.is_empty() {
+                println!("{} has no dependencies to clear", name);
+                return Ok(());
+            }
+            entry.depends_on.clear();
+            entry.depends_on.clone()
+        };
+        reg.updated = crate::registry::now_iso();
+        reg.save(&workspace)?;
+        update_deps_in_detail(name, &deps, &workspace)?;
+        println!("{}  ← dependencies cleared", name);
+        return Ok(());
+    }
+
+    if let Some(dep) = on {
+        if dep == name {
+            anyhow::bail!("a session cannot depend on itself");
+        }
+        // Validate: dep session must exist
+        let dep_session = reg
+            .sessions
+            .iter()
+            .find(|s| s.name == dep)
+            .ok_or_else(|| anyhow::anyhow!("no session named '{}' — dependencies must be between existing sessions", dep))?;
+        // Validate: both sessions must be in the same group
+        let session_group = reg
+            .sessions
+            .iter()
+            .find(|s| s.name == name)
+            .and_then(|s| s.group.as_ref().map(|g| g.name.clone()));
+        let dep_group = dep_session.group.as_ref().map(|g| g.name.clone());
+        if session_group != dep_group {
+            anyhow::bail!(
+                "dependencies must be within the same group — '{}' is in group {:?}, '{}' is in group {:?}",
+                name, session_group, dep, dep_group
+            );
+        }
+        let deps = {
+            let entry = reg.sessions.iter_mut().find(|s| s.name == name).unwrap();
+            if entry.depends_on.iter().any(|d| d == dep) {
+                println!("{} already depends on '{}'", name, dep);
+                return Ok(());
+            }
+            entry.depends_on.push(dep.to_string());
+            entry.depends_on.clone()
+        };
+        reg.updated = crate::registry::now_iso();
+        reg.save(&workspace)?;
+        update_deps_in_detail(name, &deps, &workspace)?;
+        println!("{}  ← depends on '{}'", name, dep);
+        return Ok(());
+    }
+
+    // List deps (immutable read)
+    let entry = reg.sessions.iter().find(|s| s.name == name).unwrap();
+    if entry.depends_on.is_empty() {
+        println!("{} has no dependencies", name);
+    } else {
+        println!("{} depends on:", name);
+        for dep in &entry.depends_on {
+            let status = reg
+                .sessions
+                .iter()
+                .find(|s| &s.name == dep)
+                .map(|s| s.status.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let marker = if status == "completed" { "✓" } else { "○" };
+            println!("  {} {} ({})", marker, dep, status);
+        }
+    }
+    Ok(())
+}
+
+/// Sync the `depends_on` list to the session detail file `## Dependencies` section.
+fn update_deps_in_detail(
+    name: &str,
+    deps: &[String],
+    workspace: &std::path::Path,
+) -> anyhow::Result<()> {
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", name));
+    if !detail_path.exists() {
+        return Ok(());
+    }
+    let contents = std::fs::read_to_string(&detail_path)?;
+    let body = if deps.is_empty() {
+        "(none)".to_string()
+    } else {
+        deps.iter()
+            .map(|d| format!("- {}", d))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let updated = crate::registry::replace_detail_section(&contents, "## Dependencies", &body);
+    std::fs::write(&detail_path, updated)?;
+    Ok(())
+}
+
 // ── Group Detail File Helpers ───────────────────────────────────────
 
 const GROUP_DIR: &str = ".claude/session-group";
@@ -1542,12 +1738,23 @@ fn set_group_goal(
 ///
 /// Priority: in_progress > pending by rank (numeric: lowest first, free: alphabetical).
 /// Tie-break: alphabetical by name within same rank.
-/// Exits 0 with no output if all sessions in the group are done.
+/// Skips sessions whose dependencies are not all completed.
+/// Exits 0 with no output if all sessions in the group are done or blocked.
 fn run_next(group_name: &str) -> anyhow::Result<()> {
     use crate::registry::{GroupRank, SessionStatus};
 
     let workspace = std::env::current_dir()?;
     let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+
+    // Helper: true if all deps of this session are completed
+    let is_unblocked = |s: &&crate::registry::WorkspaceSession| -> bool {
+        s.depends_on.is_empty()
+            || s.depends_on.iter().all(|dep| {
+                reg.sessions
+                    .iter()
+                    .any(|r| &r.name == dep && r.status == SessionStatus::Completed)
+            })
+    };
 
     let mut members: Vec<_> = reg
         .sessions
@@ -1571,15 +1778,17 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
         }
     });
 
-    // 1. Prefer in_progress
-    let in_progress: Vec<_> = members.iter().filter(|m| m.status == SessionStatus::InProgress).collect();
+    // 1. Prefer in_progress (unblocked only)
+    let in_progress: Vec<_> = members
+        .iter()
+        .filter(|m| m.status == SessionStatus::InProgress && is_unblocked(m))
+        .collect();
     if in_progress.len() == 1 {
         println!("{}", in_progress[0].name);
         return Ok(());
     }
     if in_progress.len() > 1 {
         eprintln!("warning: {} in_progress sessions in group '{}'", in_progress.len(), group_name);
-        // Pick most recently started (fallback: first by sort order)
         let pick = in_progress
             .iter()
             .max_by_key(|m| &m.started)
@@ -1588,14 +1797,17 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 2. First pending by rank
-    let pending: Vec<_> = members.iter().filter(|m| m.status == SessionStatus::Pending).collect();
+    // 2. First pending by rank (unblocked only)
+    let pending: Vec<_> = members
+        .iter()
+        .filter(|m| m.status == SessionStatus::Pending && is_unblocked(m))
+        .collect();
     if let Some(pick) = pending.first() {
         println!("{}", pick.name);
         return Ok(());
     }
 
-    // 3. All done — nothing to do
+    // 3. All done or all blocked — nothing to do
     Ok(()) // exit 0, no output
 }
 
