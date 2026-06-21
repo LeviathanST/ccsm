@@ -1569,10 +1569,8 @@ fn run_group_roadmap(group_name: &str, workspace: &std::path::Path) -> anyhow::R
         let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
         let icon = status_icon(&m.status);
 
-        let goal = read_session_section(&m.name, workspace, "Goal");
-        let goal = if goal.is_empty() { &m.goal } else { &goal };
-        let scope = read_session_section(&m.name, workspace, "Scope / Plan");
-        let scope = if scope.is_empty() { &m.scope } else { &scope };
+        let goal = &m.goal;
+        let scope = &m.scope;
 
         println!(
             "| {} | {} | {} {} | {} | {} |",
@@ -1639,29 +1637,6 @@ fn status_icon(status: &crate::registry::SessionStatus) -> &'static str {
         crate::registry::SessionStatus::Blocked => "!",
         _ => "·",
     }
-}
-
-/// Read a section from a session detail file.
-fn read_session_section(name: &str, workspace: &std::path::Path, header: &str) -> String {
-    let detail_path = workspace
-        .join(".claude")
-        .join("sessions")
-        .join(format!("{}.md", name));
-    if detail_path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&detail_path) {
-            let sections = crate::registry::parse_sections(&contents);
-            if let Some((_, body)) = sections.iter().find(|(h, _)| h == header) {
-                let trimmed = body.trim();
-                if !trimmed.is_empty()
-                    && !trimmed.starts_with('_')
-                    && !trimmed.starts_with("(fill in")
-                {
-                    return trimmed.to_string();
-                }
-            }
-        }
-    }
-    String::new()
 }
 
 /// Escape pipes in markdown table cells.
