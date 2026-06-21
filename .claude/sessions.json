@@ -1,5 +1,5 @@
 {
-  "updated": "day20625T03:12:06Z",
+  "updated": "day20625T13:07:15Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -252,6 +252,29 @@
         "ergonomics"
       ],
       "started": "day20625T03:02Z",
+      "completed": "",
+      "group": null,
+      "depends_on": [],
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "a9034c31-4ae7-4c98-857b-baae9c0c24db",
+      "name": "scanable-sessions",
+      "goal": "Make sessions can be scanable with less effort, token optimize, time optimize which are perfect for agents to scan and know sessions do what by a quick check",
+      "scope": "Add ccsm scan subcommand: compact grouped output with --search, --group, --status, --json flags. Grep-friendly field markers (group:name, tags:csv). Built-in --search makes grep optional for agents. Add vague-goal detection to ccsm doctor. Update seed-session skill and CLAUDE.md with keyword-rich goal guidelines. In scope: scan command, doctor enhancement, doc updates. Out of scope: INDEX.md static file, auto-regeneration hooks.",
+      "status": "in_progress",
+      "pids": [
+        162185
+      ],
+      "tags": [
+        "scan",
+        "ergonomics",
+        "grep",
+        "agent-friendly",
+        "goal-quality",
+        "doctor"
+      ],
+      "started": "day20625T12:44Z",
       "completed": "",
       "group": null,
       "depends_on": [],

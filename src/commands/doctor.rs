@@ -103,6 +103,30 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
             session_issues += 1;
         }
 
+        // 3b. Vague goal — too short to be searchable (< 20 chars, non-empty)
+        if !s.goal.is_empty() && s.goal.len() < 20 {
+            tips.push(format!(
+                "  vague goal  {}\n    goal is only {} chars — not searchable for agents\n    → ccsm scope {} \"<keyword-rich description>\"  or edit .claude/sessions/{}.md",
+                s.name, s.goal.len(), s.name, s.name,
+            ));
+        }
+
+        // 3c. Goal is identical to session name (no real description)
+        if !s.goal.is_empty() && s.goal.trim() == s.name {
+            tips.push(format!(
+                "  name-as-goal  {}\n    goal equals session name — carries no searchable meaning\n    → edit .claude/sessions/{}.md and write a keyword-rich goal",
+                s.name, s.name,
+            ));
+        }
+
+        // 3d. CLI artifact in goal — e.g. "-g Audit ccsm stability..."
+        if s.goal.starts_with("-g ") || s.goal.starts_with("-c ") {
+            tips.push(format!(
+                "  cli artifact in goal  {}\n    goal starts with '{}' — flag text leaked into goal field\n    → edit .claude/sessions/{}.md and remove the flag prefix",
+                s.name, &s.goal[..3], s.name,
+            ));
+        }
+
         // 4. Empty scope on completed sessions
         if s.scope.is_empty() && s.status == crate::registry::SessionStatus::Completed {
             infos.push(format!(

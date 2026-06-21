@@ -9,6 +9,11 @@
 | `ccsm list --active --verbose` | Teammate scan: full goal + tags per session (~80 tokens) |
 | `ccsm list --summary` | Counts per status |
 | `ccsm list --status <s>` | Filter by status. Pass "help" to see what each status means |
+| `ccsm scan` | Compact grouped output (agents: ~50 tokens/entry). Grep-friendly field markers |
+| `ccsm scan --group <g>` | Filter by group |
+| `ccsm scan --status <s>` | Filter by status |
+| `ccsm scan --search <q>` | Full-text across name, goal, tags (case-insensitive) — no grep needed |
+| `ccsm scan --json` | Structured JSON array for programmatic consumers |
 | `ccsm show <name>` | Registry fields + detail file section headlines (with line counts) |
 | `ccsm show <name> --section <s>` | Extract one section from the detail file |
 | `ccsm --help` | Full command list |

@@ -79,6 +79,7 @@ Claude Code derives the project directory slug from the absolute path by replaci
 5. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by ccsm. Agents use CLI commands, never touch these fields directly.
 6. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.claude/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
 7. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
+8. **Keyword-rich goals.** Session goals must be self-contained and searchable. Bad: `"Fix bugs"`. Good: `"Fix PTY spawn race condition in ccsm resume command"`. Never use the session name as the goal. `ccsm doctor` flags vague goals (< 20 chars), name-as-goal, and CLI-artifact goals (`-g ` prefix).
 
 ## CLI Commands
 
@@ -89,6 +90,9 @@ ccsm list              (ls, sessions, s)  # all sessions, one line each
 ccsm list --active     (-a)               # in_progress + blocked only
 ccsm list --summary    (-s)               # counts: 2 active | 5 completed | 3 total
 ccsm list --status X   (-S)               # filter by status
+ccsm scan              (sc)               # compact grouped output, grep-friendly
+ccsm scan --search <q>                    # full-text across name+goal+tags (no grep needed)
+ccsm scan --json                          # structured JSON for programmatic use
 ccsm show <name>                          # full detail — goal, scope, tags, pids, timestamps
 ccsm show <name> --section <s>            # extract one section from detail file
 ```

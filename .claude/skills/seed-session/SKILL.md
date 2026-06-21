@@ -25,7 +25,7 @@ The user describes a task they want queued for later. Your job: extract the inte
 
 From the user's words, extract:
 - **name**: kebab-case slug (the user may already provide this)
-- **goal**: one sentence — what are we doing?
+- **goal**: one sentence — what are we doing? **Must be keyword-rich and self-contained.** Someone searching for a technical term related to this work should find it. Bad: `"Fix bugs"`. Good: `"Fix PTY spawn race condition in ccsm resume command"`. Never use the session name as the goal.
 - **rough scope**: what approach? any constraints? what's in/out? (infer from context if not stated)
 - **tags**: 2-4 keywords
 

@@ -28,6 +28,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Compact scan-friendly output for agents and humans.
+    ///
+    /// One record per line, grouped by group. Grep-friendly field markers
+    /// (group:name, tags:t1,t2). Built-in --search makes grep optional.
+    /// --json for structured output.
+    #[command(visible_alias = "sc")]
+    Scan {
+        /// Filter by group name
+        #[arg(short = 'g', long)]
+        group: Option<String>,
+        /// Filter by status
+        #[arg(short = 'S', long)]
+        status: Option<String>,
+        /// Full-text search across name, goal, and tags (case-insensitive)
+        #[arg(long)]
+        search: Option<String>,
+        /// Output as JSON array
+        #[arg(long)]
+        json: bool,
+    },
     /// List sessions. --active (in_progress+blocked), --summary (counts), --status <s> (filter)
     #[command(visible_alias = "ls", visible_alias = "sessions", visible_alias = "s")]
     List {
@@ -295,6 +315,7 @@ fn main() -> anyhow::Result<()> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
 
     match cli.command {
+        Commands::Scan { group, status, search, json } => run_scan(group.as_deref(), status.as_deref(), search.as_deref(), json),
         Commands::List { active, summary, status, verbose, group, by_rank } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank),
         Commands::Show { name, section } => run_show(&name, section.as_deref()),
         Commands::New { name, goal, force, checklist } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist),
@@ -340,6 +361,152 @@ fn workspace_path() -> PathBuf {
 
 fn load_workspace_registry() -> anyhow::Result<crate::registry::WorkspaceRegistry> {
     crate::registry::WorkspaceRegistry::load(&workspace_path())
+}
+
+/// `ccsm scan` — compact scan-friendly output, grouped by group.
+///
+/// Format (text): `icon  name  goal  tags_csv` under `#group:<name>` headers.
+/// Format (json): array of {name, status, group, rank, goal, tags, depends_on}.
+///
+/// Built-in --search makes grep unnecessary for agents. --json for structured consumers.
+fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Option<&str>, json: bool) -> anyhow::Result<()> {
+    use crate::registry::SessionStatus;
+    let reg = load_workspace_registry()?;
+
+    let status: Option<SessionStatus> = match status_filter {
+        Some("pending") => Some(SessionStatus::Pending),
+        Some("in_progress") | Some("in-progress") => Some(SessionStatus::InProgress),
+        Some("completed") => Some(SessionStatus::Completed),
+        Some("blocked") => Some(SessionStatus::Blocked),
+        Some("abandoned") => Some(SessionStatus::Abandoned),
+        Some("trashed") => Some(SessionStatus::Trashed),
+        Some(other) => {
+            anyhow::bail!("unknown status '{}' — valid: pending, in_progress, completed, blocked, abandoned, trashed", other);
+        }
+        None => None,
+    };
+
+    // Collect filtered sessions
+    let sessions: Vec<&crate::registry::WorkspaceSession> = reg.sessions.iter()
+        .filter(|s| {
+            if let Some(g) = group_filter {
+                if !s.group.as_ref().is_some_and(|grp| grp.name == g) { return false; }
+            }
+            if let Some(fs) = status {
+                if s.status != fs { return false; }
+            }
+            if let Some(q) = search {
+                let qlower = q.to_lowercase();
+                let in_name = s.name.to_lowercase().contains(&qlower);
+                let in_goal = s.goal.to_lowercase().contains(&qlower);
+                let in_tags = s.tags.iter().any(|t| t.to_lowercase().contains(&qlower));
+                if !in_name && !in_goal && !in_tags { return false; }
+            }
+            true
+        })
+        .collect();
+
+    if sessions.is_empty() {
+        if json {
+            println!("[]");
+        } else {
+            println!("(no matching sessions)");
+        }
+        return Ok(());
+    }
+
+    // JSON output
+    if json {
+        #[derive(serde::Serialize)]
+        struct ScanEntry {
+            name: String,
+            status: String,
+            group: Option<String>,
+            rank: Option<String>,
+            goal: String,
+            tags: Vec<String>,
+            depends_on: Vec<String>,
+        }
+        let entries: Vec<ScanEntry> = sessions.iter().map(|s| {
+            ScanEntry {
+                name: s.name.clone(),
+                status: s.status.to_string(),
+                group: s.group.as_ref().map(|g| g.name.clone()),
+                rank: s.group.as_ref().map(|g| g.rank.to_string()),
+                goal: s.goal.clone(),
+                tags: s.tags.clone(),
+                depends_on: s.depends_on.clone(),
+            }
+        }).collect();
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+
+    // Text output — group sessions
+    let mut grouped: std::collections::BTreeMap<String, Vec<&crate::registry::WorkspaceSession>> = std::collections::BTreeMap::new();
+    for s in &sessions {
+        let gname = s.group.as_ref()
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "ungrouped".to_string());
+        grouped.entry(gname).or_default().push(s);
+    }
+
+    // Sort within each group: rank then name
+    for sessions in grouped.values_mut() {
+        sessions.sort_by(|a, b| {
+            let ra = a.group.as_ref().map(|g| &g.rank);
+            let rb = b.group.as_ref().map(|g| &g.rank);
+            match (ra, rb) {
+                (Some(crate::registry::GroupRank::Number(na)), Some(crate::registry::GroupRank::Number(nb))) => na.cmp(nb),
+                (Some(crate::registry::GroupRank::Number(_)), Some(crate::registry::GroupRank::Free)) => std::cmp::Ordering::Greater,
+                (Some(crate::registry::GroupRank::Free), Some(crate::registry::GroupRank::Number(_))) => std::cmp::Ordering::Less,
+                _ => a.name.cmp(&b.name),
+            }
+        });
+    }
+
+    // Sort groups: "ungrouped" last, others alphabetical
+    let mut group_names: Vec<String> = grouped.keys().cloned().collect();
+    group_names.sort_by(|a, b| {
+        match (a == "ungrouped", b == "ungrouped") {
+            (true, true) => std::cmp::Ordering::Equal,
+            (true, false) => std::cmp::Ordering::Greater,
+            (false, true) => std::cmp::Ordering::Less,
+            (false, false) => a.cmp(b),
+        }
+    });
+
+    let mut first_group = true;
+    for gname in &group_names {
+        let members = &grouped[gname];
+        if !first_group {
+            println!();
+        }
+        first_group = false;
+        println!("#group:{}", gname);
+        for s in members {
+            let icon = status_icon(&s.status);
+            let goal = truncate_for_scan(&s.goal, 65);
+            let tags_str = if s.tags.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", s.tags.join(","))
+            };
+            println!("{}  {:<28}  {}{}", icon, s.name, goal, tags_str);
+        }
+    }
+
+    Ok(())
+}
+
+/// Truncate for scan output — shorter than the markdown table version.
+fn truncate_for_scan(s: &str, max_len: usize) -> String {
+    let one_line = s.replace('\n', " ").replace('|', "\\|");
+    if one_line.len() > max_len {
+        format!("{}...", &one_line[..max_len.saturating_sub(3)])
+    } else {
+        one_line
+    }
 }
 
 /// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter / --verbose / --group / --by-rank.
