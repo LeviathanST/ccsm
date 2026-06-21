@@ -103,6 +103,7 @@ enum Commands {
     },
     /// Set, clear, or overview a session group.
     ///
+    /// `ccsm group --list` — list all groups in the workspace.
     /// `ccsm group <name>` — show all sessions in the group + goal from group detail file.
     /// `ccsm group <name> --goal <text>` — set the group goal in the group detail file.
     /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
@@ -112,7 +113,10 @@ enum Commands {
     /// Auto-created on first join, auto-deleted when the last session leaves.
     Group {
         /// Session name (for --group/--clear) or group name (overview, when no flags given)
-        name: String,
+        name: Option<String>,
+        /// List all groups in the workspace
+        #[arg(short = 'l', long)]
+        list: bool,
         /// Assign session to this group
         #[arg(short = 'g', long)]
         group: Option<String>,
@@ -275,7 +279,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Pending { name } => run_pending(&name),
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
-        Commands::Group { name, group, rank, clear, goal } => run_group(&name, group.as_deref(), rank.as_deref(), clear, goal.as_deref()),
+        Commands::Group { name, list, group, rank, clear, goal } => run_group(name.as_deref(), list, group.as_deref(), rank.as_deref(), clear, goal.as_deref()),
         Commands::Next { group } => run_next(&group),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home),
         Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path()),
@@ -1196,10 +1200,18 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
 /// `ccsm group <name>` — overview of all sessions in a group.
 /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
 /// `ccsm group <session> --clear` — remove from group.
-fn run_group(name: &str, group: Option<&str>, rank: Option<&str>, clear: bool, goal: Option<&str>) -> anyhow::Result<()> {
+fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&str>, clear: bool, goal: Option<&str>) -> anyhow::Result<()> {
     use crate::registry::{Group, GroupRank};
 
     let workspace = std::env::current_dir()?;
+
+    // --list: list all groups in the workspace
+    if list {
+        return run_groups_list(&workspace);
+    }
+
+    // All other modes require a name
+    let name = name.ok_or_else(|| anyhow::anyhow!("NAME is required (or use --list to list all groups)"))?;
 
     // --goal: set group goal (name = group name, not session name)
     if let Some(goal_text) = goal {
@@ -1328,6 +1340,67 @@ fn run_group(name: &str, group: Option<&str>, rank: Option<&str>, clear: bool, g
         }
     }
 
+    Ok(())
+}
+
+/// `ccsm group --list` — list all groups in the workspace.
+fn run_groups_list(workspace: &std::path::Path) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+
+    let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+
+    // Collect sessions by group name
+    let mut groups: BTreeMap<&str, Vec<&crate::registry::WorkspaceSession>> = BTreeMap::new();
+    for s in &reg.sessions {
+        if let Some(ref g) = s.group {
+            groups.entry(g.name.as_str()).or_default().push(s);
+        }
+    }
+
+    if groups.is_empty() {
+        println!("(no groups in workspace)");
+        return Ok(());
+    }
+
+    println!("{} group{}:", groups.len(), if groups.len() == 1 { "" } else { "s" });
+    for (name, members) in &groups {
+        // Read goal snippet from group detail file
+        let goal_snippet = {
+            let path = group_file_path(workspace, name);
+            if path.exists() {
+                if let Ok(contents) = std::fs::read_to_string(&path) {
+                    let sections = crate::registry::parse_sections(&contents);
+                    sections
+                        .iter()
+                        .find(|(h, _)| h == "Goal")
+                        .map(|(_, b)| b.trim().to_string())
+                        .filter(|g| !g.is_empty() && !g.starts_with('_'))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        };
+
+        let count = members.len();
+        let statuses: Vec<_> = members.iter().map(|m| m.status.to_string()).collect();
+        let in_progress = statuses.iter().filter(|s| *s == "in_progress").count();
+        let pending = statuses.iter().filter(|s| *s == "pending").count();
+
+        print!("  {:30}  {} session{}", name, count, if count == 1 { "" } else { "s" });
+        if in_progress > 0 {
+            print!(" ({} in_progress)", in_progress);
+        }
+        if pending > 0 {
+            print!(" ({} pending)", pending);
+        }
+        if !goal_snippet.is_empty() {
+            print!(" — {}", goal_snippet);
+        }
+        println!();
+    }
     Ok(())
 }
 
