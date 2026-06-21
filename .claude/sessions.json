@@ -1,5 +1,5 @@
 {
-  "updated": "day20624T16:07:13Z",
+  "updated": "day20625T02:23:13Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -215,12 +215,29 @@
       "scope": "Add .claude/session-group/ directory with per-group markdown files matching the session detail pattern. Auto-create file when first session joins a group. Populate with ## Goal / ## Scope / ## Members (auto-generated list) / ## Notes sections. Delete file when last session leaves (auto-clean). Update ccsm group <name> overview to read and display the group detail file. CLI: ccsm group <name> --goal <text> sets the group goal. No new registry format — markdown files only.",
       "status": "in_progress",
       "pids": [
-        66057
+        114454
       ],
       "tags": [
         "grouping, detail-files, markdown, session-lifecycle"
       ],
-      "started": "day20624T15:54Z",
+      "started": "day20625T02:20Z",
+      "completed": "day20624T16:13:35Z",
+      "group": null,
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "",
+      "name": "groups-list",
+      "goal": "Add --list flag to ccsm group to list all groups in workspace",
+      "scope": "Add a  flag to the  command that scans the registry for all unique group names and prints each with member count and goal snippet. No new subcommand — reuse the existing group command.",
+      "status": "in_progress",
+      "pids": [],
+      "tags": [
+        "grouping",
+        "cli",
+        "discovery"
+      ],
+      "started": "",
       "completed": "",
       "group": null,
       "retired_session_ids": []
