@@ -55,3 +55,19 @@ blocked      — can't proceed, waiting on a dependency
 abandoned    — gave up, no longer relevant
 trashed      — soft-deleted, recoverable with `ccsm recover <name>`
 ```
+
+## Grouping & Dependencies
+
+| Command | Effect |
+|---|---|
+| `ccsm group <session> -g <group> [-r free\|<n>]` | Assign session to group (auto-creates `.claude/session-group/<group>.md`) |
+| `ccsm group <session> --clear` | Remove from group (auto-deletes group file when last leaves) |
+| `ccsm group <name>` | Overview — list members sorted by rank, show group goal |
+| `ccsm group <name> --goal <text>` | Set group goal in `.claude/session-group/<name>.md` |
+| `ccsm group <name> --roadmap` | Live markdown roadmap → stdout: table (rank/status/goal/scope) + Mermaid dep graph |
+| `ccsm group --list` | List all groups in workspace with member counts + status breakdown |
+| `ccsm next <group>` | Next unblocked session to work on (respects depends_on) |
+| `ccsm group-deps <group>` | ASCII dependency tree with status markers (✓→○!) |
+| `ccsm depend <name> --on <dep>` | Add dependency (both sessions must be in same group) |
+| `ccsm depend <name> --clear` | Clear all dependencies |
+| `ccsm depend <name>` | List dependencies with status |
