@@ -34,7 +34,9 @@
 | `ccsm resume <name>` | Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit |
 | `ccsm refresh <name> [-r]` | Retire current Claude session to retired_session_ids, spawn fresh (no --resume) |
 | `ccsm rename <old> <new> [-g] [-s]` | Rename session across registry, detail file, live sessions, transcript |
-| `ccsm close <name>` | Pre-completion gate: hard checks + self-review checklist. Exit non-zero if hollow |
+| `ccsm close <name>` | Pre-completion gate: hard checks + self-review checklist. Exit non-zero if hollow. Blocks if pending/blocked checklist items exist |
+| `ccsm checklist <name>` | List checklist items from detail file. `--init` adds ## Checklist section to existing session |
+| `ccsm check <name> <item> -s <status>` | Set checklist item status, or add new item if no match. Auto-creates ## Checklist section. `<item>` can be 1-based index or text substring |
 | `ccsm note <name> <text>` | Append timestamped entry to detail file Progress Log |
 | `ccsm note <name> --cross <src> <text>` | Cross-session note: prepends `CROSS-SESSION [src]:` |
 | `ccsm sequence -q <cmd> <args...> ...` | Batch mutations under a single lock/save. Faster than `&&` chaining |

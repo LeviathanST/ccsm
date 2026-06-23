@@ -96,6 +96,32 @@ Pull these on demand — don't read them all.
 | Session lifecycle + resume | `reference/session-lifecycle.md` | You need lifecycle or resume mechanics |
 | Anti-patterns | `reference/anti-patterns.md` | You want to avoid common mistakes |
 
+## Checklist
+
+Track sub-tasks within a session with checkbox items. The `ccsm close` gate blocks completion while pending or blocked items remain.
+
+```
+# Create checklist-ready session, or add section later
+ccsm new <name> -c -g "goal"          # with ## Checklist section
+ccsm checklist <name> --init          # add section to existing session
+
+# Add items (any status)
+ccsm check <name> "Write integration tests" -s pending    # add new item
+ccsm check <name> "Blocked on API" -s blocked             # add blocked item
+
+# Toggle items (by index or text match)
+ccsm check <name> 1 -s done                               # mark #1 done
+ccsm check <name> "Write integration tests" -s skipped    # mark by text
+
+# List
+ccsm checklist <name>                  # all items with summary
+```
+
+- `ccsm check` auto-creates the `## Checklist` section when it doesn't exist.
+- Item ref is a 1-based index or case-insensitive text substring.
+- If no item matches, the text is added as a new item.
+- Close gate: counts pending + blocked items → blocks `ccsm close`.
+
 ## Grouping & Dependencies
 
 Group related sessions together with ordering, dependencies, and roadmap rendering.

@@ -80,7 +80,10 @@ enum Commands {
     /// Create a pending entry. Optionally embed a ## Checklist section (-c).
     ///
     /// Without -c the detail file stays minimal (no checklist). Add one later with `ccsm checklist --init`.
-    #[command(long_about = None)]
+    ///
+    /// Examples:
+    ///   ccsm new my-feature -g "Add dark mode"
+    ///   ccsm new my-feature -c -g "Add dark mode with checklist"
     New {
         /// kebab-case session name
         name: String,
@@ -243,13 +246,16 @@ enum Commands {
         #[arg(short = 'i', long)]
         init: bool,
     },
-    /// Toggle a checklist item's checkbox in the detail file.
+    /// Toggle a checklist item's checkbox in the detail file, or add a new item.
     ///
-    /// ITEM can be a 1-based number or text to match (substring, case-insensitive).
+    /// ITEM is a 1-based number, text substring to match, or new item text.
+    /// When no existing item matches (by number or text), a new item is added.
+    /// If the ## Checklist section doesn't exist, it's auto-created.
     ///
     /// Examples:
-    ///   ccsm check my-session 1 -s done
-    ///   ccsm check my-session "write tests" -s skipped
+    ///   ccsm check my-session "write tests" -s pending    # add new item
+    ///   ccsm check my-session 1 -s done                   # mark #1 done
+    ///   ccsm check my-session "write tests" -s skipped    # mark by text match
     Check {
         name: String,
         /// 1-based index (1, 2, 3…) or text substring to match
@@ -1124,7 +1130,7 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: bool) -> anyhow::Resu
                 let _ = std::fs::write(&detail_path, populated);
                 // If --checklist, append ## Checklist section
                 if checklist {
-                    let checklist_section = "\n## Checklist\n\n<!--\n  All items must be resolved before close gate allows completion.\n  Status: pending | done | skipped | blocked\n  Checkbox chars: - [ ] pending, - [x] done, - [~] skipped, - [!] blocked\n-->\n\n(no items yet — use `ccsm check <name> <text> --status pending` to add one)\n";
+                    let checklist_section = "\n## Checklist\n\n<!--\n  All items must be resolved before close gate allows completion.\n  Status: pending | done | skipped | blocked\n  Checkbox chars: - [ ] pending, - [x] done, - [~] skipped, - [!] blocked\n-->\n\n(no items yet — `ccsm check <name> \"<text>\" -s pending` adds one)\n";
                     let _ = std::fs::write(&detail_path, std::fs::read_to_string(&detail_path).unwrap_or_default() + checklist_section);
                 }
             }
@@ -2842,7 +2848,8 @@ fn dim_status(status: &str) -> String {
     format!("\x1b[2m({})\x1b[0m", status)
 }
 
-/// `ccsm check <name> <item> --status <pending|done|skipped|blocked>` — set item status.
+/// `ccsm check <name> <item> --status <pending|done|skipped|blocked>` — set item status,
+/// or add a new item if no existing item matches.
 fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
     // Validate status
     if !CHECKBOX_CHARS.iter().any(|(_, s)| *s == status) {
@@ -2866,7 +2873,7 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
         );
     }
 
-    let contents = std::fs::read_to_string(&detail_path)?;
+    let mut contents = std::fs::read_to_string(&detail_path)?;
     let sections = parse_sections(&contents);
     let checklist_body = sections
         .iter()
@@ -2875,21 +2882,23 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
         .unwrap_or("");
 
     let items = parse_checklist(checklist_body);
-    if items.is_empty() {
-        anyhow::bail!("no checklist items found in session '{}'", name);
+
+    // ── Resolve item: numeric index, text match, or auto-add ──────────
+    enum Action {
+        Update(usize),            // existing item index (1-based)
+        Append(String),           // new item text
     }
 
-    // Resolve item: numeric index (1-based) or text substring match
-    let target_idx: usize = if let Ok(n) = item_ref.parse::<usize>() {
+    let action = if items.is_empty() {
+        // Empty checklist — treat item_ref as new item text
+        Action::Append(item_ref.to_string())
+    } else if let Ok(n) = item_ref.parse::<usize>() {
         if n < 1 || n > items.len() {
-            anyhow::bail!(
-                "item {} out of range ({} items, 1-{})",
-                n,
-                items.len(),
-                items.len()
-            );
+            // Out-of-range index → add as new
+            Action::Append(item_ref.to_string())
+        } else {
+            Action::Update(n)
         }
-        n
     } else {
         // Substring match
         let matches: Vec<_> = items
@@ -2897,69 +2906,98 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
             .filter(|i| i.text.to_lowercase().contains(&item_ref.to_lowercase()))
             .collect();
         if matches.is_empty() {
-            anyhow::bail!(
-                "no checklist item matching '{}' in session '{}'",
-                item_ref,
-                name
-            );
-        }
-        if matches.len() > 1 {
+            // No match → add as new
+            Action::Append(item_ref.to_string())
+        } else if matches.len() > 1 {
             eprintln!("Multiple matches for '{}':", item_ref);
             for m in &matches {
                 eprintln!("  {:>3}. {}", m.index, m.text);
             }
             anyhow::bail!("be more specific (use number or unique text)");
+        } else {
+            Action::Update(matches[0].index)
         }
-        matches[0].index
     };
 
-    let new_char = status_to_char(status);
+    match action {
+        Action::Update(target_idx) => {
+            let new_char = status_to_char(status);
 
-    // Edit: update the checkbox character in the detail file
-    let mut lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
-    let mut checklist_start: Option<usize> = None;
-    let mut item_count = 0usize;
+            // Edit: update the checkbox character in the detail file
+            let mut lines: Vec<String> = contents.lines().map(|s| s.to_string()).collect();
+            let mut checklist_start: Option<usize> = None;
+            let mut item_count = 0usize;
 
-    // Find the ## Checklist section, then find the Nth checkbox line
-    for (li, line) in lines.iter().enumerate() {
-        if line.trim_start().starts_with("## ") {
-            if checklist_start.is_some() {
-                break; // next section — stop
+            // Find the ## Checklist section, then find the Nth checkbox line
+            for (li, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("## ") {
+                    if checklist_start.is_some() {
+                        break; // next section — stop
+                    }
+                    if line.trim_start().to_lowercase().contains("checklist") {
+                        checklist_start = Some(li);
+                    }
+                }
             }
-            if line.trim_start().to_lowercase().contains("checklist") {
-                checklist_start = Some(li);
+
+            let start = checklist_start.unwrap_or(0);
+            for li in start..lines.len() {
+                let line = &lines[li];
+                // Stop at next ## section
+                if li > start && line.trim_start().starts_with("## ") {
+                    break;
+                }
+                if line.trim_start().starts_with("- [") && line.trim_start().len() >= 4 {
+                    item_count += 1;
+                    if item_count == target_idx {
+                        // Replace the checkbox character
+                        let old = &lines[li];
+                        let prefix_end = old.find("[").unwrap() + 1;
+                        let prefix = &old[..prefix_end];
+                        let rest = &old[prefix_end + 1..]; // skip old checkbox char
+                        lines[li] = format!("{}{}{}", prefix, new_char, rest);
+                        break;
+                    }
+                }
+            }
+
+            std::fs::write(&detail_path, lines.join("\n") + "\n")?;
+
+            let target_item = &items[target_idx - 1];
+            println!(
+                "{} #{}. [{}] {} → {}",
+                name, target_idx, icon_char(new_char), target_item.text, status,
+            );
+        }
+        Action::Append(text) => {
+            // Add a new checklist item. Create the section if it doesn't exist.
+            let new_char = status_to_char(status);
+            let has_section = sections
+                .iter()
+                .any(|(h, _)| h.to_lowercase().contains("checklist"));
+
+            if !has_section {
+                // Auto-create the section
+                let checklist_section = "\n## Checklist\n\n<!--\n  All items must be resolved before close gate allows completion.\n  Status: pending | done | skipped | blocked\n  Checkbox chars: - [ ] pending, - [x] done, - [~] skipped, - [!] blocked\n-->\n";
+                contents.push_str(checklist_section);
+            }
+
+            // Append the new item line
+            let new_line = format!("- [{}] {}\n", new_char, text);
+            contents.push_str(&new_line);
+            std::fs::write(&detail_path, &contents)?;
+
+            let idx = items.len() + 1;
+            println!(
+                "{} + #{}. [{}] {}",
+                name, idx, icon_char(new_char), text,
+            );
+            if !has_section {
+                eprintln!("  (## Checklist section auto-created)");
             }
         }
     }
 
-    let start = checklist_start.unwrap_or(0);
-    for li in start..lines.len() {
-        let line = &lines[li];
-        // Stop at next ## section
-        if li > start && line.trim_start().starts_with("## ") {
-            break;
-        }
-        if line.trim_start().starts_with("- [") && line.trim_start().len() >= 4 {
-            item_count += 1;
-            if item_count == target_idx {
-                // Replace the checkbox character
-                let old = &lines[li];
-                let prefix_end = old.find("[").unwrap() + 1;
-                let prefix = &old[..prefix_end];
-                let rest = &old[prefix_end + 1..]; // skip old checkbox char
-                lines[li] = format!("{}{}{}", prefix, new_char, rest);
-                break;
-            }
-        }
-    }
-
-    std::fs::write(&detail_path, lines.join("\n") + "\n")?;
-
-    let target_item = &items[target_idx - 1];
-    println!(
-        "{} #{}. [{}] {} → {}",
-        name, target_idx, icon_char(new_char), target_item.text, status,
-    );
     Ok(())
 }
 
