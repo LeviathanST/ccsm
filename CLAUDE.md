@@ -130,19 +130,8 @@ ccsm doctor                      # scan for health issues + cleanup hints
 
 ### Checklist
 
-The `## Checklist` section is **opt-in** — sessions are created without it by default.
-
-```bash
-ccsm new my-session -c              # create with checklist section
-ccsm checklist my-session --init    # add section to existing session
-ccsm checklist my-session           # list items with status
-ccsm check my-session 1 -s done     # mark item #1 done (by index)
-ccsm check my-session "text" -s skipped  # mark by text match
-ccsm check my-session 3 -s blocked  # mark item #3 blocked
-```
-
-Checkbox chars in the detail file: `- [ ]` pending, `- [x]` done, `- [~]` skipped, `- [!]` blocked.
-The close gate blocks completion while pending or blocked items remain.
+Opt-in sub-task tracking — see `session-manager` skill for full workflow.
+CLI reference: `.claude/skills/session-manager/reference/cli-commands.md`.
 
 ### Grouping
 
