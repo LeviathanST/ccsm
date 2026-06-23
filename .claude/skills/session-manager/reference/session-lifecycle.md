@@ -3,12 +3,13 @@
 ## Lifecycle
 
 ```
-NEW → start → (work → note → work → note → ...) → ccsm close → ccsm complete
-                                                       ↓            ↓
-                                                   blocked/      --force
-                                                   abandoned
-                                                   (must note why)
+NEW → start → (scope → checklist → work → note → ...) → ccsm close → ccsm complete
+                                                           ↓            ↓
+                                                       blocked/      --force
+                                                       abandoned
+                                                       (must note why)
 
+Complex? → ccsm new -c — embed ## Checklist section. ccsm check to add/toggle items.
 Bloat? → ccsm refresh (retire stale Claude session, spawn fresh — same ccsm session)
 ```
 

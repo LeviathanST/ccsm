@@ -13,3 +13,5 @@
 - ❌ **Hand-roll cross-session note prefixes** — use `ccsm note --cross <source>`. The `CROSS-SESSION [source]:` format must be consistent.
 - ❌ **Read every detail file to scan teammates** — use `ccsm list --active --verbose` (~80 tokens) instead of `ccsm show` on each (~200 tokens each)
 - ❌ **Flag every adjacent session** — only flag when there's a real dependency, redundancy, or meaningful relationship. "Both touch Rust code" is not a relationship.
+- ❌ **Skip checklist for multi-step sessions** — if the scope has 3+ distinct sub-tasks, use `ccsm new -c` or `ccsm checklist --init`. Checklist items block `ccsm close` — they're a mechanical gate, not optional flair.
+- ❌ **Leave checklist items pending at close** — `ccsm close` will reject with pending/blocked items. Resolve them (`done`/`skipped`) before closing. Use `ccsm checklist <name>` to audit.

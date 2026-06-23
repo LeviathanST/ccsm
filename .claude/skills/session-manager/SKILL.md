@@ -2,8 +2,8 @@
 name: session-manager
 description: >
   Maintain the ccsm session registry (.claude/sessions.json). Every agent working
-  on this project MUST use this — create entries, update status, fill goal/scope.
-  This is the single source of truth for team session tracking.
+  on this project MUST use this — create entries, update status, fill goal/scope,
+  track sub-tasks with checklist. This is the single source of truth for team session tracking.
 argument-hint: "<start|status|complete|list> — manage your session entry"
 ---
 
@@ -15,9 +15,11 @@ You are working on **ccsm**, a CLI session registry and workflow harness for Cla
 
 ```
 On session START  →  read .claude/sessions.json, create/claim entry (status: pending)
+Multi-step work?  →  ccsm new <name> -c -g "goal" — checklist for sub-task tracking
 On first ACTION   →  update status to in_progress, fill goal + scope if missing
 After EVERY change →  ccsm note <name> "<what you did and why>"
-On session END    →  ccsm close <name> (gate checks) → ccsm complete <name> (or --force to bypass)
+Break into sub-tasks →  ccsm check <name> "<item>" -s pending — track each piece
+On session END    →  ccsm close <name> (gate checks + checklist items resolved) → ccsm complete
 BEFORE asking     →  check if you even know what session you're in
 ```
 
@@ -43,7 +45,8 @@ ccsm show <name>         # registry fields + detail file section headlines
 3. **Ask the human:** "What's the goal? Why now? How do you see it working?"
 4. Synthesize into goal + scope, create entry:
    ```bash
-   ccsm sequence -q new <name> -q start <name> -q scope <name> "<approach>" -q tag <name> <tag1> <tag2>
+   ccsm sequence -q new <name> -g "<goal>" -q start <name> -q scope <name> "<approach>" -q tag <name> <tag1> <tag2>
+   # Use `ccsm new <name> -c -g "<goal>"` for complex multi-step work — checklist tracks sub-tasks.
    # `new` auto-creates .claude/sessions/<name>.md from template.
    ```
 
@@ -100,27 +103,28 @@ Pull these on demand — don't read them all.
 
 Track sub-tasks within a session with checkbox items. The `ccsm close` gate blocks completion while pending or blocked items remain.
 
-```
-# Create checklist-ready session, or add section later
-ccsm new <name> -c -g "goal"          # with ## Checklist section
-ccsm checklist <name> --init          # add section to existing session
+### When to use
 
-# Add items (any status)
-ccsm check <name> "Write integration tests" -s pending    # add new item
-ccsm check <name> "Blocked on API" -s blocked             # add blocked item
+- Scope has 3+ distinct sub-tasks that can be completed independently
+- Multi-step work where partial progress needs tracking
+- Blockers exist that prevent completing some items
 
-# Toggle items (by index or text match)
-ccsm check <name> 1 -s done                               # mark #1 done
-ccsm check <name> "Write integration tests" -s skipped    # mark by text
+### Workflow
 
-# List
-ccsm checklist <name>                  # all items with summary
-```
+1. **Create:** `ccsm new <name> -c` at session start, or `ccsm checklist <name> --init` later
+2. **Populate:** `ccsm check <name> "<text>" -s pending` — one call per sub-task
+3. **Progress:** `ccsm check <name> 1 -s done` as you complete each item
+4. **Audit:** `ccsm checklist <name>` to see all items + summary counts
+5. **Gate:** `ccsm close` blocks if pending/blocked items remain
 
-- `ccsm check` auto-creates the `## Checklist` section when it doesn't exist.
-- Item ref is a 1-based index or case-insensitive text substring.
-- If no item matches, the text is added as a new item.
-- Close gate: counts pending + blocked items → blocks `ccsm close`.
+### Behavior
+
+- `ccsm check` auto-creates the `## Checklist` section when it doesn't exist
+- Item ref is a 1-based index or case-insensitive text substring
+- If no item matches, the text is added as a new item (no separate `add` command needed)
+- Close gate: counts pending + blocked items → blocks `ccsm close`
+
+Full CLI syntax: `reference/cli-commands.md` (checklist, check rows).
 
 ## Grouping & Dependencies
 

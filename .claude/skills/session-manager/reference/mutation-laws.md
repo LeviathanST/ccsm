@@ -76,6 +76,7 @@ ccsm close <name>
 - Tags not empty or template
 - Progress Log has ≥ 2 entries
 - Live Session Data filled (not `(auto — ccsm manages)`)
+- Checklist: zero pending and zero blocked items (if `## Checklist` section exists)
 
 **Self-review checklist (printed on pass):**
 ```
@@ -95,6 +96,8 @@ Read the error output, fix each issue, re-run. Fixes:
 ccsm scope <name> "<approach>"     # fill scope
 ccsm tag <name> <tag1> <tag2>     # fill tags
 ccsm note <name> "<what you did>" # add progress entry
+ccsm check <name> 1 -s done       # resolve checklist items
+ccsm check <name> "blocked task" -s skipped
 # Edit .claude/sessions/<name>.md for Live Session Data
 ```
 
