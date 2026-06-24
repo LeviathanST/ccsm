@@ -2652,6 +2652,9 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
         .map(|(_, b)| b.as_str())
         .unwrap_or("");
     let cl_items = parse_checklist(checklist_body);
+    let has_checklist_section = sections
+        .iter()
+        .any(|(h, _)| h.to_lowercase().contains("checklist"));
     let pending: Vec<_> = cl_items.iter().filter(|i| i.status == "pending").collect();
     let blocked: Vec<_> = cl_items.iter().filter(|i| i.status == "blocked").collect();
     if !pending.is_empty() {
@@ -2669,6 +2672,13 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
             if blocked.len() == 1 { "" } else { "s" },
             blocked.iter().map(|i| format!("#{}. {}", i.index, i.text)).collect::<Vec<_>>().join(", "),
         ));
+    }
+    // Non-blocking nudge: session with real work but no checklist section
+    if !has_checklist_section && note_count >= 2 {
+        eprintln!(
+            "💡 {} has {} progress notes but no checklist — `ccsm checklist {} --init` to add",
+            name, note_count, name,
+        );
     }
 
     if failures.is_empty() {
