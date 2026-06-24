@@ -1181,7 +1181,17 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
         if action == "complete" || action == "abandon" {
             entry.completed = crate::registry::now_iso();
         }
-    })
+    })?;
+
+    // Nudge at session start: agent is about to fill scope — remind about checklist
+    if action == "start" {
+        eprintln!(
+            "💡 multi-step? `ccsm checklist {} --init` to add sub-task tracking",
+            name,
+        );
+    }
+
+    Ok(())
 }
 
 /// `ccsm refresh <name> [--reason]` — retire current Claude session, spawn fresh.
