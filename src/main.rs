@@ -3076,6 +3076,47 @@ fn run_inject_scope(name: Option<&str>) -> anyhow::Result<()> {
         }
     };
 
+    // Read checklist from detail file (mechanical injection — agent can't skip it)
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", session.name));
+    let checklist_line = if detail_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&detail_path) {
+            let sections = parse_sections(&contents);
+            let cl_body = sections
+                .iter()
+                .find(|(h, _)| h.to_lowercase().contains("checklist"))
+                .map(|(_, b)| b.as_str())
+                .unwrap_or("");
+            let items = parse_checklist(cl_body);
+            if items.is_empty() {
+                String::new()
+            } else {
+                let done = items.iter().filter(|i| i.status == "done").count();
+                let pending = items.iter().filter(|i| i.status == "pending").count();
+                let blocked = items.iter().filter(|i| i.status == "blocked").count();
+                format!(
+                    "CHECKLIST: {}/{} done{} — `ccsm checklist {}`",
+                    done,
+                    items.len(),
+                    if blocked > 0 {
+                        format!(" ({} blocked!)", blocked)
+                    } else if pending > 0 {
+                        format!(" ({} pending)", pending)
+                    } else {
+                        String::new()
+                    },
+                    session.name,
+                )
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     println!("<system-reminder>");
     println!("ACTIVE SESSION: {}", session.name);
     if !session.goal.is_empty() {
@@ -3083,6 +3124,9 @@ fn run_inject_scope(name: Option<&str>) -> anyhow::Result<()> {
     }
     if !session.scope.is_empty() && !session.scope.contains("(fill in") {
         println!("SCOPE: {}", session.scope);
+    }
+    if !checklist_line.is_empty() {
+        println!("{}", checklist_line);
     }
     println!(
         "CONSTRAINT: Work within this scope. If you need to do something outside it, ask first."
