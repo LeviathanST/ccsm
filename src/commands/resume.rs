@@ -128,6 +128,25 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path) -> anyhow::Result<(
         (sid, is_fresh)
     }; // lock released
 
+    // ── Nudge: check if session has a checklist section ──────────────
+    let detail_path = workspace
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{}.md", name));
+    if detail_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&detail_path) {
+            let has_checklist = contents
+                .lines()
+                .any(|l| l.trim_start().to_lowercase().starts_with("## checklist"));
+            if !has_checklist {
+                eprintln!(
+                    "💡 multi-step? `ccsm checklist {} --init` to add sub-task tracking",
+                    name,
+                );
+            }
+        }
+    }
+
     // ── Phase 2: Spawn claude (no lock) ─────────────────────────────
     let mut cmd = std::process::Command::new("claude");
     cmd.current_dir(workspace);
