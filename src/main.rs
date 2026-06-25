@@ -334,7 +334,7 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Scan { group, status, search, json } => run_scan(group.as_deref(), status.as_deref(), search.as_deref(), json),
         Commands::List { active, summary, status, verbose, group, by_rank } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank),
-        Commands::Show { name, section } => run_show(&name, section.as_deref()),
+        Commands::Show { name, section } => run_show(&name, section.as_deref(), consumer),
         Commands::New { name, goal, force, checklist } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist, consumer),
         Commands::Start { name } => run_status(&name, "start", false),
         Commands::Complete { name, force } => run_status(&name, "complete", force),
@@ -2259,7 +2259,7 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
 
 /// `ccsm show <name>` — registry fields + detail file section list.
 /// `ccsm show <name> --section <s>` — extract one section from detail file.
-fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
+fn run_show(name: &str, section: Option<&str>, consumer: Consumer) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
     let session = reg
@@ -2320,6 +2320,15 @@ fn run_show(name: &str, section: Option<&str>) -> anyhow::Result<()> {
     // ── Registry fields ──────────────────────────────────────────
     println!("name:       {}", session.name);
     println!("status:     {}", session.status);
+    if !session.consumer.is_empty() {
+        let current = consumer.to_string();
+        let label = if session.consumer == current {
+            format!("{} (current)", session.consumer)
+        } else {
+            format!("{} ⚠ running as {}", session.consumer, current)
+        };
+        println!("agent:      {}", label);
+    }
     let goal = detail_goal.as_deref().unwrap_or(&session.goal);
     if !goal.is_empty() {
         println!("goal:       {}", goal);
