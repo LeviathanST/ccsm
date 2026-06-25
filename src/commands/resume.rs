@@ -34,7 +34,7 @@ impl Drop for ChildGuard {
     fn drop(&mut self) {
         let Some(mut child) = self.child.take() else { return };
         let pid = child.id();
-        eprintln!("ccsm: cleaning up child process (pid {})", pid);
+        eprintln!("ccsm: cleaning up child process (pid {pid})");
 
         // SIGTERM — gives the child a chance to save state
         unsafe { libc::kill(pid as i32, libc::SIGTERM); }
@@ -49,7 +49,7 @@ impl Drop for ChildGuard {
         }
 
         // SIGKILL — force kill if still alive
-        eprintln!("ccsm: child pid {} didn't exit gracefully, sending SIGKILL", pid);
+        eprintln!("ccsm: child pid {pid} didn't exit gracefully, sending SIGKILL");
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -57,10 +57,10 @@ impl Drop for ChildGuard {
 
 // ── Resume subcommand ───────────────────────────────────────────────────
 
-/// `ccsm resume <name>` — promote entry, exec `claude --resume` or fresh.
-pub fn run_resume(name: &str, workspace: &Path, home: &Path) -> anyhow::Result<()> {
-    let slug = crate::registry::project_slug(workspace);
+/// `ccsm resume <name>` — promote entry, spawn agent (claude/pi/cmd) with resume or fresh.
+pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::consumer::Consumer) -> anyhow::Result<()> {
     let now = crate::registry::now_iso();
+    let bin = consumer.binary();
 
     // ── Phase 1: Promote entry (locked) ────────────────────────────
     let (sid, fresh) = {
@@ -69,34 +69,80 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path) -> anyhow::Result<(
         let (sid, is_fresh) = match reg.sessions.iter().rev().position(|e| e.name == name) {
             Some(pos) => {
                 let i = reg.sessions.len() - 1 - pos;
-                reg.sessions[i].status = crate::registry::SessionStatus::InProgress;
-                reg.sessions[i].started.clear();
-                if !reg.sessions[i].session_id.is_empty() {
-                    let path = home.join(".claude").join("projects")
-                        .join(&slug).join(format!("{}.jsonl", reg.sessions[i].session_id));
-                    if path.exists() {
-                        (Some(reg.sessions[i].session_id.clone()), false)
+                let entry = &mut reg.sessions[i];
+
+                entry.status = crate::registry::SessionStatus::InProgress;
+                entry.started.clear();
+
+                // ── Cross-consumer detection ────────────────────
+                let current = consumer.to_string();
+                if !entry.consumer.is_empty() && entry.consumer != current && !entry.session_id.is_empty() {
+                    // Session has an id but consumer doesn't match
+                    let found = consumer.find_session_file_for(home, workspace, &entry.session_id);
+                    let location = if found.is_some() {
+                        format!("found by {current}")
                     } else {
-                        // session_id exists but transcript is gone — corrupted state.
-                        // Don't silently fall back to fresh; let the user decide.
-                        anyhow::bail!(
-                            "session '{}' has session_id '{}' but transcript not found at:\n  {}\n\
-                             The transcript may have been deleted or cleaned.\n\
-                             To start fresh: ccsm pending {}  (clears session_id, then resume)",
-                            name,
-                            &reg.sessions[i].session_id[..reg.sessions[i].session_id.len().min(8)],
-                            path.display(),
-                            name,
-                        );
+                        format!("stored by {} and not accessible from {}", entry.consumer, current)
+                    };
+                    eprintln!(
+                        "⚠  session '{}' was created by {} but you are running as {}",
+                        name, entry.consumer, current
+                    );
+                    eprintln!("   Session file is {location}.");
+                    eprint!("Start a fresh {current} session instead? [y/N] ");
+                    use std::io::{self, Write};
+                    let _ = io::stdout().flush();
+                    let mut input = String::new();
+                    let ok = io::stdin().read_line(&mut input)
+                        .map(|_| matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
+                        .unwrap_or(false);
+                    if !ok {
+                        eprintln!();
+                        eprintln!("   Aborted. To resume anyway without fresh:");
+                        eprintln!("     ccsm {}  (use the original agent)", entry.consumer);
+                        eprintln!("   To start fresh:");
+                        eprintln!("     ccsm pending {}  (clears session identity)", name);
+                        anyhow::bail!("resume aborted by user");
                     }
-                } else {
+                    eprintln!();
+                    // Clear session_id — starts fresh with current consumer
+                    entry.session_id.clear();
+                    entry.consumer = current;
                     (None, false)
+                } else if !entry.consumer.is_empty() && entry.consumer != current {
+                    // No session_id yet but consumer mismatch — warn and continue
+                    eprintln!(
+                        "⚠  session '{}' was created by {} but you are running as {}",
+                        name, entry.consumer, current
+                    );
+                    eprintln!("   Starting a fresh session for {}.", current);
+                    entry.consumer = current;
+                    (None, false)
+                } else {
+                    // Consumer matches or unset — normal flow
+                    if entry.consumer.is_empty() {
+                        entry.consumer = current;
+                    }
+                    if !entry.session_id.is_empty() {
+                        let found = consumer.find_session_file_for(home, workspace, &entry.session_id);
+                        if found.is_some() {
+                            (Some(entry.session_id.clone()), false)
+                        } else {
+                            anyhow::bail!(
+                                "session '{}' has session_id '{}' but session file not found.\n\
+                                 The session may have been deleted or cleaned.\n\
+                                 To start fresh: ccsm pending {}  (clears session_id, then resume)",
+                                name,
+                                &entry.session_id[..entry.session_id.len().min(8)],
+                                name,
+                            );
+                        }
+                    } else {
+                        (None, false)
+                    }
                 }
             }
             None => {
-                // Collect session names that are plausible typos:
-                // - query is a substring of the session name, OR
-                // - edit distance ≤ 2 AND query is at least 4 chars (real word)
                 let similar: Vec<&str> = reg
                     .sessions
                     .iter()
@@ -130,7 +176,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path) -> anyhow::Result<(
 
     // ── Nudge: check if session has a checklist section ──────────────
     let detail_path = workspace
-        .join(".claude")
+        .join(".ccsm")
         .join("sessions")
         .join(format!("{}.md", name));
     if detail_path.exists() {
@@ -147,19 +193,34 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path) -> anyhow::Result<(
         }
     }
 
-    // ── Phase 2: Spawn claude (no lock) ─────────────────────────────
-    let mut cmd = std::process::Command::new("claude");
+    // ── Phase 2: Spawn agent (no lock) ──────────────────────────────
+    let mut cmd = std::process::Command::new(bin);
     cmd.current_dir(workspace);
     cmd.env("CCSM_SESSION", name);
-    if let Some(ref id) = sid {
-        cmd.arg("--resume").arg(id);
-        println!("resuming    {}  ← claude --resume {}", name, &id[..id.len().min(8)]);
-    } else if fresh {
-        println!("starting    {}  ← claude (fresh)", name);
-    } else {
-        println!("starting    {}  ← claude (new session)", name);
+
+    match consumer {
+        crate::consumer::Consumer::Claude => {
+            if let Some(ref id) = sid {
+                cmd.arg("--resume").arg(id);
+                println!("resuming    {}  ← {bin} --resume {}", name, &id[..id.len().min(8)]);
+            } else if fresh {
+                println!("starting    {}  ← {bin} (fresh)", name);
+            } else {
+                println!("starting    {}  ← {bin} (new session)", name);
+            }
+            cmd.arg("-n").arg(name);
+        }
+        crate::consumer::Consumer::Pi => {
+            if let Some(ref id) = sid {
+                cmd.arg("--session").arg(id);
+                println!("resuming    {}  ← pi --session {}", name, &id[..id.len().min(8)]);
+            } else {
+                // Fresh ccsm entry → start a new Pi session
+                println!("starting    {}  ← pi (fresh session)", name);
+            }
+            cmd.arg("-n").arg(name);
+        }
     }
-    cmd.arg("-n").arg(name);
 
     let mut child_guard = ChildGuard::new(cmd.spawn()?);
     let child_pid = child_guard.id();
@@ -178,69 +239,76 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path) -> anyhow::Result<(
         reg.save(workspace)?;
     }
 
-    // ── Phase 4: Poll for session file, harvest session_id ──────────
-    let session_file = home.join(".claude").join("sessions").join(format!("{child_pid}.json"));
-    let mut found = false;
-    for _ in 0..50 {
-        if session_file.exists() {
-            found = true;
-            break;
+    // ── Phase 4: Harvest session_id (consumer-specific) ─────────────
+    if consumer.is_claude() {
+        // Claude: poll for PID-based session file
+        let session_file = consumer.live_session_file(home, child_pid)
+            .ok_or_else(|| anyhow::anyhow!("consumer does not support PID-based session files"))?;
+        let mut found = false;
+        for _ in 0..50 {
+            if session_file.exists() {
+                found = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    if !found {
-        anyhow::bail!(
-            "claude did not write a session file at {} within 5s.\n\
-             Claude may have failed to start. Check for errors above.",
-            session_file.display(),
-        );
-    }
+        if !found {
+            anyhow::bail!(
+                "{bin} did not write a session file at {} within 5s.\n\
+                 {bin} may have failed to start. Check for errors above.",
+                session_file.display(),
+            );
+        }
 
-    // ── Phase 5: Harvest session_id + started (locked) ──────────────
-    {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            Some(e) => e,
-            None => anyhow::bail!(
-                "internal error: session '{}' vanished from registry between Phase 1 and Phase 5",
-                name
-            ),
-        };
+        // Harvest session_id + started (locked)
+        {
+            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+            let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+                Some(e) => e,
+                None => anyhow::bail!(
+                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 5",
+                    name
+                ),
+            };
 
-        match std::fs::read_to_string(&session_file) {
-            Ok(contents) => match serde_json::from_str::<crate::session::Session>(&contents) {
-                Ok(s) => {
-                    if entry.session_id.is_empty() {
-                        entry.session_id = s.session_id;
+            match std::fs::read_to_string(&session_file) {
+                Ok(contents) => match serde_json::from_str::<crate::session::Session>(&contents) {
+                    Ok(s) => {
+                        if entry.session_id.is_empty() {
+                            entry.session_id = s.session_id;
+                        }
+                        if entry.started.is_empty() {
+                            entry.started = crate::registry::format_ts(s.started_at);
+                        }
+                        reg.updated = crate::registry::now_iso();
                     }
-                    if entry.started.is_empty() {
-                        entry.started = crate::registry::format_ts(s.started_at);
+                    Err(e) => {
+                        eprintln!(
+                            "warning: failed to parse session file {}: {}. \
+                             Session tracking may be incomplete.",
+                            session_file.display(), e
+                        );
                     }
-                    reg.updated = crate::registry::now_iso();
-                }
+                },
                 Err(e) => {
                     eprintln!(
-                        "warning: failed to parse session file {}: {}. \
+                        "warning: failed to read session file {}: {}. \
                          Session tracking may be incomplete.",
                         session_file.display(), e
                     );
                 }
-            },
-            Err(e) => {
-                eprintln!(
-                    "warning: failed to read session file {}: {}. \
-                     Session tracking may be incomplete.",
-                    session_file.display(), e
-                );
             }
+            reg.save(workspace)?;
         }
-        reg.save(workspace)?;
+    } else {
+        // Pi: session_id already set via --session — no PID file to harvest
+        eprintln!("  (session tracking active)");
     }
 
-    // ── Phase 6: Wait for child ─────────────────────────────────────
+    // ── Phase 5: Wait for child ─────────────────────────────────────
     let status = child_guard.wait()?;
 
-    // ── Phase 7: Clear stale pids (locked) ──────────────────────────
+    // ── Phase 6: Clear stale pids (locked) ──────────────────────────
     {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
@@ -251,8 +319,8 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path) -> anyhow::Result<(
             None => {
                 eprintln!(
                     "warning: session '{}' not found in registry at cleanup — \
-                     may have been removed while claude was running",
-                    name
+                     may have been removed while {bin} was running",
+                    name,
                 );
             }
         }
@@ -260,7 +328,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path) -> anyhow::Result<(
     }
 
     if !status.success() {
-        anyhow::bail!("claude exited with {status}");
+        anyhow::bail!("{bin} exited with {status}");
     }
     Ok(())
 }

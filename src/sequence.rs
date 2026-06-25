@@ -232,6 +232,7 @@ pub(crate) fn apply_op(
                 group: None,
                 depends_on: vec![],
                 retired_session_ids: vec![],
+                consumer: String::new(),
             });
             Ok(vec![format!("pending     {}  ← created", name)])
         }
@@ -524,6 +525,7 @@ mod tests {
             group: None,
             depends_on: vec![],
             retired_session_ids: vec![],
+            consumer: String::new(),
         });
         reg
     }

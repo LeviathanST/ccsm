@@ -50,10 +50,10 @@ pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
 
 /// `ccsm doctor` — scan session registry and filesystem for health issues.
 pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
+    let consumer = crate::consumer::Consumer::detect(home, None);
     let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
-    let slug = crate::registry::project_slug(workspace);
-    let proj_dir = home.join(".claude").join("projects").join(&slug);
-    let lock_path = workspace.join(".claude").join("sessions.json.lock");
+    let proj_dir = consumer.projects_dir_for(home, workspace);
+    let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
 
     let mut warnings: Vec<String> = Vec::new();
     let mut infos: Vec<String> = Vec::new();
@@ -97,7 +97,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         // 3. Empty goal
         if s.goal.is_empty() && s.status != crate::registry::SessionStatus::Pending {
             warnings.push(format!(
-                "  empty goal  {}\n    status is {} but goal is empty\n    → edit .claude/sessions/{}.md",
+                "  empty goal  {}\n    status is {} but goal is empty\n    → edit .ccsm/sessions/{}.md",
                 s.name, s.status, s.name,
             ));
             session_issues += 1;
@@ -106,7 +106,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         // 3b. Vague goal — too short to be searchable (< 20 chars, non-empty)
         if !s.goal.is_empty() && s.goal.len() < 20 {
             tips.push(format!(
-                "  vague goal  {}\n    goal is only {} chars — not searchable for agents\n    → ccsm scope {} \"<keyword-rich description>\"  or edit .claude/sessions/{}.md",
+                "  vague goal  {}\n    goal is only {} chars — not searchable for agents\n    → ccsm scope {} \"<keyword-rich description>\"  or edit .ccsm/sessions/{}.md",
                 s.name, s.goal.len(), s.name, s.name,
             ));
         }
@@ -114,7 +114,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         // 3c. Goal is identical to session name (no real description)
         if !s.goal.is_empty() && s.goal.trim() == s.name {
             tips.push(format!(
-                "  name-as-goal  {}\n    goal equals session name — carries no searchable meaning\n    → edit .claude/sessions/{}.md and write a keyword-rich goal",
+                "  name-as-goal  {}\n    goal equals session name — carries no searchable meaning\n    → edit .ccsm/sessions/{}.md and write a keyword-rich goal",
                 s.name, s.name,
             ));
         }
@@ -122,7 +122,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         // 3d. CLI artifact in goal — e.g. "-g Audit ccsm stability..."
         if s.goal.starts_with("-g ") || s.goal.starts_with("-c ") {
             tips.push(format!(
-                "  cli artifact in goal  {}\n    goal starts with '{}' — flag text leaked into goal field\n    → edit .claude/sessions/{}.md and remove the flag prefix",
+                "  cli artifact in goal  {}\n    goal starts with '{}' — flag text leaked into goal field\n    → edit .ccsm/sessions/{}.md and remove the flag prefix",
                 s.name, &s.goal[..3], s.name,
             ));
         }
@@ -137,10 +137,10 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         }
 
         // 5. Missing detail file
-        let detail = workspace.join(".claude").join("sessions").join(format!("{}.md", s.name));
+        let detail = workspace.join(".ccsm").join("sessions").join(format!("{}.md", s.name));
         if !detail.exists() && !s.name.is_empty() {
             infos.push(format!(
-                "  no detail file  {}\n    → cp .claude/session-detail-template.md .claude/sessions/{}.md",
+                "  no detail file  {}\n    → cp .ccsm/session-detail-template.md .ccsm/sessions/{}.md",
                 s.name, s.name,
             ));
             session_issues += 1;
@@ -166,7 +166,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 if !residue.is_empty() {
                     residue.dedup();
                     warnings.push(format!(
-                        "  template residue  {}\n    detail file has unfilled {} — status is {}\n    → edit .claude/sessions/{}.md and fill the placeholder sections",
+                        "  template residue  {}\n    detail file has unfilled {} — status is {}\n    → edit .ccsm/sessions/{}.md and fill the placeholder sections",
                         s.name,
                         residue.join(", "),
                         s.status,
@@ -227,12 +227,12 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     }
 
     // 10. Auto-create essential files if missing ────────────────────────
-    let claude_dir = workspace.join(".claude");
-    let sessions_dir = claude_dir.join("sessions");
-    let template_path = claude_dir.join("session-detail-template.md");
-    let group_dir = claude_dir.join("session-group");
+    let ccsm_dir = workspace.join(".ccsm");
+    let sessions_dir = ccsm_dir.join("sessions");
+    let template_path = ccsm_dir.join("session-detail-template.md");
+    let group_dir = ccsm_dir.join("session-group");
 
-    // 10a. .claude/sessions/ directory
+    // 10a. .ccsm/sessions/ directory
     if !sessions_dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
             warnings.push(format!(
@@ -240,11 +240,11 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 sessions_dir.display(), e,
             ));
         } else {
-            auto_created.push(format!("  .claude/sessions/"));
+            auto_created.push(format!("  .ccsm/sessions/"));
         }
     }
 
-    // 10b. .claude/session-detail-template.md
+    // 10b. .ccsm/session-detail-template.md
     if !template_path.exists() {
         if let Err(e) = std::fs::write(&template_path, TEMPLATE_CONTENT) {
             warnings.push(format!(
@@ -252,11 +252,11 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 template_path.display(), e,
             ));
         } else {
-            auto_created.push(format!("  .claude/session-detail-template.md"));
+            auto_created.push(format!("  .ccsm/session-detail-template.md"));
         }
     }
 
-    // 10c. .claude/session-group/ directory (non-essential but nice to have)
+    // 10c. .ccsm/session-group/ directory (non-essential but nice to have)
     if !group_dir.exists() {
         let _ = std::fs::create_dir_all(&group_dir);
     }

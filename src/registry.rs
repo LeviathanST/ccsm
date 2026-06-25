@@ -146,7 +146,7 @@ impl GlobalRegistry {
 
 // ── Tier 2: Workspace Detail ────────────────────────────────────────
 
-/// Per-workspace session registry at `.claude/sessions.json` in the repo.
+/// Per-workspace session registry at `.ccsm/sessions.json` in the repo.
 /// Rich detail with human/agent-curated goal, scope, status, and tags.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceRegistry {
@@ -179,6 +179,10 @@ pub struct WorkspaceSession {
     pub started: String,
     #[serde(default)]
     pub completed: String,
+    /// Which agent owns this session: "claude" or "pi".
+    /// Used for cross-agent resume warnings.
+    #[serde(default)]
+    pub consumer: String,
     /// Group this session belongs to (optional).
     #[serde(default)]
     pub group: Option<Group>,
@@ -221,21 +225,35 @@ impl std::fmt::Display for SessionStatus {
 }
 
 impl WorkspaceRegistry {
-    /// Load from the repo's `.claude/sessions.json`, or return empty.
+    /// Load from the repo's `.ccsm/sessions.json`, or return empty.
+    /// Checks `.claude/sessions.json` as a fallback for migration.
     pub fn load(repo_path: &std::path::Path) -> Result<Self> {
-        let path = repo_path.join(".claude").join("sessions.json");
+        let path = repo_path.join(".ccsm").join("sessions.json");
+        let legacy_path = repo_path.join(".claude").join("sessions.json");
+
+        // Prefer .ccsm/ path
         if path.exists() {
             let contents = std::fs::read_to_string(&path).context("reading workspace registry")?;
             let mut reg: WorkspaceRegistry =
                 serde_json::from_str(&contents).context("parsing workspace registry")?;
             reg.updated = now_iso();
-            Ok(reg)
-        } else {
-            Ok(Self {
-                updated: now_iso(),
-                sessions: Vec::new(),
-            })
+            return Ok(reg);
         }
+
+        // Fallback: load from legacy .claude/ location
+        if legacy_path.exists() {
+            let contents = std::fs::read_to_string(&legacy_path).context("reading legacy workspace registry")?;
+            let mut reg: WorkspaceRegistry =
+                serde_json::from_str(&contents).context("parsing workspace registry")?;
+            reg.updated = now_iso();
+            eprintln!("ccsm: loading from .claude/sessions.json — migrate with `ccsm migrate-ccsm`");
+            return Ok(reg);
+        }
+
+        Ok(Self {
+            updated: now_iso(),
+            sessions: Vec::new(),
+        })
     }
 
     /// Load with an exclusive lock held for the lifetime of the returned `LockFile`.
@@ -249,7 +267,7 @@ impl WorkspaceRegistry {
 
     /// Save back to disk.
     pub fn save(&self, repo_path: &std::path::Path) -> Result<()> {
-        let path = repo_path.join(".claude").join("sessions.json");
+        let path = repo_path.join(".ccsm").join("sessions.json");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -298,18 +316,22 @@ impl WorkspaceRegistry {
         name: &str,
         home: &std::path::Path,
         workspace: &std::path::Path,
+        consumer: crate::consumer::Consumer,
     ) {
         // Only delete files if we have a real session_id
         if !session_id.is_empty() {
-            let slug = project_slug(workspace);
-            let proj_dir = home.join(".claude").join("projects").join(&slug);
-            let transcript = proj_dir.join(format!("{session_id}.jsonl"));
+            let proj_dir = consumer.projects_dir_for(home, workspace);
+            let slug = consumer.project_slug(workspace);
+            let transcript = if consumer.is_pi() {
+                consumer.find_session_file(home, &slug, session_id)
+                    .unwrap_or_else(|| proj_dir.join(format!("_{session_id}.jsonl")))
+            } else {
+                proj_dir.join(format!("{session_id}.jsonl"))
+            };
             let _ = std::fs::remove_file(&transcript);
-            let session_subdir = proj_dir.join(session_id);
-            let _ = std::fs::remove_dir_all(&session_subdir);
 
-            // Remove any session files with this session_id
-            if let Ok(entries) = std::fs::read_dir(home.join(".claude").join("sessions")) {
+            // Remove any live session files with this session_id
+            if let Ok(entries) = std::fs::read_dir(consumer.sessions_dir(home)) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().is_none_or(|e| e != "json") {
@@ -325,7 +347,7 @@ impl WorkspaceRegistry {
 
         // Delete the detail file
         let detail = workspace
-            .join(".claude")
+            .join(".ccsm")
             .join("sessions")
             .join(format!("{name}.md"));
         let _ = std::fs::remove_file(&detail);
@@ -346,21 +368,24 @@ impl WorkspaceRegistry {
         name: &str,
         home: &std::path::Path,
         workspace: &std::path::Path,
+        consumer: crate::consumer::Consumer,
     ) -> u64 {
         let mut freed: u64 = 0;
         if !session_id.is_empty() {
-            let slug = project_slug(workspace);
-            let proj_dir = home.join(".claude").join("projects").join(&slug);
-            let transcript = proj_dir.join(format!("{session_id}.jsonl"));
-            if let Ok(meta) = std::fs::metadata(&transcript) {
-                freed += meta.len();
+            let slug = consumer.project_slug(workspace);
+            let transcript = consumer.find_session_file(home, &slug, session_id)
+                .unwrap_or_else(|| {
+                    consumer.projects_dir(home, &slug).join(format!("{session_id}.jsonl"))
+                });
+            if transcript.exists() {
+                if let Ok(meta) = std::fs::metadata(&transcript) {
+                    freed += meta.len();
+                }
+                let _ = std::fs::remove_file(&transcript);
             }
-            let _ = std::fs::remove_file(&transcript);
-            let session_subdir = proj_dir.join(session_id);
-            let _ = std::fs::remove_dir_all(&session_subdir);
 
-            // Remove any session files with this session_id
-            if let Ok(entries) = std::fs::read_dir(home.join(".claude").join("sessions")) {
+            // Remove any live session files with this session_id
+            if let Ok(entries) = std::fs::read_dir(consumer.sessions_dir(home)) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().is_none_or(|e| e != "json") {
@@ -391,7 +416,7 @@ impl WorkspaceRegistry {
     }
 
     /// Permanently clean every trashed session at once.
-    pub fn clean_all_trashed(&mut self, home: &std::path::Path, workspace: &std::path::Path) {
+    pub fn clean_all_trashed(&mut self, home: &std::path::Path, workspace: &std::path::Path, consumer: crate::consumer::Consumer) {
         let trashed: Vec<(String, String)> = self
             .sessions
             .iter()
@@ -399,7 +424,7 @@ impl WorkspaceRegistry {
             .map(|e| (e.session_id.clone(), e.name.clone()))
             .collect();
         for (sid, name) in &trashed {
-            self.clean(sid, name, home, workspace);
+            self.clean(sid, name, home, workspace, consumer);
         }
         self.updated = now_iso();
     }
@@ -428,6 +453,7 @@ impl WorkspaceRegistry {
                 group: None,
                 depends_on: vec![],
                 retired_session_ids: vec![],
+                consumer: String::new(),
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -442,6 +468,7 @@ impl WorkspaceRegistry {
                 group: None,
                 depends_on: vec![],
                 retired_session_ids: vec![],
+                consumer: String::new(),
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -456,6 +483,7 @@ impl WorkspaceRegistry {
                 group: None,
                 depends_on: vec![],
                 retired_session_ids: vec![],
+                consumer: String::new(),
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -470,6 +498,7 @@ impl WorkspaceRegistry {
                 group: None,
                 depends_on: vec![],
                 retired_session_ids: vec![],
+                consumer: String::new(),
             },
         ]
     }
@@ -485,7 +514,7 @@ impl WorkspaceRegistry {
 
 // ── File Locking ─────────────────────────────────────────────────────
 
-/// Advisory exclusive lock on `.claude/sessions.json.lock`.
+/// Advisory exclusive lock on `.ccsm/sessions.json.lock`.
 ///
 /// Acquired before reading the registry and held until dropped —
 /// this prevents the read-modify-write race when multiple `ccsm`
@@ -499,7 +528,7 @@ pub struct LockFile {
 
 impl LockFile {
     pub fn acquire(repo_path: &std::path::Path) -> Result<Self> {
-        let lock_path = repo_path.join(".claude").join("sessions.json.lock");
+        let lock_path = repo_path.join(".ccsm").join("sessions.json.lock");
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -801,7 +830,7 @@ mod tests {
     #[test]
     fn lock_acquire_creates_lockfile() {
         let (dir, _reg_path) = temp_workspace();
-        let lock_path = dir.path().join(".claude").join("sessions.json.lock");
+        let lock_path = dir.path().join(".ccsm").join("sessions.json.lock");
         assert!(!lock_path.exists());
 
         let _lock = LockFile::acquire(&dir.path().to_path_buf()).unwrap();
@@ -830,7 +859,7 @@ mod tests {
         let _lock1 = LockFile::acquire(&workspace).unwrap();
 
         // Try to acquire on a different fd — should fail with try_lock
-        let lock_path = workspace.join(".claude").join("sessions.json.lock");
+        let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
         let file2 = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -851,7 +880,7 @@ mod tests {
         drop(lock);
 
         // Now try_lock should succeed
-        let lock_path = workspace.join(".claude").join("sessions.json.lock");
+        let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -882,6 +911,7 @@ mod tests {
                 group: None,
                 depends_on: vec![],
                 retired_session_ids: vec![],
+                consumer: String::new(),
             }],
         };
         std::fs::write(&reg_path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
@@ -901,7 +931,7 @@ mod tests {
         let (mut reg, _lock) = WorkspaceRegistry::load_locked(&workspace).unwrap();
 
         // While lock is held, try_lock should fail on another fd
-        let lock_path = workspace.join(".claude").join("sessions.json.lock");
+        let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
         let other_file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -924,6 +954,7 @@ mod tests {
             group: None,
             depends_on: vec![],
             retired_session_ids: vec![],
+            consumer: String::new(),
         });
         reg.save(&workspace).unwrap();
 
@@ -964,6 +995,7 @@ mod tests {
                     group: None,
                     depends_on: vec![],
                     retired_session_ids: vec![],
+                    consumer: String::new(),
                 });
                 reg.save(&ws).unwrap();
                 // _lock dropped here
@@ -1016,6 +1048,7 @@ mod tests {
                     group: None,
                     depends_on: vec![],
                     retired_session_ids: vec![],
+                    consumer: String::new(),
                 });
                 let _ = reg.save(&ws);
             }));
