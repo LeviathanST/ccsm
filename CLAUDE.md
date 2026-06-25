@@ -1,24 +1,30 @@
-# ccsm: Session Registry CLI for Claude Code
+# ccsm: Session Registry CLI
 
 ## Identity
 
-You are Vex, building a CLI session registry and lifecycle manager for Claude Code. This project augments Claude Code — it does NOT replace it.
+You are Vex, building a CLI session registry and lifecycle manager for AI coding agents. ccsm supports **Claude Code** and **Pi** — abstracted behind the `Consumer` enum.
 
 ## Core Principle
 
-**Augment, don't rebuild.** Claude Code's harness (agent loop, tools, hooks, permissions, compaction, sessions, slash commands, skills) runs untouched. ccsm adds structured session tracking with a CLI and JSON registry — nothing is reimplemented, every Claude Code update is free.
+**Augment, don't rebuild.** The agent's harness (agent loop, tools, hooks, permissions, compaction, sessions, slash commands, skills) runs untouched. ccsm adds structured session tracking with a CLI and JSON registry — nothing is reimplemented, every agent update is free.
 
 ## Architecture
 
 ```
 ccsm CLI
 ├── src/main.rs          CLI dispatch (clap), all subcommand handlers
+├── src/consumer.rs      Consumer enum — Claude, Pi; path/binary abstraction
 ├── src/registry.rs      WorkspaceRegistry — .claude/sessions.json CRUD, LockFile
 ├── src/sequence.rs      SeqOp — batch mutations in a single lock/save cycle
-└── src/session.rs       Session — reads ~/.claude/sessions/<pid>.json
+├── src/session.rs       Session — reads agent session files (Claude PID format)
+└── src/commands/
+    ├── resume.rs        Spawn agent (claude or pi) with resume/fresh
+    └── doctor.rs        Health scan
 ```
 
-ccsm manages a per-workspace session registry at `.claude/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `ccsm resume` command spawns `claude` (with `--resume` if a session_id is linked), captures the child PID, and harvests the session_id from the session file on exit.
+ccsm manages a per-workspace session registry at `.claude/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `ccsm resume` command spawns the agent (`claude` or `pi`) and harvests the session_id on exit.
+
+The `Consumer` enum (`src/consumer.rs`) abstracts agent-specific paths, binary names, and session file formats. Auto-detects from `--consumer` flag, `CCSM_CONSUMER` env var, or most recently active config directory.
 
 Mutations use advisory `flock` via `fs2` on `.claude/sessions.json.lock` — every read-modify-write cycle holds an exclusive lock from read through write, preventing races when commands are chained with `&&`. The `sequence` subcommand batches multiple mutations under a single lock.
 
@@ -26,7 +32,7 @@ Mutations use advisory `flock` via `fs2` on `.claude/sessions.json.lock` — eve
 
 - **Rust**
 - **clap** (derive) — CLI argument parsing, auto-generated --help
-- **serde/serde_json** — parse Claude Code's JSON data files
+- **serde/serde_json** — parse agent JSON data files
 - **fs2** — cross-platform `flock` advisory file locking
 
 ## Data Sources
@@ -36,50 +42,48 @@ Mutations use advisory `flock` via `fs2` on `.claude/sessions.json.lock` — eve
 | Path | Contains | Use For |
 |------|----------|---------|
 | `<workspace>/.claude/sessions.json` | Registry entries: name, goal, scope, status, session_id, pids, tags, timestamps | All CLI operations |
-| `~/.claude/sessions/<pid>.json` | Live sessions: sessionId, cwd, status, name | `refresh_from_live` harvesting |
-| `~/.claude/projects/<slug>/<session_id>.jsonl` | Full transcript | Resume check (exists → --resume) |
-| `~/.claude/sessions.json` | Global overview across workspaces | Global Registry (Tier 1) |
+| `~/.claude/sessions/<pid>.json` | Live Claude session: sessionId, cwd, status, name | `resume` harvesting |
+| `~/.claude/projects/<slug>/<session_id>.jsonl` | Claude transcript | Resume check (exists → --resume) |
+| `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` | Pi session files | `resume` (--session), `attach` auto-discover |
 
 > **Decision: `<workspace>/.claude/sessions.json` is the canonical session data source.** ccsm reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
 
-## What We Know About Claude Code's Data Surface
+## Consumer Detection
 
-### Session files (`~/.claude/sessions/<pid>.json`)
+ccsm supports two agents (consumers), auto-detected or explicitly set:
 
-```json
-{
-  "pid": 727940,
-  "sessionId": "f493397b-456a-426d-92e1-4d5f15da0311",
-  "cwd": "/home/user/project",
-  "name": "my-session",
-  "status": "busy",
-  "startedAt": 1718400000000,
-  "updatedAt": 1718400300000
-}
-```
+| Method | Example |
+|--------|---------|
+| **Flag** | `ccsm --consumer pi resume <name>` |
+| **Env var** | `CCSM_CONSUMER=pi ccsm resume <name>` |
+| **Auto-detect** | `ccsm <command>` — picks the most recently active config dir (`~/.pi/agent/` or `~/.claude/`) |
 
-### Session JSONL transcript
+| Consumer | Binary | Config Dir | Session Files |
+|----------|--------|------------|---------------|
+| `claude` | `claude` | `~/.claude/` | `~/.claude/sessions/<pid>.json` + `~/.claude/projects/<slug>/<uuid>.jsonl` |
+| `pi` | `pi` | `~/.pi/agent/` | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` |
 
-Append-only JSONL at `~/.claude/projects/<slug>/<session_id>.jsonl`. Contains:
-- `type: "assistant"` with `message.content[]` blocks (text, tool_use with name+input)
-- `type: "user"` with tool_result blocks
-- `type: "system"`, `type: "file-history-snapshot"`, `type: "mode"`
-- Parent UUID chain for branching/resume
+### What changes per consumer
 
-### Project slug convention
-
-Claude Code derives the project directory slug from the absolute path by replacing ALL non-alphanumeric chars with `-`. `/home/user/my_project` → `-home-user-my-project`. Transcripts live at `~/.claude/projects/<slug>/<session_id>.jsonl`.
+| Feature | Claude | Pi |
+|---------|--------|----|
+| `resume` spawns | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` |
+| `refresh` spawns | `claude -n <name>` (fresh) | `pi --continue -n <name>` |
+| `attach` auto-discovers | **Claude:** reads live PID-based session file `~/.claude/sessions/<pid>.json` for exact UUID | **Pi:** scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` (Pi has no live PID files, so mtime is used as best approximation) |
+| `inject-scope` format | `<system-reminder>...</system-reminder>` | Same (both agents accept it) |
+| Session harvesting | PID-based JSON polling | UUID already known from `--session` flag |
 
 ## Design Decisions
 
-1. **CLI-first.** Purpose-built subcommands for every operation. Same output format across Claude, Codex, Gemini, and shell scripts.
+1. **CLI-first.** Purpose-built subcommands for every operation. Same output format across Claude, Pi, and shell scripts.
 2. **`<workspace>/.claude/sessions.json` is the canonical source.** Structured JSON, diffable in git, parseable by any tool.
-3. **Never parse JSONL transcripts.** Use `claude --resume` for session replay — let Claude handle its own data format.
-4. **`refresh_from_live` harvests session_ids.** After `claude` exits, the session file it wrote at `~/.claude/sessions/<pid>.json` is read to harvest the `sessionId` and save it to the registry entry.
-5. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by ccsm. Agents use CLI commands, never touch these fields directly.
-6. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.claude/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
-7. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
-8. **Keyword-rich goals.** Session goals must be self-contained and searchable. Bad: `"Fix bugs"`. Good: `"Fix PTY spawn race condition in ccsm resume command"`. Never use the session name as the goal. `ccsm doctor` flags vague goals (< 20 chars), name-as-goal, and CLI-artifact goals (`-g ` prefix).
+3. **Never parse JSONL transcripts.** Use `claude --resume` or `pi --session` for session replay — let the agent handle its own data format.
+4. **Consumer abstraction.** `src/consumer.rs` encapsulates all agent-specific paths and binary names. Adding a new consumer means adding one enum variant.
+5. **Pi extension.** `.pi/extensions/ccsm/index.ts` registers all ccsm operations as native Pi tools (20+ tools). The extension always passes `--consumer pi`.
+6. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by ccsm. Agents use CLI commands, never touch these fields directly.
+7. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.claude/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
+8. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
+9. **Keyword-rich goals.** Session goals must be self-contained and searchable. Bad: `"Fix bugs"`. Good: `"Fix PTY spawn race condition in ccsm resume command"`. Never use the session name as the goal. `ccsm doctor` flags vague goals (< 20 chars), name-as-goal, and CLI-artifact goals (`-g ` prefix).
 
 ## CLI Commands
 
@@ -88,95 +92,59 @@ Claude Code derives the project directory slug from the absolute path by replaci
 ```
 ccsm list              (ls, sessions, s)  # all sessions, one line each
 ccsm list --active     (-a)               # in_progress + blocked only
-ccsm list --summary    (-s)               # counts: 2 active | 5 completed | 3 total
+ccsm list --summary    (-s)               # counts
 ccsm list --status X   (-S)               # filter by status
 ccsm scan              (sc)               # compact grouped output, grep-friendly
-ccsm scan --search <q>                    # full-text across name+goal+tags (no grep needed)
+ccsm scan --search <q>                    # full-text across name+goal+tags
 ccsm scan --json                          # structured JSON for programmatic use
-ccsm show <name>                          # full detail — goal, scope, tags, pids, timestamps
+ccsm show <name>                          # full detail
 ccsm show <name> --section <s>            # extract one section from detail file
 ```
 
 ### Mutate (never edit JSON directly)
 
 ```
-ccsm new       <name> -g <goal>  # create pending entry (-c for checklist section)
-ccsm start     <name>            # → in_progress
-ccsm complete  <name> [--force]   # → completed + timestamp (gate checks)
-ccsm block     <name>            # → blocked
-ccsm abandon   <name>            # → abandoned
-ccsm pending   <name>            # → pending + clear identity fields
-ccsm scope     <name> <text>     # set scope
-ccsm tag       <name> <tags...>  # replace tags
-ccsm rename    <old> <new>       # rename session across all surfaces
-ccsm attach    <name>            # auto-discover & link live session
-ccsm resume    <name>            # spawn claude (--resume if session_id exists)
-ccsm refresh   <name> [-r why]   # retire current Claude session, spawn fresh
-ccsm close     <name>            # pre-completion gate: check detail file completeness
-ccsm checklist <name>            # list checklist items (--init adds section)
-ccsm check     <name> <item> -s <pending|done|skipped|blocked>  # set checklist item status
-ccsm note      <name> <text>     # append timestamped entry to progress log
-ccsm group     <name> -g <group> [-r free|<n>]  # assign session to group (auto-creates .claude/session-group/<group>.md)
-ccsm group     <name> --clear    # remove session from group (auto-deletes group file when last leaves)
-ccsm group     <name>            # overview — list sessions + show goal from group detail file
-ccsm group     <name> --goal <text>  # set group goal in .claude/session-group/<name>.md
-ccsm group     <name> --roadmap      # render markdown roadmap (table + mermaid dep graph)
-ccsm next      <group>           # print next session to work on in group
-ccsm note-check                  # (hook) remind if tree dirty + detail file stale
-ccsm archive   <name>            # delete transcript, keep entry as work log
-ccsm archive-all                 # archive all completed sessions
-ccsm doctor                      # scan for health issues + cleanup hints
+ccsm new       <name> -g <goal>            # create pending entry
+ccsm start     <name>                      # → in_progress
+ccsm complete  <name> [--force]            # → completed + timestamp
+ccsm block     <name>                      # → blocked
+ccsm abandon   <name>                      # → abandoned
+ccsm pending   <name>                      # → pending + clear identity fields
+ccsm scope     <name> <text>               # set scope
+ccsm tag       <name> <tags...>            # replace tags
+ccsm rename    <old> <new>                 # rename session
+ccsm attach    <name>                      # auto-discover & link live session
+ccsm resume    <name>                      # spawn agent (--resume/--session)
+ccsm refresh   <name> [-r why]             # retire session, spawn fresh
+ccsm close     <name>                      # pre-completion gate
+ccsm note      <name> <text>               # append to progress log
+ccsm check     <name> <item> -s <status>   # checklist item
+ccsm group     <session> -g <g> [-r <r>]   # assign to group
+ccsm group     <name> --roadmap             # render roadmap markdown
+ccsm next      <group>                     # next session to work on
+ccsm depend    <name> --on <dep>           # add dependency
+ccsm doctor                                # scan for health issues
+ccsm archive   <name>                      # delete transcript, keep entry
 ```
 
-### Checklist
+### Pi Extension (auto-discovered)
 
-Opt-in sub-task tracking — see `session-manager` skill for full workflow.
-CLI reference: `.claude/skills/session-manager/reference/cli-commands.md`.
+When Pi runs in this workspace (`.pi/extensions/ccsm/`), it automatically gets 20+ native tools:
 
-### Grouping
+| Pi Tool | Maps To |
+|---------|---------|
+| `ccsm_list` | `ccsm --consumer pi list` |
+| `ccsm_scan` | `ccsm --consumer pi scan` |
+| `ccsm_new` | `ccsm --consumer pi new` |
+| `ccsm_start` | `ccsm --consumer pi start` |
+| `ccsm_complete` | `ccsm --consumer pi complete` |
+| `ccsm_note` | `ccsm --consumer pi note` |
+| `ccsm_scope` | `ccsm --consumer pi scope` |
+| `ccsm_inject_scope` | `ccsm --consumer pi inject-scope` |
+| `ccsm_resume` | `ccsm --consumer pi resume` |
+| ... and more | all with `--consumer pi` |
 
-Sessions can be grouped with ordering — free (any order) or numeric rank (lower = higher priority).
-
-```
-ccsm group <session> -g <group> [-r free|<n>]  # assign to group with rank
-ccsm group <session> --clear                    # remove from group
-ccsm group <name>                               # overview — sessions + goal from group detail
-ccsm group <name> --goal <text>                 # set group goal
-ccsm next <group>                               # print next session to work on
-ccsm list --group <g> [--by-rank]              # filter list by group
-```
-
-`next` priority: in_progress > pending by rank (numeric lowest first, free alphabetical). Rank collisions accepted — tie-breaks alphabetically.
-
-Detail file gets a `## Group` section when a session is assigned (opt-in — no template change).
-
-### Group Detail Files
-
-Each group gets a central markdown file at `.claude/session-group/<name>.md` with sections:
-
-- **## Goal** — set via `ccsm group <name> --goal <text>`
-- **## Scope** — free-text (edit directly)
-- **## Members** — auto-generated list of sessions with status + rank
-- **## Notes** — free-text (edit directly)
-
-Auto-created when the first session joins a group. Auto-deleted when the last session leaves.
-Group overview (`ccsm group <name>`) displays the Goal when set.
-
-### Batch (single lock/save cycle)
-
-```
-ccsm sequence -q new <name> -q start <name> -q scope <name> <text> -q complete <name>
-```
-
-Each `-q` starts an operation group. All mutations run in-memory under one lock, saved once.
-
-### Meta
-
-```
-ccsm setup      # one-time: install session tracking globally
-ccsm --version  # print version
-ccsm --help     # full command list with descriptions
-```
+The extension also hooks `before_agent_start` to auto-inject the active session's goal and scope into Pi's system prompt.
 
 ## Documentation Discipline
 
@@ -192,14 +160,15 @@ Run `ls .claude/skills/session-manager/reference/` to discover all doc files. Ve
 ## Build & Run
 
 ```bash
-cargo build --release        # Optimized build (symlink at ~/.local/bin/ccsm auto-updates)
-ccsm --help                # Show all commands
-ccsm list                  # List sessions
-ccsm new my-session -g "goal here"
-ccsm resume my-session     # Spawn claude
+cargo build --release              # Optimized build
+cp target/release/ccsm ~/.local/bin/ccsm  # Install
+ccsm list                          # List sessions
+ccsm --consumer pi list --summary  # List with Pi consumer
+CCSM_CONSUMER=pi ccsm resume <name>  # Resume with Pi
 ```
 
 ## Related Resources
 
 - [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks) — 30 hook events
 - [Claude Code .claude Directory Guide](https://code.claude.com/docs/en/claude-directory) — File layout
+- [Pi Extension Docs](https://pi.dev/docs/extensions) — Custom tools, events, UI

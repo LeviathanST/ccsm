@@ -30,9 +30,9 @@
 | `ccsm pending <name>` | → pending, clears session_id + pids + timestamps |
 | `ccsm scope <name> <text>` | Set scope field |
 | `ccsm tag <name> <tags...>` | Replace tags |
-| `ccsm attach <name>` | Auto-discover & link live session. `--pid <pid>` or `<uuid>` for explicit |
-| `ccsm resume <name>` | Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit |
-| `ccsm refresh <name> [-r]` | Retire current Claude session to retired_session_ids, spawn fresh (no --resume) |
+| `ccsm attach <name>` | Link a session UUID to a ccsm entry. Three modes: **(1)** `ccsm attach <name>` — auto-discover (Claude: reads live `~/.claude/sessions/<pid>.json`; Pi: picks most recently modified `.jsonl` in `~/.pi/agent/sessions/<slug>/`). **(2)** `ccsm attach <name> <uuid>` — explicit UUID. **(3)** `ccsm attach <name> --pid <pid>` — harvest from PID (Claude only) |
+| `ccsm resume <name>` | Spawn agent (claude or pi). `--resume <uuid>` for Claude, `--session <uuid>` for Pi. Harvests session_id on exit |
+| `ccsm refresh <name> [-r]` | Retire current session to retired_session_ids, spawn fresh (no --resume). Spawns `pi --continue` when consumer is Pi |
 | `ccsm rename <old> <new> [-g] [-s]` | Rename session across registry, detail file, live sessions, transcript |
 | `ccsm close <name>` | Pre-completion gate: hard checks + self-review checklist. Exit non-zero if hollow. Blocks if pending/blocked checklist items exist |
 | `ccsm checklist <name>` | List checklist items from detail file. `--init` adds ## Checklist section to existing session |
@@ -78,3 +78,33 @@ trashed      — soft-deleted, recoverable with `ccsm recover <name>`
 | `ccsm depend <name> --on <dep>` | Add dependency (both sessions must be in same group) |
 | `ccsm depend <name> --clear` | Clear all dependencies |
 | `ccsm depend <name>` | List dependencies with status |
+
+## Consumer (Target Agent)
+
+ccsm supports multiple AI coding agents via the `--consumer` flag:
+
+| Consumer | Flag | Binary | Sessions Dir |
+|----------|------|--------|-------------|
+| Claude Code (default) | `--consumer claude` | `claude` | `~/.claude/sessions/<pid>.json` |
+| Pi | `--consumer pi` | `pi` | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` |
+
+Detection order: `--consumer` flag → `CCSM_CONSUMER` env var → auto-detect.
+
+### What changes per consumer
+
+| Feature | Claude | Pi |
+|---------|--------|----|
+| `resume` | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` |
+| `refresh` | `claude -n <name>` (fresh) | `pi --continue -n <name>` |
+| `attach` (auto) | Reads live `~/.claude/sessions/<pid>.json` (PID-based live session files) | Scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` (no live PID files in Pi) |
+| Session harvesting | PID-based JSON polling | UUID known from `--session` flag |
+
+## Miscellaneous
+
+| Command | Effect |
+|---|---|
+| `ccsm doctor` | Scan for health issues (orphaned IDs, dead PIDs, template residue, stale locks, archive candidates) |
+| `ccsm note-check` | Stop-hook: check if working tree is dirty and detail file is stale. Reminds to note progress. Silent when clean |
+| `ccsm archive <name>` | Delete transcript + session files, keep registry entry as permanent work log |
+| `ccsm archive-all` | Archive all completed sessions with transcripts |
+| `ccsm inject-scope` | Output `<system-reminder>` block with goal + scope + checklist summary for system prompt injection |
