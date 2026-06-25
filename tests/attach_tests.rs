@@ -40,7 +40,7 @@ fn attach_empty_session_id_falls_back_to_autodiscover() {
     ws.run_ok(&["new", "empty-attach", "-g", "test"]);
     // Empty session_id means "auto-discover" — fails because no live Claude sessions exist
     let err = ws.run_err(&["attach", "empty-attach", ""]);
-    assert!(err.contains("no live Claude sessions"), "empty session_id: {}", err);
+    assert!(err.contains("no live claude sessions"), "empty session_id: {}", err);
 }
 
 #[test]
@@ -60,5 +60,5 @@ fn attach_auto_discover_no_sessions() {
     ws.run_ok(&["new", "orphan-session", "-g", "test"]);
     // No live Claude sessions in temp workspace — auto-discover should fail
     let err = ws.run_err(&["attach", "orphan-session"]);
-    assert!(err.contains("no live Claude sessions"), "auto-discover empty: {}", err);
+    assert!(err.contains("no live claude sessions"), "auto-discover empty: {}", err);
 }

@@ -45,10 +45,7 @@ checklist, close-gate, session-lifecycle, detail-file
 
 ## Dependencies
 
-<!-- Sessions this work depends on or is blocked by -->
-
-(none)
-
+- fix-write-race
 ## Checklist
 
 <!--
@@ -69,5 +66,5 @@ checklist, close-gate, session-lifecycle, detail-file
 
 ## Group
 
-- **Group:** test-group
+- **Group:** demo-group
 - **Rank:** 1

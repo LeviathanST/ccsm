@@ -1,5 +1,5 @@
 {
-  "updated": "day20629T06:31:56Z",
+  "updated": "day20629T14:56:29Z",
   "sessions": [
     {
       "session_id": "9f981b19-1c1d-4f8d-80d8-e90407034360",
@@ -198,7 +198,9 @@
       "started": "day20624T15:30Z",
       "completed": "day20624T15:31:41Z",
       "group": null,
-      "depends_on": [],
+      "depends_on": [
+        "fix-write-race"
+      ],
       "retired_session_ids": []
     },
     {
@@ -299,6 +301,48 @@
       "tags": [],
       "started": "day20629T06:28Z",
       "completed": "day20629T06:31:56Z",
+      "group": null,
+      "depends_on": [],
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "",
+      "name": "test-session",
+      "goal": "test pi integration",
+      "scope": "",
+      "status": "pending",
+      "pids": [],
+      "tags": [],
+      "started": "",
+      "completed": "",
+      "group": null,
+      "depends_on": [],
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "",
+      "name": "demo-pi",
+      "goal": "Demonstrate ccsm Pi integration features",
+      "scope": "Walk through ccsm's key features: scan, list, show, new, start, note, check, gateway, complete — all with --consumer pi flag",
+      "status": "completed",
+      "pids": [],
+      "tags": [],
+      "started": "",
+      "completed": "day20629T13:22:58Z",
+      "group": null,
+      "depends_on": [],
+      "retired_session_ids": []
+    },
+    {
+      "session_id": "019efee5-c801-7df3-8db9-9345770a0613",
+      "name": "unify-ccsm-config",
+      "goal": "Unify ccsm config/data to .ccsm/ in project root, add consumer tracking to session entries, cross-agent resume warnings",
+      "scope": "Move all ccsm workspace data from .claude/ to .ccsm/ in the project root. This is ccsm's own data, not agent config. Add `consumer` field to session entries tracking which agent created/owns each session. Store agent transcripts under .ccsm/transcripts/<agent>/<slug>/ for unified access. When `ccsm resume` is called with a different consumer than the session's owner, warn and offer to create a fresh session with the current agent. Provide migration from existing .claude/ layouts. Update Consumer abstraction, registry schema, and Pi extension.",
+      "status": "in_progress",
+      "pids": [],
+      "tags": [],
+      "started": "",
+      "completed": "",
       "group": null,
       "depends_on": [],
       "retired_session_ids": []

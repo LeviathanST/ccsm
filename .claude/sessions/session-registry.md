@@ -89,3 +89,8 @@ depend on this session's registry API being stable.
 <project>/.claude/sessions/      ← Per-session detail .md files
 ~/.claude/skills/session-manager/ ← Global skill (always:true)
 ```
+
+## Group
+
+- **Group:** demo-group
+- **Rank:** 3

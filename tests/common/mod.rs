@@ -27,7 +27,7 @@ pub fn ccsm_binary() -> PathBuf {
     PathBuf::from("target/release/ccsm")
 }
 
-/// A temp workspace with a .claude/sessions.json skeleton.
+/// A temp workspace with a .ccsm/sessions.json skeleton.
 pub struct TempWorkspace {
     dir: tempfile::TempDir,
     home: PathBuf,
@@ -36,8 +36,8 @@ pub struct TempWorkspace {
 impl TempWorkspace {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).expect("create .claude");
+        let ccsm_dir = dir.path().join(".ccsm");
+        std::fs::create_dir_all(&ccsm_dir).expect("create .ccsm");
 
         // Write empty registry
         let registry = serde_json::json!({
@@ -45,7 +45,7 @@ impl TempWorkspace {
             "sessions": []
         });
         std::fs::write(
-            claude_dir.join("sessions.json"),
+            ccsm_dir.join("sessions.json"),
             serde_json::to_string_pretty(&registry).unwrap(),
         )
         .expect("write sessions.json");
@@ -97,7 +97,7 @@ impl TempWorkspace {
 
     /// Write session detail file content.
     pub fn write_detail(&self, name: &str, content: &str) {
-        let sessions_dir = self.path().join(".claude").join("sessions");
+        let sessions_dir = self.path().join(".ccsm").join("sessions");
         std::fs::create_dir_all(&sessions_dir).ok();
         std::fs::write(sessions_dir.join(format!("{name}.md")), content)
             .expect("write detail file");
@@ -105,7 +105,7 @@ impl TempWorkspace {
 
     /// Read the registry file.
     pub fn read_registry(&self) -> serde_json::Value {
-        let path = self.path().join(".claude").join("sessions.json");
+        let path = self.path().join(".ccsm").join("sessions.json");
         let contents = std::fs::read_to_string(&path).expect("read registry");
         serde_json::from_str(&contents).expect("parse registry")
     }
