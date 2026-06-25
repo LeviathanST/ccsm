@@ -1,0 +1,14 @@
+{
+  "extensions": [
+    ".pi/extensions/handoff.ts",
+    ".pi/extensions/minimal-mode.ts",
+    ".pi/extensions/permission-gate.ts",
+    ".pi/extensions/plan-mode/index.ts",
+    ".pi/extensions/question.ts",
+    ".pi/extensions/subagent/index.ts",
+    ".pi/extensions/todo.ts"
+  ],
+  "prompts": [
+    "~/.pi/agent/prompts"
+  ]
+}
