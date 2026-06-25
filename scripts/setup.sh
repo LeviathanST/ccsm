@@ -163,6 +163,20 @@ mkdir -p "$SEED_SKILL_DIR"
 cp "$PROJECT_DIR/.claude/skills/seed-session/SKILL.md" "$SEED_SKILL_DIR/"
 echo "[updated] seed-session skill installed at $SEED_SKILL_DIR"
 
+# ── 2c. Install wrap-up skill globally ────────────────────────────────────
+
+WRAPUP_SKILL_DIR="${HOME}/.claude/skills/wrap-up"
+mkdir -p "$WRAPUP_SKILL_DIR"
+cp "$PROJECT_DIR/.claude/skills/wrap-up/SKILL.md" "$WRAPUP_SKILL_DIR/"
+echo "[updated] wrap-up skill installed at $WRAPUP_SKILL_DIR"
+
+# ── 2d. Install learned-lesson-issue skill globally ────────────────────────
+
+LESSONS_SKILL_DIR="${HOME}/.claude/skills/learned-lesson-issue"
+mkdir -p "$LESSONS_SKILL_DIR"
+cp "$PROJECT_DIR/.claude/skills/learned-lesson-issue/SKILL.md" "$LESSONS_SKILL_DIR/"
+echo "[updated] learned-lesson-issue skill installed at $LESSONS_SKILL_DIR"
+
 # ── 3. Create a minimal .claude/sessions.json if none exists ──────────────
 
 WORKSPACE_REGISTRY="${PROJECT_DIR}/.claude/sessions.json"
@@ -257,8 +271,8 @@ fi
 echo ""
 echo "ccsm setup complete."
 echo "  Global CLAUDE.md  ←  session tracking section + CLI reference"
-echo "  Global skill      ←  /session-manager"
-echo "  Global hooks      ←  SessionStart + UserPromptSubmit (ccsm inject-scope)"
+echo "  Global skills     ←  /session-manager, /seed-session, /wrap-up, /learned-lesson-issue"
+echo "  Global hooks      ←  SessionStart + UserPromptSubmit (inject-scope), Stop (note-check)"
 echo "  Workspace registry←  .claude/sessions.json"
 
 # ── 4. Ensure ccsm hooks in global settings.json ─────────────────────────
