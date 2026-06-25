@@ -3372,14 +3372,40 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
 fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
     match consumer {
         Consumer::Pi => {
-            // Pi setup is automatic — the extension at .pi/extensions/ccsm/ is
-            // auto-discovered by Pi when running in this workspace.
-            println!("ccsm is already set up for Pi.");
+            // Seed skills from .claude/skills/ to global Pi skills directory
+            let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let src_skills = project_root.join(".claude").join("skills");
+            let dst_skills = std::path::PathBuf::from(
+                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+            )
+            .join(".pi")
+                .join("agent")
+                .join("skills");
+
+            let mut copied = 0u32;
+            if src_skills.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&src_skills) {
+                    for entry in entries.flatten() {
+                        let src = entry.path();
+                        let name = src.file_name().unwrap_or_default();
+                        let dst = dst_skills.join(&name);
+                        if src.is_dir() && src.join("SKILL.md").exists() {
+                            std::fs::create_dir_all(&dst).ok();
+                            if std::fs::copy(src.join("SKILL.md"), dst.join("SKILL.md")).is_ok() {
+                                copied += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            println!("ccsm setup for Pi.");
             println!();
             println!("  ✓ .pi/extensions/ccsm/ — auto-discovered by Pi");
             println!("  ✓ 22 custom tools registered (ccsm_list, ccsm_new, ...)");
             println!("  ✓ Auto-injects active session scope into system prompt");
             println!("  ✓ Consumer auto-detection (--consumer pi or CCSM_CONSUMER=pi)");
+            println!("  ✓ {} skill{} seeded to ~/.pi/agent/skills/", copied, if copied == 1 { "" } else { "s" });
             println!();
             println!("Usage: pi (tools auto-available) or ccsm --consumer pi <command>");
             Ok(())

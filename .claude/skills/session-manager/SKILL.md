@@ -151,6 +151,15 @@ Group detail files live at `.claude/session-group/<name>.md`. Auto-created on fi
 - Pipeable: `ccsm group sprint-5 --roadmap > ROADMAP.md`
 - Always current — reads from registry, never drifts
 
+## Lessons
+
+Record cross-session lessons in `.claude/lessons/` following the
+`learned-lesson-issue` format (Symptom → Cause → Fix → Evidence).
+Use `/skill:learned-lesson-issue` for the full workflow.
+
+Not every observation needs a lesson — only reusable debugging patterns
+with verified causes. Session notes belong in `ccsm note`.
+
 ## Context Budget Rules
 
 - **`ccsm list --summary`** — sub-50 tokens, quickest overview
