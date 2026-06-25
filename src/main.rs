@@ -319,9 +319,8 @@ enum Commands {
     },
     /// Install session tracking into global CLAUDE.md + skills (run once)
     Setup,
-    /// Migrate ccsm data from legacy `.claude/` to `.ccsm/`.
-    /// Copies registry, detail files, group files, and templates.
-    /// Safe to run multiple times — skips files that already exist in .ccsm/.
+    /// Migrate registry + detail files from `.claude/` to `.ccsm/`.
+    /// Leaves agent transcripts in their original locations.
     MigrateCcsm,
 }
 
@@ -3123,115 +3122,6 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── Migration: .claude/ → .ccsm/ ───────────────────────────────────────────
-
-/// `ccsm migrate-ccsm` — migrate ccsm workspace data from `.claude/` to `.ccsm/`.
-/// Copies registry, detail files, group files, and templates.
-/// Safe to re-run: skips files that already exist in `.ccsm/`.
-fn run_migrate_ccsm(workspace: &std::path::Path, _home: &std::path::Path) -> anyhow::Result<()> {
-    let claude = workspace.join(".claude");
-    let ccsm = workspace.join(".ccsm");
-
-    if !claude.exists() {
-        println!("No .claude/ directory found — nothing to migrate.");
-        return Ok(());
-    }
-
-    if !ccsm.exists() {
-        std::fs::create_dir_all(&ccsm)?;
-    }
-
-    let mut copied = 0u32;
-    let mut skipped = 0u32;
-
-    // 1. sessions.json
-    let src_json = claude.join("sessions.json");
-    let dst_json = ccsm.join("sessions.json");
-    if src_json.exists() && !dst_json.exists() {
-        // Load, stamp consumer field on any entries that lack it, then save
-        let contents = std::fs::read_to_string(&src_json)?;
-        let mut reg: crate::registry::WorkspaceRegistry =
-            serde_json::from_str(&contents).context("parsing legacy registry")?;
-        for s in &mut reg.sessions {
-            if s.consumer.is_empty() {
-                s.consumer = "claude".into();
-            }
-        }
-        reg.save(workspace)?;
-        copied += 1;
-    } else if dst_json.exists() {
-        skipped += 1;
-    }
-
-    // 2. sessions/ detail files
-    let src_sessions = claude.join("sessions");
-    let dst_sessions = ccsm.join("sessions");
-    if src_sessions.is_dir() {
-        if !dst_sessions.exists() {
-            std::fs::create_dir_all(&dst_sessions)?;
-        }
-        if let Ok(entries) = std::fs::read_dir(&src_sessions) {
-            for entry in entries.flatten() {
-                let src = entry.path();
-                if src.extension().is_some_and(|e| e == "md") {
-                    let name = src.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-                    let dst = dst_sessions.join(format!("{name}.md"));
-                    if !dst.exists() {
-                        std::fs::copy(&src, &dst)?;
-                        copied += 1;
-                    } else {
-                        skipped += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. session-group/ directory
-    let src_group = claude.join("session-group");
-    let dst_group = ccsm.join("session-group");
-    if src_group.is_dir() {
-        if !dst_group.exists() {
-            std::fs::create_dir_all(&dst_group)?;
-        }
-        if let Ok(entries) = std::fs::read_dir(&src_group) {
-            for entry in entries.flatten() {
-                let src = entry.path();
-                if src.extension().is_some_and(|e| e == "md") {
-                    let name = src.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-                    let dst = dst_group.join(format!("{name}.md"));
-                    if !dst.exists() {
-                        std::fs::copy(&src, &dst)?;
-                        copied += 1;
-                    } else {
-                        skipped += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // 4. session-detail-template.md
-    let src_tmpl = claude.join("session-detail-template.md");
-    let dst_tmpl = ccsm.join("session-detail-template.md");
-    if src_tmpl.exists() && !dst_tmpl.exists() {
-        std::fs::copy(&src_tmpl, &dst_tmpl)?;
-        copied += 1;
-    } else if dst_tmpl.exists() {
-        skipped += 1;
-    }
-
-    println!(
-        "Migration complete: {} file(s) copied, {} already present.",
-        copied, skipped
-    );
-    if copied > 0 {
-        println!("ccsm now uses .ccsm/ as its workspace data directory.");
-        println!("The legacy .claude/ data remains in place and can be removed manually.");
-    }
-    Ok(())
-}
-
 // ── InjectScope subcommand ───────────────────────────────────────────────
 
 /// `ccsm inject-scope [--name <name>]` — output a `<system-reminder>` block
@@ -3512,3 +3402,103 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
         }
     }
 }
+
+/// `ccsm migrate-ccsm` — migrate ccsm workspace data from `.claude/` to `.ccsm/`.
+/// Copies registry, detail files, group files, templates.
+/// Leaves agent transcripts untouched (Claude keeps ~/.claude/projects/, Pi keeps ~/.pi/agent/sessions/).
+fn run_migrate_ccsm(workspace: &std::path::Path, _home: &std::path::Path) -> anyhow::Result<()> {
+    let claude = workspace.join(".claude");
+    let ccsm = workspace.join(".ccsm");
+
+    if !claude.exists() {
+        println!("No .claude/ directory found — nothing to migrate.");
+        return Ok(());
+    }
+
+    if !ccsm.exists() {
+        std::fs::create_dir_all(&ccsm)?;
+    }
+
+    let mut copied = 0u32;
+    let mut skipped = 0u32;
+
+    // 1. sessions.json
+    let src_json = claude.join("sessions.json");
+    let dst_json = ccsm.join("sessions.json");
+    if src_json.exists() && !dst_json.exists() {
+        let contents = std::fs::read_to_string(&src_json)?;
+        let mut reg: crate::registry::WorkspaceRegistry =
+            serde_json::from_str(&contents).context("parsing legacy registry")?;
+        for s in &mut reg.sessions {
+            if s.consumer.is_empty() {
+                s.consumer = "claude".into();
+            }
+        }
+        reg.save(workspace)?;
+        copied += 1;
+    } else if dst_json.exists() {
+        skipped += 1;
+    }
+
+    // 2. sessions/ detail files
+    let src_sessions = claude.join("sessions");
+    let dst_sessions = ccsm.join("sessions");
+    if src_sessions.is_dir() {
+        if !dst_sessions.exists() {
+            std::fs::create_dir_all(&dst_sessions)?;
+        }
+        if let Ok(entries) = std::fs::read_dir(&src_sessions) {
+            for entry in entries.flatten() {
+                let src = entry.path();
+                if src.extension().is_some_and(|e| e == "md") {
+                    let name = src.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+                    let dst = dst_sessions.join(format!("{name}.md"));
+                    if !dst.exists() {
+                        std::fs::copy(&src, &dst)?;
+                        copied += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. session-group/ directory
+    let src_group = claude.join("session-group");
+    let dst_group = ccsm.join("session-group");
+    if src_group.is_dir() {
+        if !dst_group.exists() {
+            std::fs::create_dir_all(&dst_group)?;
+        }
+        if let Ok(entries) = std::fs::read_dir(&src_group) {
+            for entry in entries.flatten() {
+                let src = entry.path();
+                if src.extension().is_some_and(|e| e == "md") {
+                    let name = src.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+                    let dst = dst_group.join(format!("{name}.md"));
+                    if !dst.exists() {
+                        std::fs::copy(&src, &dst)?;
+                        copied += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. session-detail-template.md
+    let src_tpl = claude.join("session-detail-template.md");
+    let dst_tpl = ccsm.join("session-detail-template.md");
+    if src_tpl.exists() && !dst_tpl.exists() {
+        std::fs::copy(&src_tpl, &dst_tpl)?;
+        copied += 1;
+    } else if dst_tpl.exists() {
+        skipped += 1;
+    }
+
+    println!("migrated to .ccsm/: {} copied, {} skipped", copied, skipped);
+    Ok(())
+}
+

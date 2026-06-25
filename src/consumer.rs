@@ -140,49 +140,6 @@ impl Consumer {
         }
     }
 
-    // ── CCSM workspace data dir (project-local) ───────────────────
-
-    /// Canonical ccsm workspace data directory name (project root, relative).
-    /// All session registries, detail files, and group metadata live here.
-    pub fn ccsm_dir_name() -> &'static str {
-        ".ccsm"
-    }
-
-    /// Full path to the ccsm data dir within a workspace.
-    pub fn ccsm_dir(workspace: &Path) -> PathBuf {
-        workspace.join(Self::ccsm_dir_name())
-    }
-
-    /// Full path to the ccsm session detail files directory.
-    pub fn ccsm_sessions_dir(workspace: &Path) -> PathBuf {
-        Self::ccsm_dir(workspace).join("sessions")
-    }
-
-    /// Full path to the ccsm session group directory.
-    pub fn ccsm_group_dir(workspace: &Path) -> PathBuf {
-        Self::ccsm_dir(workspace).join("session-group")
-    }
-
-    /// Canonical workspace-level sessions.json path.
-    pub fn ccsm_registry_path(workspace: &Path) -> PathBuf {
-        Self::ccsm_dir(workspace).join("sessions.json")
-    }
-
-    /// Canonical workspace-level lock file path.
-    pub fn ccsm_lock_path(workspace: &Path) -> PathBuf {
-        Self::ccsm_dir(workspace).join("sessions.json.lock")
-    }
-
-    /// Canonical session detail template path.
-    pub fn ccsm_template_path(workspace: &Path) -> PathBuf {
-        Self::ccsm_dir(workspace).join("session-detail-template.md")
-    }
-
-    /// Canonical detail file path for a named session.
-    pub fn ccsm_detail_path(workspace: &Path, name: &str) -> PathBuf {
-        Self::ccsm_sessions_dir(workspace).join(format!("{name}.md"))
-    }
-
     // ── Project slug ────────────────────────────────────────────
 
     /// Derive the project slug used by this agent to namespace session data.
