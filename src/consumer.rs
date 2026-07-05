@@ -5,8 +5,8 @@
 ///
 /// Detection order:
 ///   1. `--consumer`/`-C` CLI flag (explicit)
-///   2. `CCSM_CONSUMER` env var (`"claude"` or `"pi"`)
-///   3. Auto-detect: prefer Pi if its config dir is more recent
+///   2. `CCSM_CONSUMER` env var (`"claude"`, `"pi"`, or `"codewhale"`)
+///   3. Auto-detect: prefer the most recently active config directory
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -22,6 +22,9 @@ pub enum Consumer {
     /// Pi — binary `pi`, config at `~/.pi/agent/`.
     /// Sessions: `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl`.
     Pi,
+    /// CodeWhale — binary `codewhale`, config at `~/.codewhale/`.
+    /// Sessions: `~/.codewhale/sessions/<uuid>.json` (flat), state DB at `~/.codewhale/state.db`.
+    CodeWhale,
 }
 
 impl Consumer {
@@ -48,8 +51,13 @@ impl Consumer {
     fn auto_detect(home: &Path) -> Self {
         let pi_dir = home.join(".pi").join("agent");
         let claude_dir = home.join(".claude");
+        let codewhale_dir = home.join(".codewhale");
 
-        let candidates = [(Self::Pi, &pi_dir), (Self::Claude, &claude_dir)];
+        let candidates = [
+            (Self::Pi, &pi_dir),
+            (Self::Claude, &claude_dir),
+            (Self::CodeWhale, &codewhale_dir),
+        ];
 
         let mut found: Vec<(Self, std::time::SystemTime)> = candidates
             .iter()
@@ -65,6 +73,9 @@ impl Consumer {
                 }
                 if cwd.join(".claude").is_dir() {
                     return Self::Claude;
+                }
+                if cwd.join(".codewhale").is_dir() {
+                    return Self::CodeWhale;
                 }
             }
             return Self::Claude; // default fallback
@@ -110,7 +121,8 @@ impl Consumer {
         match s.to_lowercase().as_str() {
             "claude" => Ok(Self::Claude),
             "pi" => Ok(Self::Pi),
-            other => anyhow::bail!("unknown consumer '{other}'. Expected: claude, pi"),
+            "codewhale" => Ok(Self::CodeWhale),
+            other => anyhow::bail!("unknown consumer '{other}'. Expected: claude, pi, codewhale"),
         }
     }
 
@@ -122,6 +134,10 @@ impl Consumer {
         matches!(self, Self::Pi)
     }
 
+    pub fn is_codewhale(&self) -> bool {
+        matches!(self, Self::CodeWhale)
+    }
+
     // ── Binary ────────────────────────────────────────────────────
 
     /// The CLI binary to spawn for `resume`.
@@ -129,6 +145,7 @@ impl Consumer {
         match self {
             Self::Claude => "claude",
             Self::Pi => "pi",
+            Self::CodeWhale => "codewhale",
         }
     }
 
@@ -137,6 +154,7 @@ impl Consumer {
         match self {
             Self::Claude => ".claude",
             Self::Pi => ".pi",
+            Self::CodeWhale => ".codewhale",
         }
     }
 
@@ -158,6 +176,10 @@ impl Consumer {
                 let base = slugify_path(workspace);
                 format!("--{}--", base)
             }
+            Self::CodeWhale => {
+                // CodeWhale uses the workspace path directly (no slugification)
+                workspace.to_string_lossy().to_string()
+            }
         }
     }
 
@@ -168,6 +190,7 @@ impl Consumer {
         match self {
             Self::Claude => home.join(".claude").join("sessions"),
             Self::Pi => home.join(".pi").join("agent").join("sessions"),
+            Self::CodeWhale => home.join(".codewhale").join("sessions"),
         }
     }
 
@@ -176,6 +199,10 @@ impl Consumer {
         match self {
             Self::Claude => home.join(".claude").join("projects").join(slug),
             Self::Pi => home.join(".pi").join("agent").join("sessions").join(slug),
+            Self::CodeWhale => {
+                // CodeWhale stores sessions globally (flat directory), not per-project
+                home.join(".codewhale").join("sessions")
+            }
         }
     }
 
@@ -184,18 +211,21 @@ impl Consumer {
         self.projects_dir(home, &self.project_slug(workspace))
     }
 
-    /// Path to a live session file for a given PID (Claude only; Pi doesn't use PID files).
+    /// Path to a live session file for a given PID (Claude only; Pi and CodeWhale don't use PID files).
     pub fn live_session_file(self, home: &Path, pid: u32) -> Option<PathBuf> {
         match self {
             Self::Claude => {
                 Some(home.join(self.home_config_dir()).join("sessions").join(format!("{pid}.json")))
             }
-            Self::Pi => None, // Pi doesn't write PID-based session files
+            Self::Pi => None,           // Pi doesn't write PID-based session files
+            Self::CodeWhale => None,    // CodeWhale doesn't write PID-based session files
         }
     }
 
     /// For Claude: direct transcript path by session UUID.
     /// For Pi: search by UUID in the workspace slug directory.
+    /// For CodeWhale: search `~/.codewhale/sessions/` for `<uuid>.json` file or
+    /// read JSON content to match `metadata.id`.
     pub fn find_session_file(self, home: &Path, slug: &str, session_id: &str) -> Option<PathBuf> {
         match self {
             Self::Claude => {
@@ -220,6 +250,33 @@ impl Consumer {
                 }
                 None
             }
+            Self::CodeWhale => {
+                // Try direct file path first (fast path)
+                let dir = self.sessions_dir(home);
+                let direct = dir.join(format!("{session_id}.json"));
+                if direct.exists() {
+                    return Some(direct);
+                }
+                // Fallback: scan files for matching metadata.id
+                if !dir.is_dir() {
+                    return None;
+                }
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().is_some_and(|ext| ext == "json") {
+                            if let Ok(contents) = std::fs::read_to_string(&path) {
+                                if let Ok(meta) = serde_json::from_str::<CodeWhaleSessionFile>(&contents) {
+                                    if meta.metadata.id == session_id || meta.metadata.id.starts_with(session_id) {
+                                        return Some(path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -229,17 +286,22 @@ impl Consumer {
     }
 
     /// List all session/transcript files for a workspace slug, sorted by filename.
+    /// Claude/Pi: `.jsonl` files. CodeWhale: `.json` files.
     pub fn list_session_files(self, home: &Path, slug: &str) -> Vec<PathBuf> {
         let dir = self.projects_dir(home, slug);
         if !dir.is_dir() {
             return vec![];
         }
+        let ext = match self {
+            Self::CodeWhale => "json",
+            _ => "jsonl",
+        };
         let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
             .into_iter()
             .flatten()
             .filter_map(|e| {
                 let path = e.ok()?.path();
-                if path.extension().is_some_and(|ext| ext == "jsonl") {
+                if path.extension().is_some_and(|ext2| ext2 == ext) {
                     Some(path)
                 } else {
                     None
@@ -268,6 +330,7 @@ impl std::fmt::Display for Consumer {
         match self {
             Self::Claude => write!(f, "claude"),
             Self::Pi => write!(f, "pi"),
+            Self::CodeWhale => write!(f, "codewhale"),
         }
     }
 }
@@ -407,6 +470,54 @@ fn extract_session_name(text: &str) -> Option<String> {
     None
 }
 
+// ── CodeWhale Session file reader ────────────────────────────────────
+
+/// Minimal representation of a saved CodeWhale session JSON file.
+#[derive(Debug, Deserialize)]
+pub struct CodeWhaleSessionFile {
+    pub schema_version: Option<u32>,
+    pub metadata: CodeWhaleSessionMeta,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CodeWhaleSessionMeta {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub workspace: Option<String>,
+}
+
+/// Metadata extracted from a CodeWhale session file.
+#[derive(Debug, Clone, Default)]
+pub struct CodeWhaleSessionMetaExtracted {
+    pub session_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub workspace: String,
+}
+
+/// Read a CodeWhale session file and extract metadata.
+pub fn read_codewhale_session_meta(path: &Path) -> anyhow::Result<CodeWhaleSessionMetaExtracted> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("opening CodeWhale session file: {}", path.display()))?;
+    let session: CodeWhaleSessionFile = serde_json::from_str(&contents)
+        .with_context(|| format!("parsing CodeWhale session file: {}", path.display()))?;
+
+    Ok(CodeWhaleSessionMetaExtracted {
+        session_id: session.metadata.id.clone(),
+        title: session.metadata.title.unwrap_or_default(),
+        created_at: session.metadata.created_at.unwrap_or_default(),
+        updated_at: session.metadata.updated_at.unwrap_or_default(),
+        workspace: session.metadata.workspace.unwrap_or_default(),
+    })
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -417,6 +528,7 @@ mod tests {
     fn test_consumer_parse() {
         assert_eq!(Consumer::parse("claude").unwrap(), Consumer::Claude);
         assert_eq!(Consumer::parse("pi").unwrap(), Consumer::Pi);
+        assert_eq!(Consumer::parse("codewhale").unwrap(), Consumer::CodeWhale);
         assert!(Consumer::parse("unknown").is_err());
     }
 
@@ -424,11 +536,117 @@ mod tests {
     fn test_binary_names() {
         assert_eq!(Consumer::Claude.binary(), "claude");
         assert_eq!(Consumer::Pi.binary(), "pi");
+        assert_eq!(Consumer::CodeWhale.binary(), "codewhale");
     }
 
     #[test]
     fn test_home_config_dirs() {
         assert_eq!(Consumer::Claude.home_config_dir(), ".claude");
         assert_eq!(Consumer::Pi.home_config_dir(), ".pi");
+        assert_eq!(Consumer::CodeWhale.home_config_dir(), ".codewhale");
+    }
+
+    #[test]
+    fn test_is_methods() {
+        assert!(Consumer::Claude.is_claude());
+        assert!(!Consumer::Claude.is_pi());
+        assert!(!Consumer::Claude.is_codewhale());
+
+        assert!(!Consumer::Pi.is_claude());
+        assert!(Consumer::Pi.is_pi());
+        assert!(!Consumer::Pi.is_codewhale());
+
+        assert!(!Consumer::CodeWhale.is_claude());
+        assert!(!Consumer::CodeWhale.is_pi());
+        assert!(Consumer::CodeWhale.is_codewhale());
+    }
+
+    #[test]
+    fn test_display() {
+        assert_eq!(Consumer::Claude.to_string(), "claude");
+        assert_eq!(Consumer::Pi.to_string(), "pi");
+        assert_eq!(Consumer::CodeWhale.to_string(), "codewhale");
+    }
+
+    #[test]
+    fn test_sessions_dir() {
+        let home = std::path::Path::new("/home/user");
+        assert_eq!(
+            Consumer::CodeWhale.sessions_dir(home),
+            home.join(".codewhale").join("sessions")
+        );
+    }
+
+    #[test]
+    fn test_projects_dir() {
+        let home = std::path::Path::new("/home/user");
+        // CodeWhale projects_dir is the same as sessions_dir (flat storage)
+        assert_eq!(
+            Consumer::CodeWhale.projects_dir(home, "any-slug"),
+            Consumer::CodeWhale.sessions_dir(home)
+        );
+    }
+
+    #[test]
+    fn test_live_session_file() {
+        let home = std::path::Path::new("/home/user");
+        assert!(Consumer::CodeWhale.live_session_file(home, 12345).is_none());
+    }
+
+    #[test]
+    fn test_system_prompt_tags() {
+        let (open, close) = Consumer::CodeWhale.system_prompt_tags();
+        assert_eq!(open, "<system-reminder>");
+        assert_eq!(close, "</system-reminder>");
+    }
+
+    #[test]
+    fn test_project_slug() {
+        let ws = std::path::Path::new("/home/user/my-project");
+        // CodeWhale uses raw path (no slugification)
+        let slug = Consumer::CodeWhale.project_slug(ws);
+        assert_eq!(slug, "/home/user/my-project");
+    }
+
+    #[test]
+    fn test_codewhale_session_file_roundtrip() {
+        // Test with a known-good JSON structure
+        let json = r#"{
+            "schema_version": 1,
+            "metadata": {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "title": "Test Session",
+                "created_at": "2026-07-05T12:00:00Z",
+                "updated_at": "2026-07-05T13:00:00Z",
+                "workspace": "/home/user/project"
+            },
+            "messages": []
+        }"#;
+
+        let session: CodeWhaleSessionFile = serde_json::from_str(json).unwrap();
+        assert_eq!(session.schema_version, Some(1));
+        assert_eq!(session.metadata.id, "550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(session.metadata.title.as_deref(), Some("Test Session"));
+        assert_eq!(
+            session.metadata.workspace.as_deref(),
+            Some("/home/user/project")
+        );
+    }
+
+    #[test]
+    fn test_codewhale_session_file_minimal() {
+        // Test with minimal fields (title and workspace can be missing)
+        let json = r#"{
+            "schema_version": 1,
+            "metadata": {
+                "id": "550e8400-e29b-41d4-a716-446655440000"
+            },
+            "messages": []
+        }"#;
+
+        let session: CodeWhaleSessionFile = serde_json::from_str(json).unwrap();
+        assert_eq!(session.metadata.id, "550e8400-e29b-41d4-a716-446655440000");
+        assert!(session.metadata.title.is_none());
+        assert!(session.metadata.workspace.is_none());
     }
 }

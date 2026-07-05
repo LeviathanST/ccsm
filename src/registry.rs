@@ -325,6 +325,9 @@ impl WorkspaceRegistry {
             let transcript = if consumer.is_pi() {
                 consumer.find_session_file(home, &slug, session_id)
                     .unwrap_or_else(|| proj_dir.join(format!("_{session_id}.jsonl")))
+            } else if consumer.is_codewhale() {
+                consumer.find_session_file(home, &slug, session_id)
+                    .unwrap_or_else(|| proj_dir.join(format!("{session_id}.json")))
             } else {
                 proj_dir.join(format!("{session_id}.jsonl"))
             };
@@ -375,7 +378,11 @@ impl WorkspaceRegistry {
             let slug = consumer.project_slug(workspace);
             let transcript = consumer.find_session_file(home, &slug, session_id)
                 .unwrap_or_else(|| {
-                    consumer.projects_dir(home, &slug).join(format!("{session_id}.jsonl"))
+                    if consumer.is_codewhale() {
+                        consumer.projects_dir(home, &slug).join(format!("{session_id}.json"))
+                    } else {
+                        consumer.projects_dir(home, &slug).join(format!("{session_id}.jsonl"))
+                    }
                 });
             if transcript.exists() {
                 if let Ok(meta) = std::fs::metadata(&transcript) {

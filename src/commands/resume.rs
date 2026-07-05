@@ -171,6 +171,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
         reg.updated = now.clone();
         reg.save(workspace)?;
+        eprintln!("  [resume] sid={:?}, fresh={}", sid.as_deref().unwrap_or(""), is_fresh);
         (sid, is_fresh)
     }; // lock released
 
@@ -197,6 +198,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     let mut cmd = std::process::Command::new(bin);
     cmd.current_dir(workspace);
     cmd.env("CCSM_SESSION", name);
+    cmd.env("CCSM_WORKSPACE", workspace.as_os_str());
 
     match consumer {
         crate::consumer::Consumer::Claude => {
@@ -219,6 +221,15 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 println!("starting    {}  ← pi (fresh session)", name);
             }
             cmd.arg("-n").arg(name);
+        }
+        crate::consumer::Consumer::CodeWhale => {
+            if let Some(ref id) = sid {
+                cmd.arg("--resume").arg(id);
+                println!("resuming    {}  ← {bin} --resume {}", name, &id[..id.len().min(8)]);
+            } else {
+                cmd.arg("--skip-onboarding");
+                println!("starting    {}  ← {bin} (fresh session)", name);
+            }
         }
     }
 
@@ -300,15 +311,123 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             }
             reg.save(workspace)?;
         }
-    } else {
-        // Pi: session_id already set via --session — no PID file to harvest
-        eprintln!("  (session tracking active)");
     }
 
     // ── Phase 5: Wait for child ─────────────────────────────────────
     let status = child_guard.wait()?;
 
-    // ── Phase 6: Clear stale pids (locked) ──────────────────────────
+    // ── Phase 6: Harvest session_id for Pi (after exit) ─────────────
+    if consumer.is_pi() {
+        let slug = consumer.project_slug(workspace);
+        let dir = consumer.projects_dir(home, &slug);
+        eprintln!("  [pi harvest] slug={}, dir={}", slug, dir.display());
+        if dir.is_dir() {
+            // Scan for the most recent .jsonl file
+            let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "jsonl") {
+                        if let Ok(meta) = path.metadata() {
+                            if let Ok(mtime) = meta.modified() {
+                                candidates.push((path, mtime));
+                            }
+                        }
+                    }
+                }
+            }
+            candidates.sort_by(|a, b| b.1.cmp(&a.1));
+            eprintln!("  [pi harvest] found {} candidate(s)", candidates.len());
+
+            if let Some((latest, mtime)) = candidates.first() {
+                if let Some(name_str) = latest.file_stem().and_then(|n| n.to_str()) {
+                    eprintln!("  [pi harvest] newest file: {} (mtime: {:?})", name_str, mtime);
+                    // Pi filename: <timestamp>_<uuid>.jsonl
+                    if let Some(uuid_part) = name_str.split('_').nth(1) {
+                        eprintln!("  [pi harvest] extracted uuid: {}", uuid_part);
+                        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+                        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+                            eprintln!("  [pi harvest] session '{}' current session_id='{}'", name, entry.session_id);
+                            if entry.session_id.is_empty() {
+                                entry.session_id = uuid_part.to_string();
+                                eprintln!("  harvested session {}", &uuid_part[..uuid_part.len().min(8)]);
+                            }
+                            reg.updated = crate::registry::now_iso();
+                            reg.save(workspace)?;
+                            eprintln!("  [pi harvest] saved");
+                        } else {
+                            eprintln!("  [pi harvest] session '{}' not found in registry", name);
+                        }
+                    } else {
+                        eprintln!("  [pi harvest] could not extract uuid from filename");
+                    }
+                } else {
+                    eprintln!("  [pi harvest] could not get file_stem");
+                }
+            } else {
+                eprintln!("  [pi harvest] no .jsonl files found");
+            }
+        } else {
+            eprintln!("  [pi harvest] dir not found");
+        }
+    }
+
+    // ── Phase 6b: Harvest session_id for CodeWhale (after exit) ────
+    if consumer.is_codewhale() {
+        let dir = consumer.sessions_dir(home);
+        eprintln!("  [codewhale harvest] dir={}", dir.display());
+        if dir.is_dir() {
+            // Scan for the most recent .json file
+            let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "json") {
+                        if let Ok(meta) = path.metadata() {
+                            if let Ok(mtime) = meta.modified() {
+                                candidates.push((path, mtime));
+                            }
+                        }
+                    }
+                }
+            }
+            candidates.sort_by(|a, b| b.1.cmp(&a.1));
+            eprintln!("  [codewhale harvest] found {} candidate(s)", candidates.len());
+
+            if let Some((latest, _mtime)) = candidates.first() {
+                // Read the JSON file to extract metadata.id
+                match crate::consumer::read_codewhale_session_meta(latest) {
+                    Ok(meta) => {
+                        eprintln!("  [codewhale harvest] uuid={}", meta.session_id);
+                        if !meta.session_id.is_empty() {
+                            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+                            if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+                                eprintln!("  [codewhale harvest] session '{}' current session_id='{}'", name, entry.session_id);
+                                if entry.session_id.is_empty() {
+                                    entry.session_id = meta.session_id.clone();
+                                    eprintln!("  harvested session {}", &meta.session_id[..meta.session_id.len().min(8)]);
+                                }
+                                reg.updated = crate::registry::now_iso();
+                                reg.save(workspace)?;
+                                eprintln!("  [codewhale harvest] saved");
+                            } else {
+                                eprintln!("  [codewhale harvest] session '{}' not found in registry", name);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  [codewhale harvest] failed to parse {}: {}", latest.display(), e);
+                    }
+                }
+            } else {
+                eprintln!("  [codewhale harvest] no .json files found");
+            }
+        } else {
+            eprintln!("  [codewhale harvest] dir not found");
+        }
+    }
+
+    // ── Phase 7: Clear stale pids (locked) ──────────────────────────
     {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {

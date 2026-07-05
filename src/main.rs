@@ -21,7 +21,7 @@ use crate::registry::{parse_sections, now_iso as now_iso_ts};
 #[derive(Parser)]
 #[command(name = "ccsm", version, about = "Session registry CLI", long_about = None)]
 struct Cli {
-    /// Target agent: "claude" (default) or "pi". Detects automatically. Also via CCSM_CONSUMER env var.
+    /// Target agent: "claude" (default), "pi", or "codewhale". Detects automatically. Also via CCSM_CONSUMER env var.
     #[arg(long)]
     consumer: Option<String>,
 
@@ -839,6 +839,60 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
                     eprintln!("auto-detected session {} from {}", &meta.session_id[..8], latest.display());
                     meta.session_id
                 }
+                Consumer::CodeWhale => {
+                    // CodeWhale: scan saved .json session files sorted by file mtime,
+                    // filtered by workspace match.
+                    let dir = consumer.sessions_dir(home);
+                    if !dir.is_dir() {
+                        anyhow::bail!(
+                            "no CodeWhale sessions found.\n\
+                             Start codewhale first, then `ccsm attach {}`.",
+                            name
+                        );
+                    }
+                    let ws_str = workspace.to_string_lossy().to_string();
+                    let mut candidates: Vec<(String, String, std::time::SystemTime)> = Vec::new();
+                    if let Ok(entries) = std::fs::read_dir(&dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().is_some_and(|ext| ext == "json")
+                                && path.file_stem().is_some_and(|s| !s.is_empty())
+                            {
+                                if let Ok(meta) = crate::consumer::read_codewhale_session_meta(&path) {
+                                    // Filter by workspace: session must have a non-empty workspace
+                                    // and one path must be a directory prefix of the other.
+                                    let ws_match = if meta.workspace.is_empty() {
+                                        false
+                                    } else {
+                                        ws_str == meta.workspace
+                                            || ws_str.starts_with(&format!("{}/", meta.workspace.trim_end_matches('/')))
+                                            || meta.workspace.starts_with(&format!("{}/", ws_str.trim_end_matches('/')))
+                                    };
+                                    if ws_match {
+                                        let mtime = std::fs::metadata(&path).ok()
+                                            .and_then(|m| m.modified().ok())
+                                            .unwrap_or(std::time::UNIX_EPOCH);
+                                        candidates.push((meta.session_id, meta.title, mtime));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    candidates.sort_by(|a, b| b.2.cmp(&a.2));
+                    if candidates.is_empty() {
+                        anyhow::bail!(
+                            "no CodeWhale session files found for this workspace.\n\
+                             Start codewhale first, then `ccsm attach {}`.",
+                            name
+                        );
+                    }
+                    let sid = &candidates[0].0;
+                    if sid.is_empty() {
+                        anyhow::bail!("could not extract session ID from CodeWhale session file");
+                    }
+                    eprintln!("auto-detected session {} from {} session files", &sid[..sid.len().min(8)], candidates.len());
+                    sid.clone()
+                }
             }
         }
     };
@@ -889,8 +943,9 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     }
 
     let sid = reg.sessions[idx].session_id.clone();
-    // 1. Append rename entries to transcript (if session_id is set)
-    if !sid.is_empty() {
+    // 1. Append rename entries to transcript (if session_id is set and format supports it)
+    //    CodeWhale uses .json session files (not JSONL), so this is skipped.
+    if !sid.is_empty() && !consumer.is_codewhale() {
         if let Some(transcript) = consumer.find_session_file_for(home, workspace, &sid) {
             let rename_line = format!(
                 "{{\"type\":\"custom-title\",\"customTitle\":\"{}\",\"sessionId\":\"{}\"}}\n\
@@ -1378,6 +1433,10 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             // Pi: start fresh
             cmd.arg("-n").arg(name);
         }
+        Consumer::CodeWhale => {
+            // CodeWhale: fresh spawn with skip-onboarding
+            cmd.arg("--skip-onboarding");
+        }
     }
 
     let bin = consumer.binary();
@@ -1465,7 +1524,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             reg.save(workspace)?;
         }
     } else {
-        // Pi: no PID-based session file harvesting
+        // Pi / CodeWhale: no PID-based session file harvesting
         eprintln!("  (session tracking will populate on next `ccsm attach` call)");
     }
 
@@ -3461,6 +3520,18 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             println!("  ✓ {} skill{} seeded to ~/.pi/agent/skills/", copied, if copied == 1 { "" } else { "s" });
             println!();
             println!("Usage: pi (tools auto-available) or ccsm --consumer pi <command>");
+            Ok(())
+        }
+        Consumer::CodeWhale => {
+            println!("ccsm setup for CodeWhale.");
+            println!();
+            println!("  ✓ Consumer auto-detection (--consumer codewhale or CCSM_CONSUMER=codewhale)");
+            println!("  ✓ Resume: ccsm resume <name> --consumer codewhale  (spawns codewhale --resume <id> or --skip-onboarding)");
+            println!("  ✓ Attach: ccsm attach <name> --consumer codewhale  (scans ~/.codewhale/sessions/*.json)");
+            println!();
+            println!("Note: CodeWhale doesn't have a Pi-style extension system.");
+            println!("      Scope injection via `ccsm inject-scope` outputs system-reminder tags");
+            println!("      for use with codewhale exec --append-system-prompt.");
             Ok(())
         }
         Consumer::Claude => {
