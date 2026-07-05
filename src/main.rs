@@ -16,6 +16,40 @@ use clap::{Parser, Subcommand};
 use crate::consumer::Consumer;
 use crate::registry::{parse_sections, now_iso as now_iso_ts};
 
+// ── Structured Error Codes ─────────────────────────────────────────────
+
+/// Error codes for structured error output. Agents grep for `[ERR_*]` to
+/// programmatically distinguish error types.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub(crate) enum ErrorCode {
+    NoSession,
+    Exists,
+    BadStatus,
+    Gate,
+    Invalid,
+    Section,
+    Dep,
+    Consumer,
+    Generic,
+}
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSession => write!(f, "[ERR_NOSESSION]"),
+            Self::Exists => write!(f, "[ERR_EXISTS]"),
+            Self::BadStatus => write!(f, "[ERR_BADSTATUS]"),
+            Self::Gate => write!(f, "[ERR_GATE]"),
+            Self::Invalid => write!(f, "[ERR_INVALID]"),
+            Self::Section => write!(f, "[ERR_SECTION]"),
+            Self::Dep => write!(f, "[ERR_DEP]"),
+            Self::Consumer => write!(f, "[ERR_CONSUMER]"),
+            Self::Generic => write!(f, "[ERR_GENERIC]"),
+        }
+    }
+}
+
 // ── CLI (clap) ──────────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -76,6 +110,9 @@ enum Commands {
         /// Sort by rank within group
         #[arg(long)]
         by_rank: bool,
+        /// Output as JSON array
+        #[arg(long)]
+        json: bool,
     },
     /// Show goal, scope, tags, session_id, pids, timestamps for a session
     Show {
@@ -83,6 +120,9 @@ enum Commands {
         /// Extract one section from the detail file (e.g. "progress-log")
         #[arg(short = 'S', long)]
         section: Option<String>,
+        /// Output as JSON object
+        #[arg(long)]
+        json: bool,
     },
     /// Create a pending entry. Optionally embed a ## Checklist section (-c).
     ///
@@ -341,8 +381,8 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Scan { group, status, search, json } => run_scan(group.as_deref(), status.as_deref(), search.as_deref(), json),
-        Commands::List { active, summary, status, verbose, group, by_rank } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank),
-        Commands::Show { name, section } => run_show(&name, section.as_deref(), consumer),
+        Commands::List { active, summary, status, verbose, group, by_rank, json } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank, json),
+        Commands::Show { name, section, json } => run_show(&name, section.as_deref(), json, consumer),
         Commands::New { name, goal, force, checklist } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist, consumer),
         Commands::Start { name } => run_status(&name, "start", false),
         Commands::Complete { name, force } => run_status(&name, "complete", force),
@@ -435,6 +475,30 @@ fn load_workspace_registry() -> anyhow::Result<crate::registry::WorkspaceRegistr
     crate::registry::WorkspaceRegistry::load(&workspace_path())
 }
 
+/// Check if CCSM_OUTPUT_FORMAT=json is set for global JSON output mode.
+/// Individual `--json` flags take precedence over this env var.
+fn output_format_json() -> bool {
+    matches!(
+        std::env::var("CCSM_OUTPUT_FORMAT").ok().as_deref(),
+        Some("json") | Some("JSON")
+    )
+}
+
+/// Print a mutation result as either JSON or a structured text line.
+fn action_msg(action: &str, name: &str, detail: &str) {
+    if output_format_json() {
+        let msg = serde_json::json!({
+            "ok": true,
+            "action": action,
+            "name": name,
+            "detail": detail,
+        });
+        println!("{}", msg);
+    } else {
+        println!("{:12}  {}  ← {}", action, name, detail);
+    }
+}
+
 /// `ccsm scan` — compact scan-friendly output, grouped by group.
 ///
 /// Format (text): `icon  name  goal  tags_csv` under `#group:<name>` headers.
@@ -453,7 +517,7 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
         Some("abandoned") => Some(SessionStatus::Abandoned),
         Some("trashed") => Some(SessionStatus::Trashed),
         Some(other) => {
-            anyhow::bail!("unknown status '{}' — valid: pending, in_progress, completed, blocked, abandoned, trashed", other);
+            anyhow::bail!("{} unknown status '{}' — valid: pending, in_progress, completed, blocked, abandoned, trashed", ErrorCode::BadStatus, other);
         }
         None => None,
     };
@@ -478,8 +542,10 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
         })
         .collect();
 
+    let use_json = json || output_format_json();
+
     if sessions.is_empty() {
-        if json {
+        if use_json {
             println!("[]");
         } else {
             println!("(no matching sessions)");
@@ -487,8 +553,7 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
         return Ok(());
     }
 
-    // JSON output
-    if json {
+    if use_json {
         #[derive(serde::Serialize)]
         struct ScanEntry {
             name: String,
@@ -581,8 +646,8 @@ fn truncate_for_scan(s: &str, max_len: usize) -> String {
     }
 }
 
-/// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter / --verbose / --group / --by-rank.
-fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&str>, group_filter: Option<&str>, by_rank: bool) -> anyhow::Result<()> {
+/// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter / --verbose / --group / --by-rank / --json.
+fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&str>, group_filter: Option<&str>, by_rank: bool, json: bool) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let reg = load_workspace_registry()?;
 
@@ -594,7 +659,7 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
         Some("abandoned") => Some(SessionStatus::Abandoned),
         Some("trashed") => Some(SessionStatus::Trashed),
         Some(other) => {
-            eprintln!("unknown status '{}'", other);
+            eprintln!("{} unknown status '{}'", ErrorCode::BadStatus, other);
             eprintln!();
             eprintln!("Valid statuses:");
             eprintln!("  pending      — planned, not started yet");
@@ -608,33 +673,106 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
         None => None,
     };
 
-    // Summary mode: counts only
-    if summary {
+    let use_json = json || output_format_json();
+
+    // Summary mode: counts only (text)
+    if summary && !use_json {
         let mut counts = std::collections::BTreeMap::new();
         for s in &reg.sessions {
             if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked) {
                 continue;
             }
-            if filter.is_some() && filter != Some(s.status) {
-                continue;
-            }
+            if let Some(fs) = filter
+                && s.status != fs { continue; }
             if let Some(g) = group_filter
-                && !s.group.as_ref().is_some_and(|grp| grp.name == g) {
-                    continue;
-                }
+                && !s.group.as_ref().is_some_and(|grp| grp.name == g) { continue; }
             *counts.entry(s.status).or_insert(0) += 1;
         }
         let total: usize = counts.values().sum();
         let get = |s: SessionStatus| counts.get(&s).copied().unwrap_or(0);
         println!(
-            "{} active | {} completed | {} blocked | {} abandoned | {} trashed | {} total",
+            "{} active | {} pending | {} completed | {} blocked | {} abandoned | {} trashed | {} total",
             get(SessionStatus::InProgress),
+            get(SessionStatus::Pending),
             get(SessionStatus::Completed),
             get(SessionStatus::Blocked),
             get(SessionStatus::Abandoned),
             get(SessionStatus::Trashed),
             total,
         );
+        return Ok(());
+    }
+
+    // JSON output (session list or summary)
+    if use_json && summary {
+        let mut counts = std::collections::BTreeMap::new();
+        for s in &reg.sessions {
+            if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked) {
+                continue;
+            }
+            if let Some(fs) = filter && s.status != fs { continue; }
+            if let Some(g) = group_filter && !s.group.as_ref().is_some_and(|grp| grp.name == g) { continue; }
+            *counts.entry(s.status).or_insert(0) += 1;
+        }
+        let total: usize = counts.values().sum();
+        let get = |s: SessionStatus| counts.get(&s).copied().unwrap_or(0);
+        let summary_json = serde_json::json!({
+            "active": get(SessionStatus::InProgress),
+            "pending": get(SessionStatus::Pending),
+            "completed": get(SessionStatus::Completed),
+            "blocked": get(SessionStatus::Blocked),
+            "abandoned": get(SessionStatus::Abandoned),
+            "trashed": get(SessionStatus::Trashed),
+            "total": total,
+        });
+        println!("{}", serde_json::to_string_pretty(&summary_json)?);
+        return Ok(());
+    }
+
+    // JSON list output
+    if use_json {
+        #[derive(serde::Serialize)]
+        struct ListEntry {
+            name: String,
+            status: String,
+            goal: String,
+            scope: String,
+            tags: Vec<String>,
+            group: Option<String>,
+            rank: Option<String>,
+            session_id: String,
+            started: String,
+            completed: String,
+            depends_on: Vec<String>,
+            consumer: String,
+        }
+        let entries: Vec<ListEntry> = reg.sessions.iter()
+            .filter(|s| {
+                if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked) { return false; }
+                if let Some(fs) = filter && s.status != fs { return false; }
+                if let Some(g) = group_filter && !s.group.as_ref().is_some_and(|grp| grp.name == g) { return false; }
+                true
+            })
+            .map(|s| ListEntry {
+                name: s.name.clone(),
+                status: s.status.to_string(),
+                goal: s.goal.clone(),
+                scope: s.scope.clone(),
+                tags: s.tags.clone(),
+                group: s.group.as_ref().map(|g| g.name.clone()),
+                rank: s.group.as_ref().map(|g| g.rank.to_string()),
+                session_id: s.session_id.clone(),
+                started: s.started.clone(),
+                completed: s.completed.clone(),
+                depends_on: s.depends_on.clone(),
+                consumer: s.consumer.clone(),
+            })
+            .collect();
+        if entries.is_empty() {
+            println!("[]");
+        } else {
+            println!("{}", serde_json::to_string_pretty(&entries)?);
+        }
         return Ok(());
     }
 
@@ -713,14 +851,14 @@ where
             .sessions
             .iter_mut()
             .find(|s| s.name == name)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
         f(entry);
     }
     reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
     // Re-borrow immutably for the status line
     let entry = reg.sessions.iter().find(|s| s.name == name).unwrap();
-    println!("{:12}  {}  ← {}", entry.status.to_string(), entry.name, action);
+    action_msg(&entry.status.to_string(), &entry.name, action);
     Ok(())
 }
 
@@ -859,11 +997,11 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
         .iter_mut()
         .rev()
         .find(|s| s.name == name)
-        .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+        .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
     entry.session_id = resolved_sid.clone();
     reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
-    println!("attached    {}  ← session {}", name, &resolved_sid[..resolved_sid.len().min(8)]);
+    action_msg("attached", name, &format!("session {}", &resolved_sid[..resolved_sid.len().min(8)]));
     Ok(())
 }
 
@@ -879,7 +1017,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
         .position(|s| s.name == old)
         .ok_or_else(|| anyhow::anyhow!("no session named '{}'", old))?;
     if reg.sessions.iter().any(|s| s.name == new) {
-        anyhow::bail!("session '{}' already exists", new);
+        anyhow::bail!("{} session '{}' already exists", ErrorCode::Exists, new);
     }
     if !crate::registry::is_kebab_case(new) {
         anyhow::bail!(
@@ -1006,7 +1144,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
         }
     }
 
-    println!("renamed     {} → {}", old, new);
+    action_msg("renamed", old, &format!("→ {}", new));
     Ok(())
 }
 
@@ -1022,9 +1160,9 @@ fn run_trash(name: &str) -> anyhow::Result<()> {
     if reg.trash(&sid, name) {
         reg.updated = crate::registry::now_iso();
         reg.save(&workspace)?;
-        println!("trashed     {}  ← soft-deleted (recover with `ccsm recover {}`)", name, name);
+        action_msg("trashed", name, &format!("soft-deleted (recover with `ccsm recover {}`)", name));
     } else {
-        anyhow::bail!("no session named '{}'", name);
+        anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
     Ok(())
 }
@@ -1040,9 +1178,9 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
     if reg.recover(&sid, name) {
         reg.updated = crate::registry::now_iso();
         reg.save(&workspace)?;
-        println!("recovered   {}  ← in_progress", name);
+        action_msg("recovered", name, "in_progress");
     } else {
-        anyhow::bail!("no session named '{}'", name);
+        anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
     Ok(())
 }
@@ -1056,12 +1194,12 @@ fn run_clean(name: &str, home: &std::path::Path, workspace: &std::path::Path, co
         .unwrap_or_default();
     // Check entry exists before deleting
     if !reg.sessions.iter().any(|s| s.name == name) {
-        anyhow::bail!("no session named '{}'", name);
+        anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
     reg.clean(&sid, name, home, workspace, consumer);
     reg.updated = crate::registry::now_iso();
     reg.save(workspace)?;
-    println!("cleaned     {}  ← permanently deleted", name);
+    action_msg("cleaned", name, "permanently deleted");
     Ok(())
 }
 
@@ -1078,7 +1216,7 @@ fn run_clean_all(home: &std::path::Path, workspace: &std::path::Path, consumer: 
     reg.clean_all_trashed(home, workspace, consumer);
     reg.updated = crate::registry::now_iso();
     reg.save(workspace)?;
-    println!("cleaned     {} trashed session{}", count, if count == 1 { "" } else { "s" });
+    action_msg("cleaned", &format!("{} trashed", count), "permanently deleted");
     Ok(())
 }
 
@@ -1091,7 +1229,7 @@ fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path, 
         .unwrap_or_default();
 
     if !reg.sessions.iter().any(|s| s.name == name) {
-        anyhow::bail!("no session named '{}'", name);
+        anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
 
     // Check not active
@@ -1108,9 +1246,9 @@ fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path, 
     reg.save(workspace)?;
 
     if freed > 0 {
-        println!("archived    {}  ← freed {} MB", name, freed / 1_000_000);
+        action_msg("archived", name, &format!("freed {} MB", freed / 1_000_000));
     } else {
-        println!("archived    {}  ← already archived (no transcript)", name);
+        action_msg("archived", name, "already archived (no transcript)");
     }
     Ok(())
 }
@@ -1153,7 +1291,7 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: bool, consumer: Consu
 
     // Exact duplicate
     if reg.sessions.iter().any(|s| s.name == name) {
-        anyhow::bail!("session '{}' already exists", name);
+        anyhow::bail!("{} session '{}' already exists", ErrorCode::Exists, name);
     }
 
     // Fuzzy duplicate — catch typos before creating garbage (skip with --force)
@@ -1242,7 +1380,7 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: bool, consumer: Consu
             }
     }
 
-    println!("pending     {}  ← created", name);
+    action_msg("pending", name, "created");
     Ok(())
 }
 
@@ -1260,7 +1398,7 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
                  \n{e}",
                 name, name,
             );
-            anyhow::bail!("gate checks failed — fix issues or use --force");
+            anyhow::bail!("{} gate checks failed — fix issues or use --force", ErrorCode::Gate);
         }
         // Gate passed — print the self-review checklist
         println!();
@@ -1280,7 +1418,7 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
         "complete" => SessionStatus::Completed,
         "block" => SessionStatus::Blocked,
         "abandon" => SessionStatus::Abandoned,
-        _ => anyhow::bail!("unknown status action: {}", action),
+        _ => anyhow::bail!("{} unknown status action: {}", ErrorCode::BadStatus, action),
     };
     mutate_session(name, action, |entry| {
         entry.status = new_status;
@@ -1318,7 +1456,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             .iter_mut()
             .rev()
             .find(|e| e.name == name)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
 
         if entry.status != crate::registry::SessionStatus::InProgress {
             anyhow::bail!(
@@ -1381,11 +1519,12 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
     }
 
     let bin = consumer.binary();
-    if retired_count <= 1 {
-        println!("refreshing  {}  ← {} (fresh, 1 refresh)", name, bin);
+    let refresh_detail = if retired_count <= 1 {
+        format!("{} (fresh, 1 refresh)", bin)
     } else {
-        println!("refreshing  {}  ← {} (fresh, {} refreshes)", name, bin, retired_count);
-    }
+        format!("{} (fresh, {} refreshes)", bin, retired_count)
+    };
+    action_msg("refreshing", name, &refresh_detail);
 
     let mut child = cmd.spawn()?;
     let child_pid = child.id();
@@ -1505,7 +1644,7 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
         .sessions
         .iter_mut()
         .find(|s| s.name == name)
-        .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+        .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
     entry.status = crate::registry::SessionStatus::Pending;
     entry.session_id.clear();
     entry.pids.clear();
@@ -1513,7 +1652,7 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
     entry.completed.clear();
     reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
-    println!("pending     {}  ← reset (identity fields cleared)", name);
+    action_msg("pending", name, "reset (identity fields cleared)");
     Ok(())
 }
 
@@ -1530,7 +1669,9 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
     let _ = mutate_session(name, "tagged", |entry| {
         entry.tags = tags.to_vec();
     });
-    println!("  tags: {}", tag_str);
+    if !output_format_json() {
+        println!("  tags: {}", tag_str);
+    }
     Ok(())
 }
 
@@ -1566,7 +1707,7 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
             anyhow::bail!("--goal can't be combined with --group or --clear. Use: ccsm group <group-name> --goal <text>");
         }
         set_group_goal(name, goal_text, &workspace)?;
-        println!("group '{}' goal set", name);
+        action_msg("group-goal", name, goal_text);
         return Ok(());
     }
 
@@ -1577,9 +1718,9 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
             .sessions
             .iter_mut()
             .find(|s| s.name == name)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
         if entry.group.is_none() {
-            println!("{} is not in a group", name);
+            action_msg("ungrouped", name, "not in a group");
             return Ok(());
         }
         let old_group = entry.group.take().unwrap();
@@ -1587,9 +1728,9 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
         reg.save(&workspace)?;
         let deleted = update_group_members(&old_group.name, &reg, &workspace)?;
         if deleted {
-            println!("{}  ← removed from group '{}' (group file deleted — no members left)", name, old_group.name);
+            action_msg("ungrouped", name, &format!("removed from '{}' (group file deleted)", old_group.name));
         } else {
-            println!("{}  ← removed from group '{}'", name, old_group.name);
+            action_msg("ungrouped", name, &format!("removed from '{}'", old_group.name));
         }
         return Ok(());
     }
@@ -1597,7 +1738,7 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
     if let Some(group_name) = group {
         // Assign session to a group
         if !crate::registry::is_kebab_case(group_name) {
-            anyhow::bail!("group name '{}' must be kebab-case", group_name);
+            anyhow::bail!("{} group name '{}' must be kebab-case", ErrorCode::Invalid, group_name);
         }
         let rank = match rank {
             None => GroupRank::Free,
@@ -1613,7 +1754,7 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
             .sessions
             .iter_mut()
             .find(|s| s.name == name)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
         entry.group = Some(Group {
             name: group_name.to_string(),
             rank,
@@ -1637,7 +1778,7 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
         // Create or update the group detail file
         ensure_group_file(group_name, &reg, &workspace)?;
 
-        println!("{}  ← group '{}' (rank: {})", name, group_name, rank);
+        action_msg("grouped", name, &format!("{} rank {}", group_name, rank));
         return Ok(());
     }
 
@@ -1650,7 +1791,11 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
         .collect();
 
     if members.is_empty() {
-        println!("(no sessions in group '{}')", name);
+        if output_format_json() {
+            println!("{}", serde_json::json!({"ok": true, "group": name, "members": []}));
+        } else {
+            println!("(no sessions in group '{}')", name);
+        }
         return Ok(());
     }
 
@@ -1665,6 +1810,21 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
             _ => a.name.cmp(&b.name),
         }
     });
+
+    if output_format_json() {
+        let members_json: Vec<_> = members.iter().map(|m| {
+            let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
+            serde_json::json!({
+                "name": m.name,
+                "status": m.status.to_string(),
+                "rank": rank_str,
+                "goal": m.goal,
+            })
+        }).collect();
+        let out = serde_json::json!({"ok": true, "group": name, "members": members_json});
+        println!("{}", out);
+        return Ok(());
+    }
 
     println!("group '{}':", name);
     for m in &members {
@@ -1705,7 +1865,41 @@ fn run_groups_list(workspace: &std::path::Path) -> anyhow::Result<()> {
     }
 
     if groups.is_empty() {
-        println!("(no groups in workspace)");
+        if output_format_json() {
+            println!("{}", serde_json::json!({"ok": true, "groups": []}));
+        } else {
+            println!("(no groups in workspace)");
+        }
+        return Ok(());
+    }
+
+    if output_format_json() {
+        let groups_json: Vec<_> = groups.iter().map(|(name, members)| {
+            let count = members.len();
+            let in_progress = members.iter().filter(|m| m.status == crate::registry::SessionStatus::InProgress).count();
+            let pending = members.iter().filter(|m| m.status == crate::registry::SessionStatus::Pending).count();
+            let goal_snippet = {
+                let path = group_file_path(workspace, name);
+                if path.exists() {
+                    if let Ok(contents) = std::fs::read_to_string(&path) {
+                        let sections = crate::registry::parse_sections(&contents);
+                        sections.iter()
+                            .find(|(h, _)| h == "Goal")
+                            .map(|(_, b)| b.trim().to_string())
+                            .filter(|g| !g.is_empty() && !g.starts_with('_'))
+                            .unwrap_or_default()
+                    } else { String::new() }
+                } else { String::new() }
+            };
+            serde_json::json!({
+                "name": name,
+                "session_count": count,
+                "in_progress": in_progress,
+                "pending": pending,
+                "goal": goal_snippet,
+            })
+        }).collect();
+        println!("{}", serde_json::json!({"ok": true, "groups": groups_json}));
         return Ok(());
     }
 
@@ -1765,7 +1959,28 @@ fn run_group_deps(group_name: &str) -> anyhow::Result<()> {
         .collect();
 
     if members.is_empty() {
-        anyhow::bail!("no sessions in group '{}'", group_name);
+        anyhow::bail!("{} no sessions in group '{}'", ErrorCode::NoSession, group_name);
+    }
+
+    if output_format_json() {
+        let tree: Vec<_> = members.iter().map(|m| {
+            let deps: Vec<_> = m.depends_on.iter().map(|dep| {
+                let dep_status = reg.sessions.iter()
+                    .find(|s| &s.name == dep)
+                    .map(|s| s.status.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                serde_json::json!({"name": dep, "status": dep_status})
+            }).collect();
+            serde_json::json!({
+                "name": m.name,
+                "status": m.status.to_string(),
+                "goal": m.goal,
+                "depends_on": deps,
+            })
+        }).collect();
+        let out = serde_json::json!({"ok": true, "group": group_name, "tree": tree});
+        println!("{}", out);
+        return Ok(());
     }
 
     println!("dependency tree for group '{}':\n", group_name);
@@ -1822,7 +2037,7 @@ fn run_group_roadmap(group_name: &str, workspace: &std::path::Path) -> anyhow::R
         .collect();
 
     if members.is_empty() {
-        anyhow::bail!("no sessions in group '{}'", group_name);
+        anyhow::bail!("{} no sessions in group '{}'", ErrorCode::NoSession, group_name);
     }
 
     // Sort by rank (same as everywhere)
@@ -1992,7 +2207,7 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
 
     // Check session exists first (immutable borrow)
     if !reg.sessions.iter().any(|s| s.name == name) {
-        anyhow::bail!("no session named '{}'", name);
+        anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
 
     if clear {
@@ -2000,7 +2215,7 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
         let deps = {
             let entry = reg.sessions.iter_mut().find(|s| s.name == name).unwrap();
             if entry.depends_on.is_empty() {
-                println!("{} has no dependencies to clear", name);
+                action_msg("depend-clear", name, "no dependencies to clear");
                 return Ok(());
             }
             entry.depends_on.clear();
@@ -2009,20 +2224,20 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
         reg.updated = crate::registry::now_iso();
         reg.save(&workspace)?;
         update_deps_in_detail(name, &deps, &workspace)?;
-        println!("{}  ← dependencies cleared", name);
+        action_msg("depend-clear", name, "cleared");
         return Ok(());
     }
 
     if let Some(dep) = on {
         if dep == name {
-            anyhow::bail!("a session cannot depend on itself");
+            anyhow::bail!("{} a session cannot depend on itself", ErrorCode::Dep);
         }
         // Validate: dep session must exist
         let dep_session = reg
             .sessions
             .iter()
             .find(|s| s.name == dep)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}' — dependencies must be between existing sessions", dep))?;
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}' — dependencies must be between existing sessions", ErrorCode::NoSession, dep))?;
         // Validate: both sessions must be in the same group
         let session_group = reg
             .sessions
@@ -2032,14 +2247,14 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
         let dep_group = dep_session.group.as_ref().map(|g| g.name.clone());
         if session_group != dep_group {
             anyhow::bail!(
-                "dependencies must be within the same group — '{}' is in group {:?}, '{}' is in group {:?}",
-                name, session_group, dep, dep_group
+                "{} dependencies must be within the same group — '{}' is in group {:?}, '{}' is in group {:?}",
+                ErrorCode::Dep, name, session_group, dep, dep_group
             );
         }
         let deps = {
             let entry = reg.sessions.iter_mut().find(|s| s.name == name).unwrap();
             if entry.depends_on.iter().any(|d| d == dep) {
-                println!("{} already depends on '{}'", name, dep);
+                action_msg("depend", name, &format!("already on '{}'", dep));
                 return Ok(());
             }
             entry.depends_on.push(dep.to_string());
@@ -2048,14 +2263,28 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
         reg.updated = crate::registry::now_iso();
         reg.save(&workspace)?;
         update_deps_in_detail(name, &deps, &workspace)?;
-        println!("{}  ← depends on '{}'", name, dep);
+        action_msg("depend", name, &format!("on '{}'", dep));
         return Ok(());
     }
 
     // List deps (immutable read)
     let entry = reg.sessions.iter().find(|s| s.name == name).unwrap();
     if entry.depends_on.is_empty() {
-        println!("{} has no dependencies", name);
+        action_msg("depend", name, "none");
+        return Ok(());
+    }
+
+    // JSON dep listing
+    if output_format_json() {
+        let deps: Vec<_> = entry.depends_on.iter().map(|dep| {
+            let status = reg.sessions.iter()
+                .find(|s| &s.name == dep)
+                .map(|s| s.status.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            serde_json::json!({"name": dep, "status": status})
+        }).collect();
+        let out = serde_json::json!({"ok": true, "name": name, "depends_on": deps});
+        println!("{}", out);
     } else {
         println!("{} depends on:", name);
         for dep in &entry.depends_on {
@@ -2262,7 +2491,7 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
         .collect();
 
     if members.is_empty() {
-        anyhow::bail!("no sessions in group '{}'", group_name);
+        anyhow::bail!("{} no sessions in group '{}'", ErrorCode::NoSession, group_name);
     }
 
     // Sort for deterministic selection
@@ -2312,14 +2541,15 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
 
 /// `ccsm show <name>` — registry fields + detail file section list.
 /// `ccsm show <name> --section <s>` — extract one section from detail file.
-fn run_show(name: &str, section: Option<&str>, consumer: Consumer) -> anyhow::Result<()> {
+/// `ccsm show <name> --json` — output all fields as JSON.
+fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
     let session = reg
         .sessions
         .iter()
         .find(|s| s.name == name)
-        .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
+        .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
 
     let detail_path = workspace
         .join(".ccsm")
@@ -2329,21 +2559,31 @@ fn run_show(name: &str, section: Option<&str>, consumer: Consumer) -> anyhow::Re
     // If --section is given, extract and print just that section.
     if let Some(sec) = section {
         if !detail_path.exists() {
-            anyhow::bail!("no detail file for '{}' (expected {})", name, detail_path.display());
+            anyhow::bail!("{} no detail file for '{}' (expected {})", ErrorCode::Section, name, detail_path.display());
         }
         let contents = std::fs::read_to_string(&detail_path)?;
         let sections = crate::registry::parse_sections(&contents);
         let key = sec.to_lowercase().replace('-', " ");
         match sections.iter().find(|(h, _)| h.to_lowercase() == key) {
             Some((header, body)) => {
-                println!("## {}\n{}", header, body.trim());
+                if json || output_format_json() {
+                    let out = serde_json::json!({
+                        "ok": true,
+                        "session": name,
+                        "section": header,
+                        "content": body.trim(),
+                    });
+                    println!("{}", out);
+                } else {
+                    println!("## {}\n{}", header, body.trim());
+                }
             }
             None => {
                 eprintln!("section '{}' not found. Available:", sec);
                 for (h, _) in &sections {
                     eprintln!("  --section {}", h.to_lowercase().replace(' ', "-"));
                 }
-                anyhow::bail!("no such section");
+                anyhow::bail!("{} no such section", ErrorCode::Section);
             }
         }
         return Ok(());
@@ -2352,9 +2592,12 @@ fn run_show(name: &str, section: Option<&str>, consumer: Consumer) -> anyhow::Re
     // ── Read detail file for canonical goal/scope ─────────────────
     let detail_goal;
     let detail_scope;
+    let detail_contents;
+    let detail_path_exists = detail_path.exists();
     if detail_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&detail_path) {
-            let sections = crate::registry::parse_sections(&contents);
+            detail_contents = Some(contents);
+            let sections = crate::registry::parse_sections(detail_contents.as_ref().unwrap());
             detail_goal = sections.iter().find(|(h, _)| h == "Goal")
                 .map(|(_, b)| b.trim().to_string())
                 .filter(|g| !g.is_empty() && !g.starts_with('_') && !g.starts_with("(fill in"));
@@ -2362,12 +2605,102 @@ fn run_show(name: &str, section: Option<&str>, consumer: Consumer) -> anyhow::Re
                 .map(|(_, b)| b.trim().to_string())
                 .filter(|s| !s.is_empty() && !s.starts_with('_') && !s.starts_with("(fill in"));
         } else {
+            detail_contents = None;
             detail_goal = None;
             detail_scope = None;
         }
     } else {
+        detail_contents = None;
         detail_goal = None;
         detail_scope = None;
+    }
+
+    // ── JSON output ────────────────────────────────────────────────
+    if json || output_format_json() {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "snake_case")]
+        struct ShowEntry {
+            name: String,
+            status: String,
+            agent: String,
+            goal: String,
+            scope: String,
+            tags: Vec<String>,
+            group: Option<GroupJson>,
+            session_id: String,
+            pids: Vec<u32>,
+            started: String,
+            completed: String,
+            consumer: String,
+            depends_on: Vec<String>,
+            detail_file: Option<String>,
+            has_detail_file: bool,
+            sections: Vec<SectionJson>,
+            retired: Vec<RetiredJson>,
+        }
+        #[derive(serde::Serialize)]
+        struct GroupJson {
+            name: String,
+            rank: String,
+        }
+        #[derive(serde::Serialize)]
+        struct SectionJson {
+            header: String,
+            lines: usize,
+        }
+        #[derive(serde::Serialize)]
+        struct RetiredJson {
+            id: String,
+            retired_at: String,
+            reason: String,
+        }
+
+        let goal = detail_goal.as_deref().unwrap_or(&session.goal);
+        let scope = detail_scope.as_deref().unwrap_or(&session.scope);
+        let agent_label = if session.consumer.is_empty() {
+            consumer.to_string()
+        } else {
+            format!("{} (current)", session.consumer)
+        };
+
+        let sections: Vec<SectionJson> = if let Some(ref contents) = detail_contents {
+            let secs = crate::registry::parse_sections(contents);
+            secs.iter().map(|(h, b)| SectionJson {
+                header: h.clone(),
+                lines: b.lines().filter(|l| !l.trim().is_empty()).count(),
+            }).collect()
+        } else {
+            Vec::new()
+        };
+
+        let entry = ShowEntry {
+            name: session.name.clone(),
+            status: session.status.to_string(),
+            agent: agent_label,
+            goal: goal.to_string(),
+            scope: scope.to_string(),
+            tags: session.tags.clone(),
+            group: session.group.as_ref().map(|g| GroupJson {
+                name: g.name.clone(),
+                rank: g.rank.to_string(),
+            }),
+            session_id: session.session_id.clone(),
+            pids: session.pids.clone(),
+            started: session.started.clone(),
+            completed: session.completed.clone(),
+            consumer: session.consumer.clone(),
+            depends_on: session.depends_on.clone(),
+            detail_file: detail_path_exists.then(|| format!(".ccsm/sessions/{}.md", name)),
+            has_detail_file: detail_path_exists,
+            sections,
+            retired: session.retired_session_ids.iter().map(|r| RetiredJson {
+                id: r.id.clone(),
+                retired_at: r.retired_at.clone(),
+                reason: r.reason.clone(),
+            }).collect(),
+        };
+        println!("{}", serde_json::to_string_pretty(&entry)?);
+        return Ok(());
     }
 
     // ── Registry fields ──────────────────────────────────────────
@@ -2419,9 +2752,8 @@ fn run_show(name: &str, section: Option<&str>, consumer: Consumer) -> anyhow::Re
     }
 
     // ── Detail file sections ─────────────────────────────────────
-    if detail_path.exists() {
-        let contents = std::fs::read_to_string(&detail_path)?;
-        let sections = crate::registry::parse_sections(&contents);
+    if let Some(ref contents) = detail_contents {
+        let sections = crate::registry::parse_sections(contents);
         if sections.is_empty() {
             println!("\n📄 .ccsm/sessions/{}.md (no sections)", name);
         } else {
@@ -2474,7 +2806,7 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
     }
 
     if groups.is_empty() {
-        anyhow::bail!("expected at least one -q <command> ... group");
+        anyhow::bail!("{} expected at least one -q <command> ... group", ErrorCode::Invalid);
     }
 
     // Phase 1: Parse all operations (no lock — fail-fast on bad input)
@@ -2516,7 +2848,7 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
 fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     let text = text.trim();
     if text.is_empty() {
-        anyhow::bail!("note text is required. Usage: ccsm note <name> <text>");
+        anyhow::bail!("{} note text is required. Usage: ccsm note <name> <text>", ErrorCode::Invalid);
     }
 
     let workspace = std::env::current_dir()?;
@@ -2524,7 +2856,7 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     // Verify session exists in registry
     let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
     if !reg.sessions.iter().any(|s| s.name == name) {
-        anyhow::bail!("no session named '{}'", name);
+        anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
 
     let detail_path = workspace
@@ -2584,7 +2916,7 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     let new_contents = crate::registry::insert_note(&contents, &new_entry);
     std::fs::write(&detail_path, new_contents)?;
 
-    println!("noted       {}  ← [{}] {}", name, ts, display);
+    action_msg("noted", name, &format!("[{}] {}", ts, display));
     Ok(())
 }
 
@@ -2716,7 +3048,7 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
     if !reg.sessions.iter().any(|s| s.name == name) {
-        anyhow::bail!("no session named '{}'", name);
+        anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
 
     let detail_path = workspace
@@ -2929,7 +3261,7 @@ fn run_checklist(name: &str, init: bool) -> anyhow::Result<()> {
 
     if !detail_path.exists() {
         anyhow::bail!(
-            "no detail file for session '{}' at {}",
+            "{} no detail file for session '{}' at {}", ErrorCode::Section,
             name,
             detail_path.display()
         );
@@ -3004,8 +3336,8 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
     // Validate status
     if !CHECKBOX_CHARS.iter().any(|(_, s)| *s == status) {
         anyhow::bail!(
-            "invalid status '{}' — use: pending, done, skipped, blocked",
-            status
+            "{} invalid status '{}' — use: pending, done, skipped, blocked",
+            ErrorCode::BadStatus, status
         );
     }
 
@@ -3017,7 +3349,7 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
 
     if !detail_path.exists() {
         anyhow::bail!(
-            "no detail file for session '{}' at {}",
+            "{} no detail file for session '{}' at {}", ErrorCode::Section,
             name,
             detail_path.display()
         );
