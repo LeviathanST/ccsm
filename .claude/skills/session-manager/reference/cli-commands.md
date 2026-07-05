@@ -1,5 +1,16 @@
 # CLI Commands
 
+## Workspace Resolution
+
+ccsm finds the workspace root in this order:
+
+1. `--workspace` / `-w` flag
+2. `CCSM_WORKSPACE` env var (absolute path to existing dir — set at session start for safety)
+3. Walk-up from PWD looking for `.ccsm/sessions.json` (innermost match wins)
+4. PWD as-is (fallback)
+
+`CCSM_WORKSPACE` is the escape hatch for wrong-PWD bugs. Agents that chdir between commands set this env var at spawn time.
+
 ## Query
 
 | Command | Output |
@@ -67,10 +78,10 @@ trashed      — soft-deleted, recoverable with `ccsm recover <name>`
 
 | Command | Effect |
 |---|---|
-| `ccsm group <session> -g <group> [-r free\|<n>]` | Assign session to group (auto-creates `.claude/session-group/<group>.md`) |
+| `ccsm group <session> -g <group> [-r free\|<n>]` | Assign session to group (auto-creates `.ccsm/session-group/<group>.md`) |
 | `ccsm group <session> --clear` | Remove from group (auto-deletes group file when last leaves) |
 | `ccsm group <name>` | Overview — list members sorted by rank, show group goal |
-| `ccsm group <name> --goal <text>` | Set group goal in `.claude/session-group/<name>.md` |
+| `ccsm group <name> --goal <text>` | Set group goal in `.ccsm/session-group/<name>.md` |
 | `ccsm group <name> --roadmap` | Live markdown roadmap → stdout: table (rank/status/goal/scope) + Mermaid dep graph |
 | `ccsm group --list` | List all groups in workspace with member counts + status breakdown |
 | `ccsm next <group>` | Next unblocked session to work on (respects depends_on) |

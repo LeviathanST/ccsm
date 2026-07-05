@@ -67,6 +67,7 @@ impl TempWorkspace {
         Command::new(ccsm_binary())
             .args(args)
             .current_dir(self.path())
+            .env_remove("CCSM_WORKSPACE")
             .env("HOME", &self.home)
             .output()
             .expect("ccsm execution failed")

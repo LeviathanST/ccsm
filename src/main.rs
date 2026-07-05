@@ -25,7 +25,7 @@ struct Cli {
     #[arg(long)]
     consumer: Option<String>,
 
-    /// Workspace directory (defaults to $PWD)
+    /// Workspace directory (defaults to $PWD, then CCSM_WORKSPACE env var, then walk-up)
     #[arg(short = 'w', long)]
     workspace: Option<PathBuf>,
 
@@ -331,6 +331,14 @@ fn main() -> anyhow::Result<()> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
     let consumer = Consumer::detect(&home, cli.consumer.as_deref());
 
+    // Resolve workspace root: --workspace flag > CCSM_WORKSPACE env > walk-up > PWD
+    // We chdir so every downstream function reads the right registry via PWD.
+    if let Some(ref ws) = cli.workspace {
+        std::env::set_current_dir(ws)?;
+    } else if let Some(auto_ws) = resolve_workspace()? {
+        std::env::set_current_dir(&auto_ws)?;
+    }
+
     match cli.command {
         Commands::Scan { group, status, search, json } => run_scan(group.as_deref(), status.as_deref(), search.as_deref(), json),
         Commands::List { active, summary, status, verbose, group, by_rank } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank),
@@ -372,8 +380,53 @@ fn main() -> anyhow::Result<()> {
 
     }
 }
-// ── CLI subcommands ───────────────────────────────────────────────────
+// ── Workspace Resolution ───────────────────────────────────────────────
 
+/// Resolve the workspace root directory, checking sources in priority order:
+///
+/// 1. **`--workspace` flag** — handled upstream in `main()` via `set_current_dir`
+/// 2. **`CCSM_WORKSPACE` env var** — must be an absolute path to an existing dir
+/// 3. **Walk up** from PWD looking for `.ccsm/sessions.json` marker
+/// 4. **PWD** as-is (current behavior, fallback when no marker is found)
+///
+/// Returns `None` when no auto-detection succeeds — the caller uses PWD directly.
+fn resolve_workspace() -> anyhow::Result<Option<PathBuf>> {
+    // Priority: CCSM_WORKSPACE env var
+    if let Ok(ws) = std::env::var("CCSM_WORKSPACE") {
+        if !ws.is_empty() {
+            let path = PathBuf::from(&ws);
+            anyhow::ensure!(
+                path.is_absolute(),
+                "CCSM_WORKSPACE must be an absolute path, got: {}",
+                ws,
+            );
+            anyhow::ensure!(
+                path.is_dir(),
+                "CCSM_WORKSPACE points to a non-existent directory: {}",
+                ws,
+            );
+            return Ok(Some(path));
+        }
+    }
+
+    // Priority: walk up from PWD looking for .ccsm/sessions.json
+    // Stops at the innermost match (closest to PWD).
+    let mut current = std::env::current_dir()?;
+    loop {
+        if current.join(".ccsm").join("sessions.json").exists() {
+            return Ok(Some(current));
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+
+    // No auto-detection — PWD will be used
+    Ok(None)
+}
+
+/// Current working directory. `resolve_workspace()` is called at startup to
+/// `chdir` into the right workspace, so this reflects the resolved workspace.
 fn workspace_path() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }

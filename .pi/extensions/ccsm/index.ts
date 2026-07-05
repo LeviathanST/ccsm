@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as nodePath from "node:path";
 import type { ExtensionAPI, ToolResult } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 // ── Configuration ──────────────────────────────────────────────────
@@ -24,13 +25,43 @@ const CCSM_BIN = "ccsm";
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+/** Resolve the ccsm workspace directory. Uses CCSM_WORKSPACE env var if set, else cwd. */
+function ccsmWorkspace(cwd?: string): string {
+	const envWs = process.env.CCSM_WORKSPACE;
+	if (envWs) return envWs;
+	return cwd ?? process.cwd();
+}
+
+/** Walk up from startDir looking for .ccsm/sessions.json. Returns root or null. */
+function findWorkspaceRoot(startDir?: string): string | null {
+	let current = nodePath.resolve(startDir || process.cwd());
+	const root = os.platform() === "win32" ? current.split(":")[0] + ":\\" : "/";
+	while (true) {
+		if (existsSync(nodePath.join(current, ".ccsm", "sessions.json"))) {
+			return current;
+		}
+		const parent = nodePath.dirname(current);
+		if (parent === current) break; // reached root
+		current = parent;
+	}
+	return null;
+}
+
+/** Build args with --consumer pi and optional --workspace from env. */
+function ccsmArgs(args: string[]): string[] {
+	const ws = process.env.CCSM_WORKSPACE;
+	if (ws) {
+		return ["--consumer", "pi", "-w", ws, ...args];
+	}
+	return ["--consumer", "pi", ...args];
+}
+
 /** Run ccsm and return stdout. Throws on non-zero exit. */
 function ccsm(args: string[], cwd?: string): Promise<string> {
-	// Always pass --consumer pi when called from the Pi extension
-	const fullArgs = ["--consumer", "pi", ...args];
+	const fullArgs = ccsmArgs(args);
 	return new Promise((resolve, reject) => {
 		const child = execFile(CCSM_BIN, fullArgs, {
-			cwd: cwd ?? process.cwd(),
+			cwd: ccsmWorkspace(cwd),
 			maxBuffer: 10 * 1024 * 1024,
 		});
 		let stdout = "";
@@ -47,10 +78,10 @@ function ccsm(args: string[], cwd?: string): Promise<string> {
 
 /** Run ccsm with streaming output for long-running commands (resume). */
 function ccsmStream(args: string[], signal?: AbortSignal, cwd?: string): Promise<string> {
-	const fullArgs = ["--consumer", "pi", ...args];
+	const fullArgs = ccsmArgs(args);
 	return new Promise((resolve, reject) => {
 		const child = spawn(CCSM_BIN, fullArgs, {
-			cwd: cwd ?? process.cwd(),
+			cwd: ccsmWorkspace(cwd),
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let stdout = "";
@@ -148,6 +179,24 @@ export default function (pi: ExtensionAPI) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
 		},
+
+		renderCall(_args, theme, _context) {
+			let label = theme.fg("toolTitle", theme.bold("ccsm list"));
+			return new Text(label, 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const details = result.details as Record<string, any> | undefined;
+			if (details?.error) {
+				return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
+			}
+			if (!expanded) {
+				return new Text(theme.fg("muted", "ccsm list"), 0, 0);
+			}
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			return new Text(theme.fg("toolOutput", textContent.text), 0, 0);
+		},
 	});
 
 	// ── Tool: ccsm_scan ──────────────────────────────────────────
@@ -206,6 +255,26 @@ export default function (pi: ExtensionAPI) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
 		},
+
+		renderCall(args, theme, _context) {
+			const name = args.name || "...";
+			const section = args.section ? ` [${args.section}]` : "";
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm show ")) + theme.fg("accent", name) + theme.fg("muted", section), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const details = result.details as Record<string, any> | undefined;
+			if (details?.error) {
+				return new Text(theme.fg("error", `✗ ${details.error}`), 0, 0);
+			}
+			if (!expanded) {
+				const name = details?.name || "";
+				return new Text(theme.fg("muted", `show ${name}`), 0, 0);
+			}
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			return new Text(theme.fg("toolOutput", textContent.text), 0, 0);
+		},
 	});
 
 	// ── Tool: ccsm_new ───────────────────────────────────────────
@@ -237,6 +306,23 @@ export default function (pi: ExtensionAPI) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
 		},
+
+		renderCall(args, theme, _context) {
+			const name = args.name || "...";
+			const hasChecklist = args.checklist ? " 📋" : "";
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm new ")) + theme.fg("accent", name) + theme.fg("muted", hasChecklist), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) {
+				return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			}
+			if (!expanded) return new Text(theme.fg("success", "✓ Created"), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
+		},
 	});
 
 	// ── Tool: ccsm_start ─────────────────────────────────────────
@@ -254,6 +340,21 @@ export default function (pi: ExtensionAPI) {
 			} catch (err: any) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
+		},
+
+		renderCall(args, theme, _context) {
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm start ")) + theme.fg("accent", args.name || "..."), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) {
+				return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			}
+			if (!expanded) return new Text(theme.fg("success", "▶ Started"), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
 		},
 	});
 
@@ -278,6 +379,21 @@ export default function (pi: ExtensionAPI) {
 			} catch (err: any) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
+		},
+
+		renderCall(args, theme, _context) {
+			const name = args.name || "...";
+			const forced = args.force ? " !force" : "";
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm complete ")) + theme.fg("accent", name) + theme.fg("warning", forced), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			if (!expanded) return new Text(theme.fg("success", "✓ "), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
 		},
 	});
 
@@ -335,6 +451,19 @@ export default function (pi: ExtensionAPI) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
 		},
+
+		renderCall(args, theme, _context) {
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm scope ")) + theme.fg("accent", args.name || "..."), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			if (!expanded) return new Text(theme.fg("success", "✓ "), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
+		},
 	});
 
 	// ── Tool: ccsm_tag ───────────────────────────────────────────
@@ -355,6 +484,20 @@ export default function (pi: ExtensionAPI) {
 			} catch (err: any) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
+		},
+
+		renderCall(args, theme, _context) {
+			const tags = args.tags || "";
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm tag ")) + theme.fg("accent", args.name || "...") + theme.fg("muted", ` ${tags}`), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			if (!expanded) return new Text(theme.fg("success", "✓ "), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
 		},
 	});
 
@@ -384,6 +527,23 @@ export default function (pi: ExtensionAPI) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
 		},
+
+		renderCall(args, theme, _context) {
+			const name = args.name || "...";
+			const noteText = args.text || "";
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm note ")) + theme.fg("accent", name) + theme.fg("muted", ` — ${noteText.substring(0, 60)}`), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) {
+				return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			}
+			if (!expanded) return new Text(theme.fg("success", "✓ noted"), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
+		},
 	});
 
 	// ── Tool: ccsm_check ─────────────────────────────────────────
@@ -412,6 +572,26 @@ export default function (pi: ExtensionAPI) {
 			} catch (err: any) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
+		},
+
+		renderCall(args, theme, _context) {
+			const name = args.name || "...";
+			const statusIcon: Record<string, string> = { pending: "·", done: "✓", skipped: "→", blocked: "!" };
+			const icon = statusIcon[args.status] || "?";
+			const statusColor: Record<string, string> = { pending: "muted", done: "success", skipped: "warning", blocked: "error" };
+			const color = statusColor[args.status] || "muted";
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm check ")) + theme.fg(color, `${icon} `) + theme.fg("accent", name) + theme.fg("muted", ` ${args.item}`), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) {
+				return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			}
+			if (!expanded) return new Text(theme.fg("success", "✓ "), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
 		},
 	});
 
@@ -458,6 +638,20 @@ export default function (pi: ExtensionAPI) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
 		},
+
+		renderCall(args, theme, _context) {
+			const name = args.name || "auto";
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm inject-scope ")) + theme.fg("accent", name), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			if (!expanded) return new Text(theme.fg("info", "inject-scope"), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
+		},
 	});
 
 	// ── Tool: ccsm_close ─────────────────────────────────────────
@@ -476,6 +670,19 @@ export default function (pi: ExtensionAPI) {
 			} catch (err: any) {
 				return { content: text(`Error: ${err.message}`), details: { error: err.message } };
 			}
+		},
+
+		renderCall(args, theme, _context) {
+			return new Text(theme.fg("toolTitle", theme.bold("ccsm close ")) + theme.fg("accent", args.name || "..."), 0, 0);
+		},
+
+		renderResult(result, { expanded }, theme, _context) {
+			const textContent = result.content.find((c: any) => c.type === "text");
+			if (!textContent || textContent.type !== "text") return new Text("", 0, 0);
+			const msg = textContent.text.trim();
+			if (msg.startsWith("Error")) return new Text(theme.fg("error", `✗ ${msg}`), 0, 0);
+			if (!expanded) return new Text(theme.fg("info", "close"), 0, 0);
+			return new Text(theme.fg("toolOutput", msg), 0, 0);
 		},
 	});
 
@@ -709,13 +916,22 @@ export default function (pi: ExtensionAPI) {
 	// 2. Inject the active session's goal and scope into the system prompt
 
 	pi.on("before_agent_start", async (_event, _ctx) => {
+		// ── Pin workspace root for this process lifetime ──────
+		if (!process.env.CCSM_WORKSPACE) {
+			const ws = findWorkspaceRoot();
+			if (ws) {
+				process.env.CCSM_WORKSPACE = ws;
+			}
+		}
+
 		let activeSessionName: string | null = null;
 
 		try {
 			// Find the in_progress ccsm session (if any)
-			const listOutput = await ccsm(["list", "--active", "--json"]);
-			const sessions = JSON.parse(listOutput);
-			const active = sessions.find((s: any) => s.status === "in_progress" || s.status === "blocked");
+			// Use scan --json since list has no --json flag
+			const scanOutput = await ccsm(["scan", "--json"]);
+			const allSessions = JSON.parse(scanOutput);
+			const active = allSessions.find((s: any) => s.status === "in_progress" || s.status === "blocked");
 			if (active) {
 				activeSessionName = active.name;
 			}

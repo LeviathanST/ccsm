@@ -14,7 +14,7 @@ You are Vex, building a CLI session registry and lifecycle manager for AI coding
 ccsm CLI
 ├── src/main.rs          CLI dispatch (clap), all subcommand handlers
 ├── src/consumer.rs      Consumer enum — Claude, Pi; path/binary abstraction
-├── src/registry.rs      WorkspaceRegistry — .claude/sessions.json CRUD, LockFile
+├── src/registry.rs      WorkspaceRegistry — .ccsm/sessions.json CRUD, LockFile
 ├── src/sequence.rs      SeqOp — batch mutations in a single lock/save cycle
 ├── src/session.rs       Session — reads agent session files (Claude PID format)
 └── src/commands/
@@ -22,11 +22,11 @@ ccsm CLI
     └── doctor.rs        Health scan
 ```
 
-ccsm manages a per-workspace session registry at `.claude/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `ccsm resume` command spawns the agent (`claude` or `pi`) and harvests the session_id on exit.
+ccsm manages a per-workspace session registry at `.ccsm/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `ccsm resume` command spawns the agent (`claude` or `pi`) and harvests the session_id on exit.
 
 The `Consumer` enum (`src/consumer.rs`) abstracts agent-specific paths, binary names, and session file formats. Auto-detects from `--consumer` flag, `CCSM_CONSUMER` env var, or most recently active config directory.
 
-Mutations use advisory `flock` via `fs2` on `.claude/sessions.json.lock` — every read-modify-write cycle holds an exclusive lock from read through write, preventing races when commands are chained with `&&`. The `sequence` subcommand batches multiple mutations under a single lock.
+Mutations use advisory `flock` via `fs2` on `.ccsm/sessions.json.lock` — every read-modify-write cycle holds an exclusive lock from read through write, preventing races when commands are chained with `&&`. The `sequence` subcommand batches multiple mutations under a single lock.
 
 ## Tech Stack
 
@@ -41,12 +41,12 @@ Mutations use advisory `flock` via `fs2` on `.claude/sessions.json.lock` — eve
 
 | Path | Contains | Use For |
 |------|----------|---------|
-| `<workspace>/.claude/sessions.json` | Registry entries: name, goal, scope, status, session_id, pids, tags, timestamps | All CLI operations |
+| `<workspace>/.ccsm/sessions.json` | Registry entries: name, goal, scope, status, session_id, pids, tags, timestamps | All CLI operations |
 | `~/.claude/sessions/<pid>.json` | Live Claude session: sessionId, cwd, status, name | `resume` harvesting |
 | `~/.claude/projects/<slug>/<session_id>.jsonl` | Claude transcript | Resume check (exists → --resume) |
 | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` | Pi session files | `resume` (--session), `attach` auto-discover |
 
-> **Decision: `<workspace>/.claude/sessions.json` is the canonical session data source.** ccsm reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
+> **Decision: `<workspace>/.ccsm/sessions.json` is the canonical session data source.** ccsm reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
 
 ## Consumer Detection
 
@@ -76,14 +76,33 @@ ccsm supports two agents (consumers), auto-detected or explicitly set:
 ## Design Decisions
 
 1. **CLI-first.** Purpose-built subcommands for every operation. Same output format across Claude, Pi, and shell scripts.
-2. **`<workspace>/.claude/sessions.json` is the canonical source.** Structured JSON, diffable in git, parseable by any tool.
+2. **`<workspace>/.ccsm/sessions.json` is the canonical source.** Structured JSON, diffable in git, parseable by any tool.
 3. **Never parse JSONL transcripts.** Use `claude --resume` or `pi --session` for session replay — let the agent handle its own data format.
 4. **Consumer abstraction.** `src/consumer.rs` encapsulates all agent-specific paths and binary names. Adding a new consumer means adding one enum variant.
 5. **Pi extension.** `.pi/extensions/ccsm/index.ts` registers all ccsm operations as native Pi tools (20+ tools). The extension always passes `--consumer pi`.
 6. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by ccsm. Agents use CLI commands, never touch these fields directly.
-7. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.claude/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
+7. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.ccsm/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
 8. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
 9. **Keyword-rich goals.** Session goals must be self-contained and searchable. Bad: `"Fix bugs"`. Good: `"Fix PTY spawn race condition in ccsm resume command"`. Never use the session name as the goal. `ccsm doctor` flags vague goals (< 20 chars), name-as-goal, and CLI-artifact goals (`-g ` prefix).
+
+## Workspace Resolution
+
+ccsm resolves the workspace root in this priority order:
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 | `--workspace` flag | `ccsm -w /path/to/project list` |
+| 2 | `CCSM_WORKSPACE` env var | `CCSM_WORKSPACE=/path/to/project ccsm list` |
+| 3 | Walk-up from PWD | Finds innermost `.ccsm/sessions.json` in parent chain |
+| 4 | PWD as-is | Current directory (fallback) |
+
+**`CCSM_WORKSPACE`** must be an absolute path to an existing directory. It's the escape hatch when an agent chdir'd into a subdirectory and PWD-based detection finds the wrong marker. Set it once at session start — all subsequent `ccsm` commands inherit it.
+
+**Walk-up** looks for `.ccsm/sessions.json` starting at PWD and going up. Innermost match wins (closest to PWD). This handles the common case of an agent being in `src/deep/path/` when the workspace is the project root — no configuration needed.
+
+> **Anti-pattern:** Agents running `ccsm` commands from wrong PWD create dangling `.ccsm/` directories. If you see duplicate registries, set `CCSM_WORKSPACE` at the point of failure and confirm the path.
+
+**Loud failure on bad env var:** If `CCSM_WORKSPACE` points to a non-existent or non-absolute path, ccsm errors immediately (no silent fallback).
 
 ## CLI Commands
 
@@ -154,8 +173,10 @@ Every new CLI feature (command, flag, field, workflow) **must** be documented in
 - `.claude/skills/session-manager/reference/registry-schema.md` — new fields, schema changes
 - `.claude/skills/session-manager/SKILL.md` — new workflows or protocols
 - `CLAUDE.md` — project-level architecture changes only (not agent instructions)
+- `docs/adding-a-consumer.md` — checklist for adding a new AI coding agent consumer
 
-Run `ls .claude/skills/session-manager/reference/` to discover all doc files. Verify with `grep` that every new term appears. Commit docs with code in the same push.
+Run `ls .claude/skills/session-manager/reference/` to discover all skill reference docs.
+Verify with `grep` that every new term appears. Commit docs with code in the same push.
 
 ## Build & Run
 
