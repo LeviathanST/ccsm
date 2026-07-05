@@ -310,20 +310,20 @@ CodeWhale has a multi-layered constitution system. Here's how ccsm's `inject-sco
 
 ### How to inject scope
 
-For **session-level** scope injection (ccsm's `inject-scope` command):
+CodeWhale does **not** support `--append-system-prompt` at the CLI level.
+Scope injection works differently than Claude/Pi:
 
-**Recommended approach:** Use `--append-system-prompt` with `<system-reminder>` tags:
-
-```bash
-codewhale --continue --append-system-prompt "<system-reminder>
-Session scope: Install CodeWhale and document its session model.
-Constraint: Work in a branch off main.
-</system-reminder>"
-```
-
-This is equivalent to ccsm's current Claude/Pi injection strategy.
-
-For **project-level** standing scope, write `.codewhale/constitution.json` with the scope as a `protected_invariant`. This is the CodeWhale-native equivalent of ccsm's `inject-scope` permanent mode.
+- **Project-level standing scope:** Write `.codewhale/constitution.json` with
+  the scope as a `protected_invariant`. This is rendered into a
+  `<codewhale_repo_constitution>` block in CodeWhale's system prompt on every
+  session — the CodeWhale-native equivalent of ccsm's `inject-scope` permanent
+  mode.
+- **Session-level scope:** For headless sessions, use `codewhale exec --auto`
+  with the prompt text inline. For TUI sessions, scope must be set via project
+  constitution before starting the session.
+- **ccsm's `inject-scope` command:** The `<system-reminder>` block is printed
+  to stdout (same format as Claude/Pi), but there is no CodeWhale hook to
+  consume it. The output can be piped or written to a file for reference.
 
 ### Render format
 
@@ -407,14 +407,11 @@ For ccsm's `attach` command:
 // Fresh interactive session (TUI)
 "codewhale" []
 
-// Fresh with scope injection (TUI)
-"codewhale" ["--append-system-prompt", "<system-reminder>...</system-reminder>"]
+// Fresh interactive session (TUI) — no args
+"codewhale" []
 
 // Resume by ID (TUI)
 "codewhale" ["resume", "<uuid>"]
-
-// Resume by ID with scope injection (TUI)
-"codewhale" ["resume", "<uuid>", "--append-system-prompt", "<system-reminder>...</system-reminder>"]
 
 // Continue most recent (TUI)
 "codewhale" ["--continue"]

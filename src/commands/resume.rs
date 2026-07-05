@@ -240,13 +240,15 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             crate::consumer::SpawnOp::Fresh
         }
     };
-    let mut args = consumer.spawn_args(&op, name);
-    if let Some(ref prompt) = scope_prompt {
-        if let Some(extra) = consumer.scope_injection_arg(prompt) {
-            args.extend(extra);
-        }
-    }
+    let args = consumer.spawn_args(&op, name);
     cmd.args(&args);
+
+    // Write scope file for consumers that support it (CodeWhale: .codewhale/rules/00-ccsm-scope.md)
+    let scope_file = if let Some(ref prompt) = scope_prompt {
+        consumer.write_scope_file(workspace, prompt)
+    } else {
+        None
+    };
 
     let mut child_guard = ChildGuard::new(cmd.spawn()?);
     let child_pid = child_guard.id();
@@ -459,6 +461,11 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             }
         }
         reg.save(workspace)?;
+    }
+
+    // Clean up scope file (written before spawn for CodeWhale)
+    if let Some(ref path) = scope_file {
+        consumer.cleanup_scope_file(path);
     }
 
     if !status.success() {

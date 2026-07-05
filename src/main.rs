@@ -1448,13 +1448,15 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
     let mut cmd = std::process::Command::new(consumer.binary());
     cmd.current_dir(workspace);
     cmd.env("CCSM_SESSION", name);
-    let mut args = consumer.spawn_args(&crate::consumer::SpawnOp::Refresh, name);
-    if let Some(ref prompt) = scope_prompt {
-        if let Some(extra) = consumer.scope_injection_arg(prompt) {
-            args.extend(extra);
-        }
-    }
+    let args = consumer.spawn_args(&crate::consumer::SpawnOp::Refresh, name);
     cmd.args(&args);
+
+    // Write scope file for consumers that support it (CodeWhale)
+    let scope_file = if let Some(ref prompt) = scope_prompt {
+        consumer.write_scope_file(workspace, prompt)
+    } else {
+        None
+    };
 
     let bin = consumer.binary();
     if retired_count <= 1 {
@@ -1565,6 +1567,11 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             }
         }
         reg.save(workspace)?;
+    }
+
+    // Clean up scope file (written before spawn for CodeWhale)
+    if let Some(ref path) = scope_file {
+        consumer.cleanup_scope_file(path);
     }
 
     if !status.success() {

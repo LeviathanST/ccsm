@@ -368,17 +368,49 @@ impl Consumer {
         args
     }
 
-    /// Extra args for scope injection (CodeWhale: `--append-system-prompt`).
+    /// Extra args for scope injection at spawn time.
     ///
     /// Returns `None` for consumers that handle scope via hooks
     /// (Claude's `SystemMessage` hook, Pi's `before_agent_start`
     /// extension hook).
-    pub fn scope_injection_arg(&self, prompt: &str) -> Option<Vec<String>> {
+    pub fn scope_injection_arg(&self, _prompt: &str) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Write scope into the consumer's project context so the spawned
+    /// agent loads it as part of its system prompt.
+    ///
+    /// CodeWhale auto-loads `.codewhale/rules/*.md` files into the
+    /// system prompt as `<project_rule>` blocks.  This writes a
+    /// temporary file that is cleaned up via [`cleanup_scope_file`].
+    ///
+    /// Claude/Pi handle scope injection via hooks — this is a no-op
+    /// for them.
+    ///
+    /// Returns the path to the written file (for cleanup), or `None`.
+    pub fn write_scope_file(&self, workspace: &Path, prompt: &str) -> Option<PathBuf> {
         match self {
             Self::CodeWhale => {
-                Some(vec!["--append-system-prompt".into(), prompt.into()])
+                let rules_dir = workspace.join(".codewhale").join("rules");
+                std::fs::create_dir_all(&rules_dir).ok()?;
+                let path = rules_dir.join("00-ccsm-scope.md");
+                let content = format!(
+                    "# CCSM Session Scope\n\n{content}\n",
+                    content = prompt
+                );
+                std::fs::write(&path, &content).ok()?;
+                eprintln!("  wrote scope to {}", path.display());
+                Some(path)
             }
             _ => None,
+        }
+    }
+
+    /// Remove a scope file written by [`write_scope_file`].
+    pub fn cleanup_scope_file(&self, path: &Path) {
+        if self.is_codewhale() && path.exists() {
+            let _ = std::fs::remove_file(path);
+            eprintln!("  removed scope file {}", path.display());
         }
     }
 }
