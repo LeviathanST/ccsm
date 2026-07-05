@@ -10,6 +10,5 @@ Cargo.lock
 # already existing elements were commented out
 
 #/target
-.claude/sessions.json.lock
 .ccsm/
 .commandcode/

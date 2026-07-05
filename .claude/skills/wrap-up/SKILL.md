@@ -15,7 +15,7 @@ Two phases. Run in order. Present results at the end.
 1. `git status` — if uncommitted changes, commit with descriptive message
 2. Push to remote
 
-**ccsm end-gate** *(if this is a ccsm project: `ccsm --version` succeeds + `.claude/sessions.json` exists):*
+**ccsm end-gate** *(if this is a ccsm project: `ccsm --version` succeeds + `.ccsm/sessions.json` exists):*
 3. `ccsm doctor` — detect template residue, empty fields, stale locks
 4. Fill any remaining placeholder fields (timestamps, scope, tags)
 5. `ccsm close <name>` — pre-completion gate

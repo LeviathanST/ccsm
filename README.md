@@ -1,6 +1,6 @@
 # ccsm
 
-CLI session registry and lifecycle manager for Claude Code. Tracks sessions in `.claude/sessions.json`, links transcripts, spawns `claude` with `--resume` and `--name`.
+CLI session registry and lifecycle manager for AI coding agents. Tracks sessions in `.ccsm/sessions.json`, links transcripts, spawns agents with resume support.
 
 ## Install
 
@@ -70,10 +70,10 @@ trashed      — soft-deleted, recoverable
 
 ## Session Detail Files
 
-Sessions have markdown detail files at `.claude/sessions/<name>.md`. Copy the template:
+Sessions have markdown detail files at `.ccsm/sessions/<name>.md`. `ccsm new` auto-creates them from the template:
 
 ```bash
-cp .claude/session-detail-template.md .claude/sessions/<name>.md
+ccsm new <name> -g "<goal>"   # auto-creates .ccsm/sessions/<name>.md
 ```
 
 Token-efficient reading: `ccsm show <name>` lists section headlines with line counts. Use `--section <name>` to pull just one section.
@@ -86,10 +86,13 @@ Token-efficient reading: `ccsm show <name>` lists section headlines with line co
 
 | Path | Use |
 |------|-----|
-| `<workspace>/.claude/sessions.json` | Canonical session registry |
-| `~/.claude/sessions/<pid>.json` | Live session status (harvested on spawn) |
-| `~/.claude/projects/<slug>/<id>.jsonl` | Session transcripts |
-| `<workspace>/.claude/sessions/<name>.md` | Session detail files |
+| Path | Use |
+|------|-----|
+| `<workspace>/.ccsm/sessions.json` | Canonical session registry |
+| `~/.claude/sessions/<pid>.json` | Live Claude session status (harvested on spawn) |
+| `~/.claude/projects/<slug>/<id>.jsonl` | Claude session transcripts |
+| `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` | Pi session transcripts |
+| `<workspace>/.ccsm/sessions/<name>.md` | Session detail files |
 
 ## Agent Integration
 
@@ -117,7 +120,7 @@ Each `-q` starts an operation group. Faster than `&&` chaining — one JSON pars
 
 ## File Locking
 
-Mutations use advisory `flock` on `.claude/sessions.json.lock` — every read-modify-write cycle is atomic across processes. Safe to chain commands with `&&` or run `sequence` alongside standalone mutations.
+Mutations use advisory `flock` on `.ccsm/sessions.json.lock` — every read-modify-write cycle is atomic across processes. Safe to chain commands with `&&` or run `sequence` alongside standalone mutations.
 
 ## Tech
 

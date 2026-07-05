@@ -249,12 +249,18 @@ export default function question(pi: ExtensionAPI) {
 		},
 
 		renderCall(args, theme, _context) {
-			let text = theme.fg("toolTitle", theme.bold("question ")) + theme.fg("muted", args.question);
+			let text = theme.fg("toolTitle", theme.bold("question ")) + theme.fg("text", args.question);
 			const opts = Array.isArray(args.options) ? args.options : [];
 			if (opts.length) {
-				const labels = opts.map((o: OptionWithDesc) => o.label);
-				const numbered = [...labels, "Type something."].map((o, i) => `${i + 1}. ${o}`);
-				text += `\n${theme.fg("dim", `  Options: ${numbered.join(", ")}`)}`;
+				text += `\n${theme.fg("dim", `  ── Choices ──`)}`;
+				for (let i = 0; i < opts.length; i++) {
+					const o = opts[i];
+					text += `\n  ${theme.fg("accent", `${i + 1}.`)} ${theme.fg("muted", o.label)}`;
+					if (o.description) {
+						text += ` ${theme.fg("dim", `— ${o.description}`)}`;
+					}
+				}
+				text += `\n  ${theme.fg("dim", `— or type custom answer`)}`;
 			}
 			return new Text(text, 0, 0);
 		},

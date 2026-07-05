@@ -98,7 +98,7 @@ ccsm tag <name> <tag1> <tag2>     # fill tags
 ccsm note <name> "<what you did>" # add progress entry
 ccsm check <name> 1 -s done       # resolve checklist items
 ccsm check <name> "blocked task" -s skipped
-# Edit .claude/sessions/<name>.md for Live Session Data
+# Edit .ccsm/sessions/<name>.md for Live Session Data
 ```
 
 ## Step 2: The Three Questions (only after gate passes)

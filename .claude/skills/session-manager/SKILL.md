@@ -1,7 +1,7 @@
 ---
 name: session-manager
 description: >
-  Maintain the ccsm session registry (.claude/sessions.json). Every agent working
+  Maintain the ccsm session registry (.ccsm/sessions.json). Every agent working
   on this project MUST use this — create entries, update status, fill goal/scope,
   track sub-tasks with checklist. This is the single source of truth for team session tracking.
 argument-hint: "<start|status|complete|list> — manage your session entry"
@@ -9,12 +9,12 @@ argument-hint: "<start|status|complete|list> — manage your session entry"
 
 # Session Manager — ccsm Session Registry
 
-You are working on **ccsm**, a CLI session registry and workflow harness for Claude Code. This project has a session registry at `.claude/sessions.json` that tracks every work session. **You MUST maintain it.**
+You are working on **ccsm**, a CLI session registry and workflow harness for AI coding agents. This project has a session registry at `.ccsm/sessions.json` that tracks every work session. **You MUST maintain it.**
 
 ## Quick Reference
 
 ```
-On session START  →  read .claude/sessions.json, create/claim entry (status: pending)
+On session START  →  ccsm list --active, claim an entry (status: pending)
 Multi-step work?  →  ccsm new <name> -c -g "goal" — checklist for sub-task tracking
 On first ACTION   →  update status to in_progress, fill goal + scope if missing
 After EVERY change →  ccsm note <name> "<what you did and why>"
@@ -47,7 +47,7 @@ ccsm show <name>         # registry fields + detail file section headlines
    ```bash
    ccsm sequence -q new <name> -g "<goal>" -q start <name> -q scope <name> "<approach>" -q tag <name> <tag1> <tag2>
    # Use `ccsm new <name> -c -g "<goal>"` for complex multi-step work — checklist tracks sub-tasks.
-   # `new` auto-creates .claude/sessions/<name>.md from template.
+   # `new` auto-creates .ccsm/sessions/<name>.md from template.
    ```
 
 5. **IMMEDIATELY fill the detail file.** `ccsm new` creates a template — Scope/Plan and Tags will say `(fill in)`. You MUST edit these NOW:
@@ -99,6 +99,7 @@ Pull these on demand — don't read them all.
 | Session lifecycle + resume | `reference/session-lifecycle.md` | You need lifecycle or resume mechanics |
 | Anti-patterns | `reference/anti-patterns.md` | You want to avoid common mistakes |
 
+
 ## Checklist
 
 Track sub-tasks within a session with checkbox items. The `ccsm close` gate blocks completion while pending or blocked items remain.
@@ -143,7 +144,7 @@ ccsm depend <name> --on <dep>                   # add dependency
 ccsm depend <name> --clear                      # clear all dependencies
 ```
 
-Group detail files live at `.claude/session-group/<name>.md`. Auto-created on first join, auto-deleted when last session leaves.
+Group detail files live at `.ccsm/session-group/<name>.md`. Auto-created on first join, auto-deleted when last session leaves.
 
 **Roadmap** (`ccsm group <name> --roadmap`) renders a live markdown document from registry state:
 - Markdown table: rank, session, status icon (✓→○!·), goal, scope

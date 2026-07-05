@@ -113,7 +113,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Generate the handoff prompt with loader UI
 			const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-				const loader = new BorderedLoader(tui, theme, `Generating handoff prompt...`);
+				const loader = new BorderedLoader(tui, theme, `🔄 Generating handoff prompt for: ${goal.substring(0, 50)}${goal.length > 50 ? '...' : ''}`);
 				loader.onAbort = () => done(null);
 
 				const doGenerate = async () => {
@@ -165,10 +165,12 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// Let user edit the generated prompt
-			const editedPrompt = await ctx.ui.editor("Edit handoff prompt", result);
+			ctx.ui.notify(`Handoff prompt generated (${result.length} chars). You can edit it now.`, "info");
+
+			const editedPrompt = await ctx.ui.editor("Edit handoff prompt (Esc to cancel, Submit when ready)", result);
 
 			if (editedPrompt === undefined) {
-				ctx.ui.notify("Cancelled", "info");
+				ctx.ui.notify("Handoff cancelled", "info");
 				return;
 			}
 
@@ -179,12 +181,14 @@ export default function (pi: ExtensionAPI) {
 				parentSession: currentSessionFile,
 				withSession: async (replacementCtx) => {
 					replacementCtx.ui.setEditorText(editedPrompt);
-					replacementCtx.ui.notify("Handoff ready. Submit when ready.", "info");
+					replacementCtx.ui.notify(`✅ Handoff ready — goal: ${goal.substring(0, 60)}`, "info");
 				},
 			});
 
 			if (newSessionResult.cancelled) {
 				ctx.ui.notify("New session cancelled", "info");
+			} else {
+				ctx.ui.notify(`✓ Handoff created for: ${goal.substring(0, 60)}`, "success");
 			}
 		},
 	});

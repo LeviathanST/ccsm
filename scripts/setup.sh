@@ -16,11 +16,11 @@ SECTION=$(cat <<'CLAUDEMD'
 
 ## 🔴 HIGHEST PRIORITY: Session Registry
 
-**Every session MUST be tracked.** Each project has a `.claude/sessions.json` registry.
-ccsm reads this file — empty entries mean no session context is recorded.
+**Every session MUST be tracked.** Each project has a `.ccsm/sessions.json` registry.
+ccsm manages this file via the CLI — empty entries mean no session context is recorded.
 
 ### On Session START
-1. Read `<repo>/.claude/sessions.json` (create if missing)
+1. `ccsm list --active` — find your session or create one with `ccsm new`
 2. Create or claim an entry with `name`, `goal`, `scope`, `status: "in_progress"`
 3. Leave `session_id` and `pids` empty — ccsm manages those automatically
 
@@ -177,9 +177,10 @@ mkdir -p "$LESSONS_SKILL_DIR"
 cp "$PROJECT_DIR/.claude/skills/learned-lesson-issue/SKILL.md" "$LESSONS_SKILL_DIR/"
 echo "[updated] learned-lesson-issue skill installed at $LESSONS_SKILL_DIR"
 
-# ── 3. Create a minimal .claude/sessions.json if none exists ──────────────
+# ── 3. Create a minimal .ccsm/sessions.json if none exists ──────────────
 
-WORKSPACE_REGISTRY="${PROJECT_DIR}/.claude/sessions.json"
+WORKSPACE_REGISTRY="${PROJECT_DIR}/.ccsm/sessions.json"
+mkdir -p "${PROJECT_DIR}/.ccsm"
 if [ ! -f "$WORKSPACE_REGISTRY" ]; then
     cat > "$WORKSPACE_REGISTRY" <<'JSON'
 {
@@ -273,7 +274,7 @@ echo "ccsm setup complete."
 echo "  Global CLAUDE.md  ←  session tracking section + CLI reference"
 echo "  Global skills     ←  /session-manager, /seed-session, /wrap-up, /learned-lesson-issue"
 echo "  Global hooks      ←  SessionStart + UserPromptSubmit (inject-scope), Stop (note-check)"
-echo "  Workspace registry←  .claude/sessions.json"
+echo "  Workspace registry←  .ccsm/sessions.json"
 
 # ── 4. Ensure ccsm hooks in global settings.json ─────────────────────────
 

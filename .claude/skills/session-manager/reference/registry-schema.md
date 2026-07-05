@@ -2,7 +2,7 @@
 
 ## Registry Schema
 
-`.claude/sessions.json` at the workspace root:
+`.ccsm/sessions.json` at the workspace root:
 
 ```json
 {
@@ -52,11 +52,11 @@ NEW → start → (work → note → work → note → ...) → END-GATE → com
 
 ## Session Detail Files
 
-Detail files live at `.claude/sessions/<name>.md`. `ccsm new` auto-creates them from the template — your job is to **fill them in**, not create them.
+Detail files live at `.ccsm/sessions/<name>.md`. `ccsm new` auto-creates them from the template — your job is to **fill them in**, not create them.
 
 ```bash
 ccsm show <name>          # check what's already filled
-# Then Edit .claude/sessions/<name>.md to replace remaining {{placeholders}}
+# Then Edit .ccsm/sessions/<name>.md to replace remaining {{placeholders}}
 ```
 
 **Token-efficient reading:**
