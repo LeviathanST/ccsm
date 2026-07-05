@@ -225,43 +225,28 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     cmd.env("CCSM_SESSION", name);
     cmd.env("CCSM_WORKSPACE", workspace.as_os_str());
 
-    match consumer {
-        crate::consumer::Consumer::Claude => {
-            if let Some(ref id) = sid {
-                cmd.arg("--resume").arg(id);
-                println!("resuming    {}  ← {bin} --resume {}", name, &id[..id.len().min(8)]);
-            } else if fresh {
-                println!("starting    {}  ← {bin} (fresh)", name);
-            } else {
-                println!("starting    {}  ← {bin} (new session)", name);
-            }
-            cmd.arg("-n").arg(name);
+    // Build semantic operation and translate to consumer-specific CLI args
+    let op: crate::consumer::SpawnOp = match (&sid, fresh) {
+        (Some(id), _) => {
+            println!("resuming    {}  ← {} (id: {})", name, bin, &id[..id.len().min(8)]);
+            crate::consumer::SpawnOp::Resume { id }
         }
-        crate::consumer::Consumer::Pi => {
-            if let Some(ref id) = sid {
-                cmd.arg("--session").arg(id);
-                println!("resuming    {}  ← pi --session {}", name, &id[..id.len().min(8)]);
-            } else {
-                // Fresh ccsm entry → start a new Pi session
-                println!("starting    {}  ← pi (fresh session)", name);
-            }
-            cmd.arg("-n").arg(name);
+        (None, true) => {
+            println!("starting    {}  ← {} (fresh)", name, bin);
+            crate::consumer::SpawnOp::Refresh
         }
-        crate::consumer::Consumer::CodeWhale => {
-            if let Some(ref id) = sid {
-                cmd.arg("resume").arg(id);
-                println!("resuming    {}  ← {bin} resume {}", name, &id[..id.len().min(8)]);
-            } else {
-                // Plain `codewhale` launches the TUI in fresh mode.
-                // --skip-onboarding is not needed for TUI (the TUI only shows
-                // onboarding on very first launch).
-                println!("starting    {}  ← {bin} (fresh TUI)", name);
-            }
-            if let Some(ref prompt) = scope_prompt {
-                cmd.arg("--append-system-prompt").arg(prompt.as_str());
-            }
+        (None, false) => {
+            println!("starting    {}  ← {} (new session)", name, bin);
+            crate::consumer::SpawnOp::Fresh
+        }
+    };
+    let mut args = consumer.spawn_args(&op, name);
+    if let Some(ref prompt) = scope_prompt {
+        if let Some(extra) = consumer.scope_injection_arg(prompt) {
+            args.extend(extra);
         }
     }
+    cmd.args(&args);
 
     let mut child_guard = ChildGuard::new(cmd.spawn()?);
     let child_pid = child_guard.id();

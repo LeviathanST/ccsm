@@ -323,6 +323,64 @@ impl Consumer {
     pub fn constraint_line(self) -> &'static str {
         "CONSTRAINT: Work within this scope. If you need to do something outside it, ask first."
     }
+
+    // ── Spawn arg generation ─────────────────────────────────────
+
+    /// Build CLI arguments for a semantic spawn operation.
+    ///
+    /// Returns the full argument list (excluding binary name) for
+    /// operations like resume, fresh, or refresh.  `session_name` is
+    /// the session name used for `-n` flags (Claude/Pi); CodeWhale
+    /// ignores it since its CLI doesn't accept session names at spawn.
+    ///
+    /// Scope injection is NOT included here — call
+    /// [`scope_injection_arg`] separately.
+    pub fn spawn_args(&self, op: &SpawnOp, session_name: &str) -> Vec<String> {
+        let mut args: Vec<String> = Vec::new();
+
+        match (self, op) {
+            // ── CodeWhale: resume as subcommand ─────────────────
+            (Self::CodeWhale, SpawnOp::Resume { id }) => {
+                args.push("resume".into());
+                args.push(id.to_string());
+            }
+            // ── CodeWhale: plain binary for fresh/refresh ───────
+            (Self::CodeWhale, _) => {}
+
+            // ── Claude/Pi: resume flag + name ───────────────────
+            (_, SpawnOp::Resume { id }) => {
+                let flag = match self {
+                    Self::Pi => "--session",
+                    _ => "--resume",
+                };
+                args.push(flag.into());
+                args.push(id.to_string());
+                args.push("-n".into());
+                args.push(session_name.into());
+            }
+            // ── Claude/Pi: fresh/refresh with name ──────────────
+            (_, _) => {
+                args.push("-n".into());
+                args.push(session_name.into());
+            }
+        }
+
+        args
+    }
+
+    /// Extra args for scope injection (CodeWhale: `--append-system-prompt`).
+    ///
+    /// Returns `None` for consumers that handle scope via hooks
+    /// (Claude's `SystemMessage` hook, Pi's `before_agent_start`
+    /// extension hook).
+    pub fn scope_injection_arg(&self, prompt: &str) -> Option<Vec<String>> {
+        match self {
+            Self::CodeWhale => {
+                Some(vec!["--append-system-prompt".into(), prompt.into()])
+            }
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Consumer {
@@ -333,6 +391,32 @@ impl std::fmt::Display for Consumer {
             Self::CodeWhale => write!(f, "codewhale"),
         }
     }
+}
+
+// ── SpawnOp — semantic operations for consumer-specific CLI args ───
+
+/// Semantic operation to generate CLI arguments for.
+///
+/// Each consumer translates these into its own CLI grammar via
+/// [`Consumer::spawn_args`].  The default implementation covers the
+/// Claude/Pi pattern (`-n <name>`, `--resume`/`--session` flag).
+/// CodeWhale overrides with `resume <id>` subcommand syntax.
+///
+/// # Examples
+///
+/// ```ignore
+/// let op = SpawnOp::Resume { id: &session_id };
+/// let args = consumer.spawn_args(&op, session_name);
+/// cmd.args(&args);
+/// ```
+#[derive(Debug, Clone)]
+pub enum SpawnOp<'a> {
+    /// Resume an existing session by ID.
+    Resume { id: &'a str },
+    /// Start a fresh session (first spawn).
+    Fresh,
+    /// Spawn a fresh session as a context refresh (replaces retired one).
+    Refresh,
 }
 
 // ── Pi Session file reader ─────────────────────────────────────────

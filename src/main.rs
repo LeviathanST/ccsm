@@ -1448,21 +1448,13 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
     let mut cmd = std::process::Command::new(consumer.binary());
     cmd.current_dir(workspace);
     cmd.env("CCSM_SESSION", name);
-    match consumer {
-        Consumer::Claude => {
-            cmd.arg("-n").arg(name);
-        }
-        Consumer::Pi => {
-            // Pi: start fresh
-            cmd.arg("-n").arg(name);
-        }
-        Consumer::CodeWhale => {
-            // CodeWhale: fresh spawn (plain `codewhale` launches TUI)
-            if let Some(ref prompt) = scope_prompt {
-                cmd.arg("--append-system-prompt").arg(prompt.as_str());
-            }
+    let mut args = consumer.spawn_args(&crate::consumer::SpawnOp::Refresh, name);
+    if let Some(ref prompt) = scope_prompt {
+        if let Some(extra) = consumer.scope_injection_arg(prompt) {
+            args.extend(extra);
         }
     }
+    cmd.args(&args);
 
     let bin = consumer.binary();
     if retired_count <= 1 {

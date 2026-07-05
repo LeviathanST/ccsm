@@ -48,6 +48,14 @@ Implement every method for the new variant:
 | `parse()` | `Result<Self>` | Parse `"new-agent"` string to variant |
 | `Display` | `&str` | Same as `parse()` (e.g. `"new-agent"`) |
 | `is_new_agent()` | `bool` | Quick check method |
+| `spawn_args()` | `Vec<String>` | Translate [`SpawnOp`] to CLI args. Default handles `--resume`/`--session` + `-n <name>`. Override when agent uses different grammar (e.g. subcommands instead of flags). |
+| `scope_injection_arg()` | `Option<Vec<String>>` | Extra args for scope injection at spawn (e.g. `--append-system-prompt`). Return `None` if agent handles scope via hooks. |
+
+**Note:** [`SpawnOp`] is defined at the end of `src/consumer.rs` with three
+variants: `Resume { id }`, `Fresh`, and `Refresh`. The default `spawn_args()`
+implementation in the `Consumer` `impl` block serves Claude and Pi — override
+only for agents with different CLI grammar (like CodeWhale's subcommand-based
+resume).
 
 Update `auto_detect()`:
 
@@ -87,11 +95,14 @@ Search for every `match consumer` or `consumer.is_*()` and add your variant:
 | Location | What to add |
 |----------|-------------|
 | `run_attach()` | Auto-discovery: how to find the live session UUID (PID file vs. directory scan vs. env var) |
-| `run_resume()` → `commands/resume.rs` | Spawn args: `--resume`, `--session`, or agent-specific flags |
-| `run_refresh()` | Spawn args for fresh session |
+| `SpawnOp` in `src/consumer.rs` | **First** — add agent's CLI grammar to `spawn_args()` (resume/fresh flags or subcommands). Then `run_resume()` and `run_refresh()` automatically use it. |
 | `run_clean()` / `run_archive()` | Transcript file naming convention |
 | `run_inject_scope()` | System prompt format (if different from `<system-reminder>`) |
 | `run_setup()` | Skill installation paths, hook registration |
+
+**Spawn args are no longer added as raw `match` arms in `resume.rs` or
+`main.rs`.** The `SpawnOp` + `spawn_args()` + `scope_injection_arg()` pattern
+in `consumer.rs` centralizes CLI grammar. Add your agent's flags there.
 
 ### 3. `src/commands/resume.rs` — Harvest logic
 
