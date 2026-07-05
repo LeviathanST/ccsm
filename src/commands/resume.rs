@@ -63,10 +63,10 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     let bin = consumer.binary();
 
     // ── Phase 1: Promote entry (locked) ────────────────────────────
-    let (sid, fresh) = {
+    let (sid, fresh, scope_prompt) = {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
 
-        let (sid, is_fresh) = match reg.sessions.iter().rev().position(|e| e.name == name) {
+        let (sid, is_fresh, scope_prompt) = match reg.sessions.iter().rev().position(|e| e.name == name) {
             Some(pos) => {
                 let i = reg.sessions.len() - 1 - pos;
                 let entry = &mut reg.sessions[i];
@@ -108,7 +108,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                     // Clear session_id — starts fresh with current consumer
                     entry.session_id.clear();
                     entry.consumer = current;
-                    (None, false)
+                    (None, false, None)
                 } else if !entry.consumer.is_empty() && entry.consumer != current {
                     // No session_id yet but consumer mismatch — warn and continue
                     eprintln!(
@@ -117,16 +117,40 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                     );
                     eprintln!("   Starting a fresh session for {}.", current);
                     entry.consumer = current;
-                    (None, false)
+                    (None, false, None)
                 } else {
                     // Consumer matches or unset — normal flow
                     if entry.consumer.is_empty() {
                         entry.consumer = current;
                     }
+
+                    // Build scope injection block for CodeWhale
+                    let scope_prompt = if consumer.is_codewhale() {
+                        let (open_tag, close_tag) = consumer.system_prompt_tags();
+                        let mut block = format!(
+                            "{open_tag}\n\
+                             ACTIVE SESSION: {name}\n"
+                        );
+                        if !entry.goal.is_empty() && !entry.goal.starts_with("-g ") {
+                            block.push_str(&format!("GOAL: {}\n", entry.goal));
+                        }
+                        if !entry.scope.is_empty() && !entry.scope.contains("(fill in") {
+                            block.push_str(&format!("SCOPE: {}\n", entry.scope));
+                        }
+                        block.push_str(&format!(
+                            "{}\n\
+                             {close_tag}",
+                            consumer.constraint_line(),
+                        ));
+                        Some(block)
+                    } else {
+                        None
+                    };
+
                     if !entry.session_id.is_empty() {
                         let found = consumer.find_session_file_for(home, workspace, &entry.session_id);
                         if found.is_some() {
-                            (Some(entry.session_id.clone()), false)
+                            (Some(entry.session_id.clone()), false, scope_prompt)
                         } else {
                             anyhow::bail!(
                                 "session '{}' has session_id '{}' but session file not found.\n\
@@ -138,7 +162,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                             );
                         }
                     } else {
-                        (None, false)
+                        (None, false, scope_prompt)
                     }
                 }
             }
@@ -172,7 +196,8 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         reg.updated = now.clone();
         reg.save(workspace)?;
         eprintln!("  [resume] sid={:?}, fresh={}", sid.as_deref().unwrap_or(""), is_fresh);
-        (sid, is_fresh)
+
+        (sid, is_fresh, scope_prompt)
     }; // lock released
 
     // ── Nudge: check if session has a checklist section ──────────────
@@ -229,6 +254,9 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             } else {
                 cmd.arg("--skip-onboarding");
                 println!("starting    {}  ← {bin} (fresh session)", name);
+            }
+            if let Some(ref prompt) = scope_prompt {
+                cmd.arg("--append-system-prompt").arg(prompt.as_str());
             }
         }
     }

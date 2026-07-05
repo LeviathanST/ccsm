@@ -1366,7 +1366,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
     let reason_text = reason.unwrap_or("context refresh");
 
     // ── Phase 1: Retire current session_id, save, auto-note (locked) ──
-    {
+    let scope_prompt = {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
         let entry = reg
             .sessions
@@ -1396,9 +1396,32 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
         entry.pids.clear();
         entry.started.clear();
 
+        // Build scope injection block for CodeWhale
+        let scope_prompt = if consumer.is_codewhale() {
+            let mut block = format!(
+                "<system-reminder>\n\
+                 ACTIVE SESSION: {name}\n"
+            );
+            if !entry.goal.is_empty() && !entry.goal.starts_with("-g ") {
+                block.push_str(&format!("GOAL: {}\n", entry.goal));
+            }
+            if !entry.scope.is_empty() && !entry.scope.contains("(fill in") {
+                block.push_str(&format!("SCOPE: {}\n", entry.scope));
+            }
+            block.push_str(&format!(
+                "{}\n\
+                 </system-reminder>",
+                consumer.constraint_line(),
+            ));
+            Some(block)
+        } else {
+            None
+        };
+
         reg.updated = now.clone();
         reg.save(workspace)?;
-    } // lock released
+        scope_prompt
+    }; // lock released
 
     // ── Phase 2: Auto-note to progress log ──────────────────────────
     let retired_count = {
@@ -1434,8 +1457,11 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             cmd.arg("-n").arg(name);
         }
         Consumer::CodeWhale => {
-            // CodeWhale: fresh spawn with skip-onboarding
+            // CodeWhale: fresh spawn with skip-onboarding + scope injection
             cmd.arg("--skip-onboarding");
+            if let Some(ref prompt) = scope_prompt {
+                cmd.arg("--append-system-prompt").arg(prompt.as_str());
+            }
         }
     }
 
