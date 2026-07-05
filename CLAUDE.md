@@ -45,33 +45,36 @@ Mutations use advisory `flock` via `fs2` on `.ccsm/sessions.json.lock` — every
 | `~/.claude/sessions/<pid>.json` | Live Claude session: sessionId, cwd, status, name | `resume` harvesting |
 | `~/.claude/projects/<slug>/<session_id>.jsonl` | Claude transcript | Resume check (exists → --resume) |
 | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` | Pi session files | `resume` (--session), `attach` auto-discover |
+| `~/.codewhale/sessions/<uuid>.json` | CodeWhale saved session | `resume` (--resume), `attach` (recent session scan) |
+| `~/.codewhale/state.db` | CodeWhale SQLite state DB (threads table) | `thread list` for durable sessions |
 
 > **Decision: `<workspace>/.ccsm/sessions.json` is the canonical session data source.** ccsm reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
 
 ## Consumer Detection
 
-ccsm supports two agents (consumers), auto-detected or explicitly set:
+ccsm supports multiple agents (consumers), auto-detected or explicitly set:
 
 | Method | Example |
 |--------|---------|
-| **Flag** | `ccsm --consumer pi resume <name>` |
-| **Env var** | `CCSM_CONSUMER=pi ccsm resume <name>` |
-| **Auto-detect** | `ccsm <command>` — picks the most recently active config dir (`~/.pi/agent/` or `~/.claude/`) |
+| **Flag** | `ccsm --consumer codewhale resume <name>` |
+| **Env var** | `CCSM_CONSUMER=codewhale ccsm resume <name>` |
+| **Auto-detect** | `ccsm <command>` — picks the most recently active config dir (`~/.pi/agent/`, `~/.claude/`, or `~/.codewhale/`) |
 
 | Consumer | Binary | Config Dir | Session Files |
 |----------|--------|------------|---------------|
 | `claude` | `claude` | `~/.claude/` | `~/.claude/sessions/<pid>.json` + `~/.claude/projects/<slug>/<uuid>.jsonl` |
 | `pi` | `pi` | `~/.pi/agent/` | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` |
+| `codewhale` | `codewhale` | `~/.codewhale/` | `~/.codewhale/sessions/<uuid>.json` + `~/.codewhale/state.db` (SQLite)
 
 ### What changes per consumer
 
-| Feature | Claude | Pi |
-|---------|--------|----|
-| `resume` spawns | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` |
-| `refresh` spawns | `claude -n <name>` (fresh) | `pi --continue -n <name>` |
-| `attach` auto-discovers | **Claude:** reads live PID-based session file `~/.claude/sessions/<pid>.json` for exact UUID | **Pi:** scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` (Pi has no live PID files, so mtime is used as best approximation) |
-| `inject-scope` format | `<system-reminder>...</system-reminder>` | Same (both agents accept it) |
-| Session harvesting | PID-based JSON polling | UUID already known from `--session` flag |
+| Feature | Claude | Pi | CodeWhale |
+|---------|--------|----|-----------|
+| `resume` spawns | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` | `codewhale --resume <uuid>` |
+| `refresh` spawns | `claude -n <name>` (fresh) | `pi --continue -n <name>` | `codewhale --skip-onboarding` |
+| `attach` auto-discovers | **Claude:** reads live PID-based session file `~/.claude/sessions/<pid>.json` for exact UUID | **Pi:** scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` (Pi has no live PID files, so mtime is used as best approximation) | **CodeWhale:** scans `~/.codewhale/sessions/*.json` for most recent session matching the workspace git root |
+| `inject-scope` format | `<system-reminder>...</system-reminder>` | Same (both agents accept it) | `--append-system-prompt "<system-reminder>...</system-reminder>"` (or write `.codewhale/constitution.json` for standing scope) |
+| Session harvesting | PID-based JSON polling | UUID already known from `--session` flag | No PID files; harvest UUID from session filename stem or `thread list` output |
 
 ## Design Decisions
 
