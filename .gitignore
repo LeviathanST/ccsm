@@ -12,3 +12,4 @@ Cargo.lock
 #/target
 .ccsm/
 .commandcode/
+.claude/sessions.json.lock

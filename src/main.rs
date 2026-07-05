@@ -1457,8 +1457,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             cmd.arg("-n").arg(name);
         }
         Consumer::CodeWhale => {
-            // CodeWhale: fresh spawn with skip-onboarding + scope injection
-            cmd.arg("--skip-onboarding");
+            // CodeWhale: fresh spawn (plain `codewhale` launches TUI)
             if let Some(ref prompt) = scope_prompt {
                 cmd.arg("--append-system-prompt").arg(prompt.as_str());
             }
@@ -3552,7 +3551,7 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             println!("ccsm setup for CodeWhale.");
             println!();
             println!("  ✓ Consumer auto-detection (--consumer codewhale or CCSM_CONSUMER=codewhale)");
-            println!("  ✓ Resume: ccsm resume <name> --consumer codewhale  (spawns codewhale --resume <id> or --skip-onboarding)");
+            println!("  ✓ Resume: ccsm resume <name> --consumer codewhale  (spawns 'codewhale resume <id>' or plain 'codewhale')");
             println!("  ✓ Attach: ccsm attach <name> --consumer codewhale  (scans ~/.codewhale/sessions/*.json)");
             println!();
             println!("Note: CodeWhale doesn't have a Pi-style extension system.");

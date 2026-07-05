@@ -404,16 +404,19 @@ For ccsm's `attach` command:
 ## Spawn Args Reference
 
 ```rust
-// Fresh interactive session
-"codewhale" ["--skip-onboarding"]
+// Fresh interactive session (TUI)
+"codewhale" []
 
-// Fresh with scope injection  
-"codewhale" ["--skip-onboarding", "--append-system-prompt", "<system-reminder>...</system-reminder>"]
+// Fresh with scope injection (TUI)
+"codewhale" ["--append-system-prompt", "<system-reminder>...</system-reminder>"]
 
-// Resume by ID
-"codewhale" ["--resume", "<uuid>"]
+// Resume by ID (TUI)
+"codewhale" ["resume", "<uuid>"]
 
-// Continue most recent
+// Resume by ID with scope injection (TUI)
+"codewhale" ["resume", "<uuid>", "--append-system-prompt", "<system-reminder>...</system-reminder>"]
+
+// Continue most recent (TUI)
 "codewhale" ["--continue"]
 
 // Headless exec with resume

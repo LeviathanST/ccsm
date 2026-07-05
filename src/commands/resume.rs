@@ -249,11 +249,13 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         }
         crate::consumer::Consumer::CodeWhale => {
             if let Some(ref id) = sid {
-                cmd.arg("--resume").arg(id);
-                println!("resuming    {}  ← {bin} --resume {}", name, &id[..id.len().min(8)]);
+                cmd.arg("resume").arg(id);
+                println!("resuming    {}  ← {bin} resume {}", name, &id[..id.len().min(8)]);
             } else {
-                cmd.arg("--skip-onboarding");
-                println!("starting    {}  ← {bin} (fresh session)", name);
+                // Plain `codewhale` launches the TUI in fresh mode.
+                // --skip-onboarding is not needed for TUI (the TUI only shows
+                // onboarding on very first launch).
+                println!("starting    {}  ← {bin} (fresh TUI)", name);
             }
             if let Some(ref prompt) = scope_prompt {
                 cmd.arg("--append-system-prompt").arg(prompt.as_str());
