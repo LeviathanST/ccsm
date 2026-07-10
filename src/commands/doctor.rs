@@ -3,7 +3,7 @@ use std::path::Path;
 /// Canonical session detail template — embedded so doctor can recreate it.
 pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
 
-> **{{status}}** | started {{started}} | completed {{completed}} | {{pid_count}} pids
+> **{{status}}** | started {{started}} | completed {{completed}}
 
 ## Goal
 
@@ -16,17 +16,6 @@ pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
 ## Tags
 
 {{tags}}
-
-## Live Session Data
-
-| Field | Value |
-|---|---|
-| session_id | `{{session_id}}` |
-| cwd | `{{cwd}}` |
-| pids | {{pids}} |
-| kind | `{{kind}}` |
-| version | `{{version}}` |
-| waitingFor | `{{waiting_for}}` |
 
 ## Progress Log
 

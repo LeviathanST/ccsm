@@ -1397,12 +1397,7 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
                     .replace("{{status}}", "pending")
                     .replace("{{scope}}", "(fill in — approach, constraints, what's in/out)")
                     .replace("{{tags}}", "(fill in)")
-                    .replace("{{session_id}}", "(auto — ccsm manages)")
-                    .replace("{{cwd}}", &workspace.to_string_lossy())
-                    .replace("{{pids}}", "(auto — ccsm manages)")
-                    .replace("{{kind}}", "(auto)")
-                    .replace("{{version}}", "(auto)")
-                    .replace("{{waiting_for}}", "(none)")
+                    .replace("{{pid_count}}", "0")
                     .replace("{{dependencies}}", "(none)")
                     .replace("{{now}}", &crate::registry::now_iso())
                     .replace("{{note}}", "Session created");
@@ -1727,7 +1722,10 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
 fn run_set_field(name: &str, _field: &str, value: &str) -> anyhow::Result<()> {
     mutate_session(name, "scope updated", |entry| {
         entry.scope = value.to_string();
-    })
+    })?;
+    // Sync to detail file
+    update_detail_section(name, "## Scope / Plan", value).ok();
+    Ok(())
 }
 
 /// `ccsm tag <name> <tags...>` — replace tags.
@@ -1739,6 +1737,27 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
     if !output_format_json() {
         println!("  tags: {}", tag_str);
     }
+    // Sync to detail file
+    update_detail_section(name, "## Tags", &tag_str).ok();
+    Ok(())
+}
+
+/// Update a section body in the session detail file. Silently skips if the
+/// detail file doesn't exist (it might not for simple sessions).
+fn update_detail_section(name: &str, header: &str, body: &str) -> anyhow::Result<()> {
+    let workspace = std::env::current_dir()?;
+    let detail_path = workspace
+        .join(".ccsm")
+        .join("sessions")
+        .join(format!("{}.md", name));
+
+    if !detail_path.exists() {
+        return Ok(());
+    }
+
+    let contents = std::fs::read_to_string(&detail_path)?;
+    let updated = crate::registry::replace_detail_section(&contents, header, body);
+    std::fs::write(&detail_path, updated)?;
     Ok(())
 }
 
