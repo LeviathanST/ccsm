@@ -1,4 +1,6 @@
 #[allow(dead_code)]
+mod config;
+#[allow(dead_code)]
 mod consumer;
 #[allow(dead_code)]
 mod registry;
@@ -124,13 +126,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Create a pending entry. Optionally embed a ## Checklist section (-c).
+    /// Create a pending entry. Optionally embed a ## Checklist section (-c <type>).
     ///
     /// Without -c the detail file stays minimal (no checklist). Add one later with `ccsm checklist --init`.
+    /// Use -c with a type like feat/fix/research/chore to pre-populate type-specific items.
     ///
     /// Examples:
     ///   ccsm new my-feature -g "Add dark mode"
     ///   ccsm new my-feature -c -g "Add dark mode with checklist"
+    ///   ccsm new my-feature -c feat -g "Add checklist from feat template"
+    ///   ccsm new my-feature -b feat/my-branch -g "Work on my feature"
     New {
         /// kebab-case session name
         name: String,
@@ -140,9 +145,12 @@ enum Commands {
         /// Skip fuzzy duplicate detection
         #[arg(short = 'f', long)]
         force: bool,
-        /// Also write a ## Checklist section to the detail file
-        #[arg(short = 'c', long)]
-        checklist: bool,
+        /// Add checklist section. Optionally specify template type (feat/fix/research/chore)
+        #[arg(short = 'c', long, num_args = 0..=1, default_missing_value = "default")]
+        checklist: Option<String>,
+        /// Target git branch (metadata only — ccsm warns on mismatch at resume)
+        #[arg(short = 'b', long)]
+        branch: Option<String>,
     },
     /// pending → in_progress
     Start { name: String },
@@ -383,7 +391,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Scan { group, status, search, json } => run_scan(group.as_deref(), status.as_deref(), search.as_deref(), json),
         Commands::List { active, summary, status, verbose, group, by_rank, json } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank, json),
         Commands::Show { name, section, json } => run_show(&name, section.as_deref(), json, consumer),
-        Commands::New { name, goal, force, checklist } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist, consumer),
+        Commands::New { name, goal, force, checklist, branch } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist, branch.as_deref().unwrap_or(""), consumer),
         Commands::Start { name } => run_status(&name, "start", false),
         Commands::Complete { name, force } => run_status(&name, "complete", force),
         Commands::Block { name } => run_status(&name, "block", false),
@@ -563,6 +571,7 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
             goal: String,
             tags: Vec<String>,
             depends_on: Vec<String>,
+            branch: String,
         }
         let entries: Vec<ScanEntry> = sessions.iter().map(|s| {
             ScanEntry {
@@ -573,6 +582,7 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
                 goal: s.goal.clone(),
                 tags: s.tags.clone(),
                 depends_on: s.depends_on.clone(),
+                branch: s.branch.clone(),
             }
         }).collect();
         println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -745,6 +755,7 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             completed: String,
             depends_on: Vec<String>,
             consumer: String,
+            branch: String,
         }
         let entries: Vec<ListEntry> = reg.sessions.iter()
             .filter(|s| {
@@ -766,6 +777,7 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
                 completed: s.completed.clone(),
                 depends_on: s.depends_on.clone(),
                 consumer: s.consumer.clone(),
+                branch: s.branch.clone(),
             })
             .collect();
         if entries.is_empty() {
@@ -1285,9 +1297,34 @@ fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer
 }
 
 /// `ccsm new <name> [goal]` — create a new session entry.
-fn run_new(name: &str, goal: &str, force: bool, checklist: bool, consumer: Consumer) -> anyhow::Result<()> {
+fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branch: &str, consumer: Consumer) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
+    let config = crate::config::Config::load(&workspace);
+
+    // ── Config enforcement: branch required ──────────────────────────
+    use crate::config::BranchTracking;
+    if config.branch_tracking == BranchTracking::Required && branch.is_empty() {
+        anyhow::bail!(
+            "\n⚠️  This project requires branch tracking (branch_tracking=required in .ccsm/config.toml).\n\
+             Use `ccsm new {} -b <branch> -g \"...\"` to set a target branch.",
+            name
+        );
+    }
+
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+
+    // ── WIP guard ─────────────────────────────────────────────────────
+    if config.wip_limit > 0 {
+        let active_count = reg.sessions.iter()
+            .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+            .count();
+        if active_count >= config.wip_limit {
+            eprintln!(
+                "⚠️  {} sessions already in_progress (limit: {}). Consider finishing those first.",
+                active_count, config.wip_limit
+            );
+        }
+    }
 
     // Exact duplicate
     if reg.sessions.iter().any(|s| s.name == name) {
@@ -1332,6 +1369,7 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: bool, consumer: Consu
         completed: String::new(),
         group: None,
         depends_on: vec![],
+        branch: branch.to_string(),
         retired_session_ids: vec![],
         consumer: consumer.to_string(),
     });
@@ -1372,16 +1410,45 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: bool, consumer: Consu
                     let _ = std::fs::create_dir_all(parent);
                 }
                 let _ = std::fs::write(&detail_path, populated);
-                // If --checklist, append ## Checklist section
-                if checklist {
-                    let checklist_section = "\n## Checklist\n\n<!--\n  All items must be resolved before close gate allows completion.\n  Status: pending | done | skipped | blocked\n  Checkbox chars: - [ ] pending, - [x] done, - [~] skipped, - [!] blocked\n-->\n\n(no items yet — `ccsm check <name> \"<text>\" -s pending` adds one)\n";
-                    let _ = std::fs::write(&detail_path, std::fs::read_to_string(&detail_path).unwrap_or_default() + checklist_section);
+                // ── Checklist section ─────────────────────────────────
+                if checklist.is_some() || config.default_checklist_type.is_some() {
+                    let template_type = checklist.as_deref()
+                        .or(config.default_checklist_type.as_deref());
+                    let checklist_content = build_checklist_section(name, template_type, &config);
+                    let _ = std::fs::write(&detail_path, std::fs::read_to_string(&detail_path).unwrap_or_default() + &checklist_content);
                 }
             }
     }
 
     action_msg("pending", name, "created");
     Ok(())
+}
+
+/// Build a ## Checklist section with optional template items.
+fn build_checklist_section(_name: &str, template_type: Option<&str>, config: &crate::config::Config) -> String {
+    let header = "\n## Checklist\n\n<!--\n  All items must be resolved before close gate allows completion.\n  Status: pending | done | skipped | blocked\n  Checkbox chars: - [ ] pending, - [x] done, - [~] skipped, - [!] blocked\n-->\n";
+
+    let items = match template_type {
+        Some(typ) => config.get_checklist_items(typ),
+        None => None,
+    };
+
+    match items {
+        Some(item_list) if !item_list.is_empty() => {
+            let mut body = String::from(header);
+            for item in &item_list {
+                body.push_str(&format!("- [ ] {}\n", item));
+            }
+            body
+        }
+        _ => {
+            // Empty checklist — users populate via `ccsm check`
+            format!(
+                "{}(no items yet — use `ccsm check <name> \"<text>\" -s pending` to add one)\n",
+                header
+            )
+        }
+    }
 }
 
 /// `ccsm start|complete|block|abandon <name>` — status transitions.
@@ -2633,6 +2700,7 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
             completed: String,
             consumer: String,
             depends_on: Vec<String>,
+            branch: String,
             detail_file: Option<String>,
             has_detail_file: bool,
             sections: Vec<SectionJson>,
@@ -2690,6 +2758,7 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
             completed: session.completed.clone(),
             consumer: session.consumer.clone(),
             depends_on: session.depends_on.clone(),
+            branch: session.branch.clone(),
             detail_file: detail_path_exists.then(|| format!(".ccsm/sessions/{}.md", name)),
             has_detail_file: detail_path_exists,
             sections,
@@ -2725,6 +2794,9 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
     }
     if !session.tags.is_empty() {
         println!("tags:       {}", session.tags.join(", "));
+    }
+    if !session.branch.is_empty() {
+        println!("branch:     {}", session.branch);
     }
     if let Some(ref g) = session.group {
         println!("group:      {} (rank: {})", g.name, g.rank);
@@ -3611,6 +3683,34 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     if !checklist_line.is_empty() {
         println!("{}", checklist_line);
     }
+
+    // ── Branch check ──────────────────────────────────────────────
+    if !session.branch.is_empty() {
+        match std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(&workspace)
+            .output()
+        {
+            Ok(output) => {
+                let current = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if current.is_empty() {
+                    // Detached HEAD or not a git repo
+                    println!("BRANCH: {} (detached HEAD — no active branch)", session.branch);
+                } else if current == session.branch {
+                    println!("BRANCH: {} ✓", session.branch);
+                } else {
+                    println!(
+                        "BRANCH: {} (current: {}) ⚠️ MISMATCH — this session targets '{}'",
+                        session.branch, current, session.branch
+                    );
+                }
+            }
+            Err(_) => {
+                // git binary not available — skip branch check silently
+            }
+        }
+    }
+
     println!("{}", consumer.constraint_line());
     println!("{close_tag}");
     Ok(())

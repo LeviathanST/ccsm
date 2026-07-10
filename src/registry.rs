@@ -189,6 +189,11 @@ pub struct WorkspaceSession {
     /// Session names this session depends on (must complete first).
     #[serde(default)]
     pub depends_on: Vec<String>,
+    /// Target git branch for this session (optional).
+    /// Set with `ccsm new -b <branch>`; checked at resume via inject-scope.
+    /// ccsm tracks this as metadata — it does not create or switch branches.
+    #[serde(default)]
+    pub branch: String,
     /// Retired Claude session_ids — one ccsm session may chain through
     /// multiple Claude sessions as the context window fills up.
     #[serde(default)]
@@ -452,6 +457,7 @@ impl WorkspaceRegistry {
                 completed: String::new(),
                 group: None,
                 depends_on: vec![],
+                branch: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -467,6 +473,7 @@ impl WorkspaceRegistry {
                 completed: String::new(),
                 group: None,
                 depends_on: vec![],
+                branch: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -482,6 +489,7 @@ impl WorkspaceRegistry {
                 completed: String::new(),
                 group: None,
                 depends_on: vec![],
+                branch: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -497,6 +505,7 @@ impl WorkspaceRegistry {
                 completed: String::new(),
                 group: None,
                 depends_on: vec![],
+                branch: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -910,6 +919,7 @@ mod tests {
                 completed: String::new(),
                 group: None,
                 depends_on: vec![],
+                branch: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             }],
@@ -953,6 +963,7 @@ mod tests {
             completed: String::new(),
             group: None,
             depends_on: vec![],
+            branch: String::new(),
             retired_session_ids: vec![],
             consumer: String::new(),
         });
@@ -994,6 +1005,7 @@ mod tests {
                     completed: String::new(),
                     group: None,
                     depends_on: vec![],
+                    branch: String::new(),
                     retired_session_ids: vec![],
                     consumer: String::new(),
                 });
@@ -1047,6 +1059,7 @@ mod tests {
                     completed: String::new(),
                     group: None,
                     depends_on: vec![],
+                    branch: String::new(),
                     retired_session_ids: vec![],
                     consumer: String::new(),
                 });

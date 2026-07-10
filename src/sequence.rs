@@ -231,6 +231,7 @@ pub(crate) fn apply_op(
                 completed: String::new(),
                 group: None,
                 depends_on: vec![],
+                branch: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             });
@@ -524,6 +525,7 @@ mod tests {
             completed: String::new(),
             group: None,
             depends_on: vec![],
+            branch: String::new(),
             retired_session_ids: vec![],
             consumer: String::new(),
         });
