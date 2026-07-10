@@ -1398,6 +1398,8 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
                     .replace("{{scope}}", "(fill in — approach, constraints, what's in/out)")
                     .replace("{{tags}}", "(fill in)")
                     .replace("{{pid_count}}", "0")
+                    .replace("{{started}}", "")
+                    .replace("{{completed}}", "")
                     .replace("{{dependencies}}", "(none)")
                     .replace("{{now}}", &crate::registry::now_iso())
                     .replace("{{note}}", "Session created");
@@ -1489,6 +1491,11 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
         }
     })?;
 
+    // Sync status line to detail file
+    if let Ok(ws) = std::env::current_dir() {
+        crate::registry::sync_status_line(&ws, name);
+    }
+
     // Nudge at session start: agent is about to fill scope — remind about checklist
     if action == "start" {
         eprintln!(
@@ -1500,6 +1507,8 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Sync the `> **status** | started ... | completed ...` line in the detail file
+/// to reflect the current registry state.
 /// `ccsm refresh <name> [--reason]` — retire current session, spawn fresh.
 ///
 /// Use when the context window is bloated (>40%) and the model gets biased.

@@ -300,6 +300,9 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             }
             reg.save(workspace)?;
         }
+
+        // Sync detail file status line with harvested started time
+        crate::registry::sync_status_line(workspace, name);
     } else {
         // Pi: session_id already set via --session — no PID file to harvest
         eprintln!("  (session tracking active)");

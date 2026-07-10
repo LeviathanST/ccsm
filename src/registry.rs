@@ -741,6 +741,52 @@ pub(crate) fn replace_detail_section(md: &str, header: &str, new_body: &str) -> 
     }
 }
 
+/// Sync the `> **status** | started ... | completed ...` line in the detail file
+/// for a session to match the registry state. No-op if detail file doesn't exist.
+pub fn sync_status_line(workspace: &std::path::Path, name: &str) {
+    let detail_path = workspace
+        .join(".ccsm")
+        .join("sessions")
+        .join(format!("{}.md", name));
+
+    if !detail_path.exists() {
+        return;
+    }
+
+    let reg = match WorkspaceRegistry::load(workspace) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let Some(session) = reg.sessions.iter().find(|s| s.name == name) else {
+        return;
+    };
+
+    let started = if session.started.is_empty() { "" } else { &session.started };
+    let completed = if session.completed.is_empty() { "" } else { &session.completed };
+    let new_line = format!(
+        "> **{}** | started {} | completed {}",
+        session.status, started, completed,
+    );
+
+    let Ok(contents) = std::fs::read_to_string(&detail_path) else { return };
+    let mut updated = String::new();
+    let mut found = false;
+    for line in contents.lines() {
+        if line.trim_start().starts_with("> **") && line.contains("| started") {
+            updated.push_str(&new_line);
+            updated.push('\n');
+            found = true;
+        } else {
+            updated.push_str(line);
+            updated.push('\n');
+        }
+    }
+
+    if found {
+        let _ = std::fs::write(&detail_path, updated);
+    }
+}
+
 pub(crate) fn is_kebab_case(s: &str) -> bool {
     !s.is_empty()
         && s.chars()
