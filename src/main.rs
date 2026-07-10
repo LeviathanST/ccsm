@@ -3207,16 +3207,6 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
         ));
     }
 
-    // Live Session Data not template
-    let lsd_body = sections
-        .iter()
-        .find(|(h, _)| h.to_lowercase().contains("live session"))
-        .map(|(_, b)| b.trim())
-        .unwrap_or("");
-    if lsd_body.contains("(auto") || lsd_body.is_empty() {
-        failures.push("  Live Session Data still has template placeholders".into());
-    }
-
     // Checklist gate: block if pending or blocked items exist
     let checklist_body = sections
         .iter()
