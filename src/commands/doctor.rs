@@ -187,7 +187,26 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         ));
     }
 
-    // 9. Large transcripts — candidates for archive
+    // 9. Session aging — stale in_progress sessions
+    for s in &reg.sessions {
+        if s.status != crate::registry::SessionStatus::InProgress {
+            continue;
+        }
+        let age_days = crate::registry::session_age_days(&s.started);
+        if age_days >= 7 {
+            warnings.push(format!(
+                "  stale session ({}d)  {}\n    started {} — no activity in {} days\n    → ccsm close {} to review, or ccsm complete/abandon to close",
+                age_days, s.name, &s.started[..s.started.len().min(16)], age_days, s.name,
+            ));
+        } else if age_days >= 2 {
+            infos.push(format!(
+                "  aging session ({}d)  {}\n    started {} — in_progress for {} days\n    → ccsm close {} if done",
+                age_days, s.name, &s.started[..s.started.len().min(16)], age_days, s.name,
+            ));
+        }
+    }
+
+    // 10. Large transcripts — candidates for archive
     let mut large: Vec<(String, u64)> = Vec::new();
     for s in &reg.sessions {
         if s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty() {

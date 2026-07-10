@@ -578,6 +578,29 @@ pub(crate) fn format_ts(ms: u64) -> String {
     format!("day{days}T{h:02}:{m:02}Z")
 }
 
+/// Parse a `day{days}T{time}Z` timestamp and return the age in days
+/// (0 if unparseable or empty).
+pub fn session_age_days(ts: &str) -> u64 {
+    if ts.is_empty() {
+        return 0;
+    }
+    let now_days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 86400;
+
+    // Parse "day<number>..."
+    let stripped = ts.strip_prefix("day").and_then(|s| {
+        s.split('T').next().and_then(|n| n.parse::<u64>().ok())
+    });
+
+    match stripped {
+        Some(days) => now_days.saturating_sub(days),
+        None => 0,
+    }
+}
+
 /// Derive the Claude Code project slug from a workspace path.
 /// Claude replaces '/' and other non-alphanumeric chars with '-' in the
 /// absolute path, e.g. `/home/user/my_project` → `-home-user-my-project`.
