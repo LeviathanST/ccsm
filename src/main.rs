@@ -3855,6 +3855,11 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
 // ── Setup subcommand ──────────────────────────────────────────────────
 
 fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
+    let workspace = std::env::current_dir()?;
+
+    // ── 0. Seed .ccsm/config.toml if missing ──────────────────────
+    seed_config(&workspace);
+
     match consumer {
         Consumer::Pi => {
             // Seed skills from .claude/skills/ to global Pi skills directory
@@ -3920,6 +3925,52 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// Seed `.ccsm/config.toml` if it doesn't exist yet.
+/// Called during `ccsm setup` and can be reused as a standalone bootstrap.
+fn seed_config(workspace: &std::path::Path) {
+    let config_path = workspace.join(".ccsm").join("config.toml");
+    if config_path.exists() {
+        return;
+    }
+    let default_config = r#"# ccsm project configuration
+#
+# Controls how ccsm enforces session discipline for agent workflows.
+# The CLI reads this file directly — agents don't need to parse it.
+#
+# Built-in template types: feat, fix, research, chore
+
+# Branch tracking policy: "required" | "optional" (default) | "disabled"
+#   required  → ccsm new refuses without -b <branch>
+#   optional  → -b is available but not mandatory
+#   disabled  → -b is accepted but not enforced
+branch_tracking = "optional"
+
+# WIP guard — warn when creating a new session and this many are already in_progress
+# Set to 0 to disable
+wip_limit = 0
+
+# Default template type when -c is used without a value (e.g. "feat")
+# If unset, -c alone produces an empty checklist
+# default_checklist_type = "feat"
+
+# Custom checklist templates (override built-in defaults)
+# [checklist_templates.feat]
+# items = [
+#   "Implementation plan drafted",
+#   "Tests written for new functionality",
+#   "Edge cases handled",
+#   "Documentation updated",
+# ]
+"#;
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(&config_path, default_config) {
+        Ok(()) => eprintln!("  ✓ .ccsm/config.toml created"),
+        Err(e) => eprintln!("  ⚠ could not create .ccsm/config.toml: {e}"),
     }
 }
 
