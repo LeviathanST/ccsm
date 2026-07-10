@@ -16,6 +16,9 @@ You are working on **ccsm**, a CLI session registry and workflow harness for Cla
 ```
 On session START  →  read .claude/sessions.json, create/claim entry (status: pending)
 Multi-step work?  →  ccsm new <name> -c -g "goal" — checklist for sub-task tracking
+Branch tracking?  →  ccsm new <name> -b feat/my-branch -g "goal" — warns on branch mismatch at resume
+Checklist types?  →  ccsm new <name> -c feat|fix|research|chore -g "goal" — pre-populated items
+Project config?   →  .ccsm/config.toml — branch required, wip_limit, custom templates
 On first ACTION   →  update status to in_progress, fill goal + scope if missing
 After EVERY change →  ccsm note <name> "<what you did and why>"
 Break into sub-tasks →  ccsm check <name> "<item>" -s pending — track each piece
@@ -48,6 +51,7 @@ ccsm show <name>         # registry fields + detail file section headlines
    ccsm sequence -q new <name> -g "<goal>" -q start <name> -q scope <name> "<approach>" -q tag <name> <tag1> <tag2>
    # Use `ccsm new <name> -c -g "<goal>"` for complex multi-step work — checklist tracks sub-tasks.
    # `new` auto-creates .claude/sessions/<name>.md from template.
+   # Use `ccsm new <name> -b <branch> -g "<goal>"` for branch-tracked sessions — inject-scope warns on mismatch.
    ```
 
 5. **IMMEDIATELY fill the detail file.** `ccsm new` creates a template — Scope/Plan and Tags will say `(fill in)`. You MUST edit these NOW:
@@ -75,6 +79,8 @@ ccsm show <name>         # registry fields + detail file section headlines
    - If no: proceed with just the registry goal as context.
 
 4. **Ask the human:** "This session is [status]. What do you need to continue?"
+
+5. **Check the BRANCH line in inject-scope output** (visible in your `<system-reminder>`). If it shows `⚠️ MISMATCH`, you're on the wrong branch — switch before making changes.
 
 ## 🔴 Mandatory Protocols
 
@@ -111,7 +117,8 @@ Track sub-tasks within a session with checkbox items. The `ccsm close` gate bloc
 
 ### Workflow
 
-1. **Create:** `ccsm new <name> -c` at session start, or `ccsm checklist <name> --init` later
+1. **Create:** `ccsm new <name> -c` at session start, or `ccsm checklist <name> --init` later.  
+   Use `ccsm new <name> -c feat` (or `fix`/`research`/`chore`) for type-specific pre-populated items.
 2. **Populate:** `ccsm check <name> "<text>" -s pending` — one call per sub-task
 3. **Progress:** `ccsm check <name> 1 -s done` as you complete each item
 4. **Audit:** `ccsm checklist <name>` to see all items + summary counts
@@ -168,3 +175,45 @@ with verified causes. Session notes belong in `ccsm note`.
 - **`ccsm show <name> --section <s>`** — pull one section, save tokens
 - **Detail files are for deep work** — read only YOUR session's file + explicit dependencies
 - **Protocol files on demand** — read the index above, pull only the protocol that triggered
+
+
+## Project Config (.ccsm/config.toml)
+
+ccsm reads `.ccsm/config.toml` at the workspace root for project-level policy. The CLI enforces these directly — agents don't need to parse the file.
+
+| Setting | Effect |
+|---------|--------|
+| `branch_tracking = "required"` | `ccsm new` errors without `-b` |
+| `wip_limit = 3` | Warns when creating with >3 in_progress sessions |
+| `default_checklist_type = "feat"` | `-c` alone uses the feat template |
+| Custom template overrides | Config can override built-in checklist items per type |
+
+Built-in checklist template types: `feat`, `fix`, `research`, `chore`. Use with `ccsm new`'s `-c` flag.
+
+## Branch Tracking
+
+ccsm links sessions to git branches via `ccsm new <name> -b <branch>`. This is pure metadata — ccsm never creates or switches branches for you.
+
+### How it works
+
+1. **Set at creation:** `ccsm new my-feature -b feat/my-thing -g "..."` stores the target branch.
+2. **Checked every turn:** `ccsm inject-scope` (runs via SystemMessage hook) compares the target branch against `git branch --show-current`.
+3. **You see the result** in your `<system-reminder>` block:
+   - `BRANCH: feat/my-thing ✓` — you're on the right branch
+   - `BRANCH: feat/my-thing (current: main) ⚠️ MISMATCH — this session targets 'feat/my-thing'` — wrong branch!
+   - No `BRANCH:` line means the session has no branch target — no tracking active.
+
+### What ccsm does NOT do
+
+- ccsm does NOT create branches, switch branches, or merge
+- ccsm does NOT validate branch naming conventions
+- ccsm does NOT enforce anything — it warns and lets you decide
+
+### When to use
+
+- Any session that targets a specific feature branch
+- Working on a fix that targets a release branch
+- Multi-session projects where each session targets a different branch
+
+Full reference: `reference/cli-commands.md` (see `ccsm new -b` flag) and `reference/registry-schema.md` (see `branch` field).
+

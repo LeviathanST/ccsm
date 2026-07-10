@@ -37,6 +37,19 @@ Use `ccsm sequence` for a single lock/save cycle:
 ccsm sequence -q new <name> -g "<goal>" -q scope <name> "<scope>" -q tag <name> <tag1> <tag2> ...
 ```
 
+**Branch tracking** — If the task targets a specific git branch, add `-b`:
+```bash
+ccsm new <name> -b <branch> -g "<goal>"
+```
+
+**Checklist templates** — For multi-step work, pre-populate with type-specific items:
+```bash
+ccsm new <name> -c feat|fix|research|chore -g "<goal>"
+```
+See `reference/cli-commands.md` for built-in template items per type.
+
+**Project config** — `.ccsm/config.toml` may require `-b` (branch_tracking=required). If the project enforces it, the CLI errors without `-b`.
+
 Or run individually if sequence doesn't support all ops yet. Session stays **pending** — do NOT `ccsm start`.
 
 ### 3. Confirm

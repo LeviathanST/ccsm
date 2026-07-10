@@ -33,7 +33,7 @@ ccsm finds the workspace root in this order:
 
 | Command | Transition |
 |---|---|
-| `ccsm new <name> -g <goal>` | → pending |
+| `ccsm new <name> -g <goal> [-b <branch>] [-c [<type>]]` | → pending. `-b <branch>` sets target git branch for branch-session tracking; `-c` adds ## Checklist section (empty or pre-populated from template type: feat/fix/research/chore). Config in `.ccsm/config.toml` enforces branch requirement and WIP limit |
 | `ccsm start <name>` | pending → in_progress |
 | `ccsm complete <name> [--force]` | in_progress → completed, sets timestamp. Runs gate checks first (use --force to bypass) |
 | `ccsm block <name>` | in_progress → blocked (waiting on dependency) |
@@ -118,4 +118,34 @@ Detection order: `--consumer` flag → `CCSM_CONSUMER` env var → auto-detect.
 | `ccsm note-check` | Stop-hook: check if working tree is dirty and detail file is stale. Reminds to note progress. Silent when clean |
 | `ccsm archive <name>` | Delete transcript + session files, keep registry entry as permanent work log |
 | `ccsm archive-all` | Archive all completed sessions with transcripts |
-| `ccsm inject-scope` | Output `<system-reminder>` block with goal + scope + checklist summary for system prompt injection |
+| `ccsm inject-scope` | Output `<system-reminder>` block with goal + scope + checklist summary + branch check for system prompt injection. If session has a target branch (`-b`), compares it to current git branch and warns on mismatch |
+
+## Project Configuration (.ccsm/config.toml)
+
+ccsm reads `.ccsm/config.toml` for project-level policy enforcement. All fields are optional.
+
+```toml
+# Branch tracking: "required" | "optional" | "disabled"
+branch_tracking = "optional"
+
+# WIP guard — warn when creating with >N in_progress sessions (0 = off)
+wip_limit = 0
+
+# Default checklist type when -c is used without a value
+# default_checklist_type = "feat"
+
+# Custom checklist templates override built-in defaults
+# [checklist_templates.feat]
+# items = ["Plan drafted", "Tests written", "Edge cases handled"]
+```
+
+| Field | Effect |
+|-------|--------|
+| `branch_tracking = "required"` | `ccsm new` errors without `-b <branch>` |
+| `branch_tracking = "optional"` | `-b` is accepted but not required (default) |
+| `branch_tracking = "disabled"` | `-b` is accepted but never enforced |
+| `wip_limit = 3` | Warning when `>N` sessions are already in_progress |
+| `default_checklist_type = "feat"` | `-c` alone uses the feat template |
+| `[checklist_templates.<type>]` | Override built-in checklist items for a type |
+
+Built-in checklist types: `feat`, `fix`, `research`, `chore`.

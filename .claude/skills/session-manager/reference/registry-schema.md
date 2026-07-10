@@ -22,7 +22,8 @@
         "name": "group-name",  //   kebab-case group identifier
         "rank": "free"         //   "free" or number (lower = higher priority)
       },
-      "depends_on": []         // MANUAL — session names that must complete first
+      "depends_on": [],        // MANUAL — session names that must complete first
+      "branch": ""             // MANUAL — target git branch (metadata only, ccsm warns on mismatch at resume via inject-scope)
     }
   ]
 }
@@ -40,6 +41,7 @@
 | `completed` | **You** | When status → completed |
 | `group` | **You** | Assign via `ccsm group <name> -g <group>`, clear via `--clear` |
 | `depends_on` | **You** | Manage via `ccsm depend <name> --on <dep>` / `--clear` |
+| `branch` | **You** | Set via `ccsm new -b <branch>`. ccsm compares to current git branch at resume and warns on mismatch |
 
 ## Session Lifecycle
 
@@ -78,3 +80,12 @@ Sections: `goal`, `scope-plan` (or `scope / plan`), `tags`, `live-session-data`,
 | New dependency | Add to Dependencies |
 | Discovery | Add to Notes |
 | Session completed | END-GATE note first, then `ccsm complete` |
+
+## Project Config
+
+Project-level policy at `.ccsm/config.toml`. The CLI reads this directly — see `reference/cli-commands.md` (Project Configuration section) for full field reference.
+
+Policies that affect the registry:
+- `branch_tracking = "required"` → prevents creating entries without a `branch` field
+- `wip_limit = 3` → warns when too many sessions are in_progress
+- `default_checklist_type = "feat"` → auto-populates checklist items on `ccsm new`
