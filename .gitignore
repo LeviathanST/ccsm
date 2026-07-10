@@ -11,5 +11,7 @@ Cargo.lock
 
 #/target
 .claude/sessions.json.lock
-.ccsm/
+.ccsm/sessions.json
+.ccsm/sessions.json.lock
+.ccsm/sessions/
 .commandcode/

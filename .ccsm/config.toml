@@ -1,0 +1,29 @@
+# ccsm project configuration
+#
+# Controls how ccsm enforces session discipline for agent workflows.
+# The CLI reads this file directly — agents don't need to parse it.
+#
+# Built-in template types: feat, fix, research, chore
+
+# Branch tracking policy: "required" | "optional" (default) | "disabled"
+#   required  → ccsm new refuses without -b <branch>
+#   optional  → -b is available but not mandatory
+#   disabled  → -b is accepted but not enforced
+branch_tracking = "optional"
+
+# WIP guard — warn when creating a new session and this many are already in_progress
+# Set to 0 to disable
+wip_limit = 0
+
+# Default template type when -c is used without a value (e.g. "feat")
+# If unset, -c alone produces an empty checklist
+# default_checklist_type = "feat"
+
+# Custom checklist templates (override built-in defaults)
+# [checklist_templates.feat]
+# items = [
+#   "Implementation plan drafted",
+#   "Tests written for new functionality",
+#   "Edge cases handled",
+#   "Documentation updated",
+# ]
