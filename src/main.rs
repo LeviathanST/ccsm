@@ -370,6 +370,18 @@ enum Commands {
     /// Migrate registry + detail files from `.claude/` to `.ccsm/`.
     /// Leaves agent transcripts in their original locations.
     MigrateCcsm,
+    /// Set or clear the target git branch for a session.
+    ///
+    /// This is metadata only — ccsm does not create or switch branches.
+    /// Use `ccsm branch <name> <branch>` to set, `ccsm branch <name> --clear` to clear.
+    Branch {
+        name: String,
+        /// Clear the branch field
+        #[arg(long)]
+        clear: bool,
+        #[arg(num_args = 1..)]
+        branch: Vec<String>,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -399,6 +411,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Pending { name } => run_pending(&name),
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
+        Commands::Branch { name, clear, branch } => run_branch(&name, clear, branch.as_slice()),
         Commands::Group { name, list, group, rank, clear, goal, roadmap } => run_group(name.as_deref(), list, group.as_deref(), rank.as_deref(), clear, goal.as_deref(), roadmap),
         Commands::Next { group } => run_next(&group),
         Commands::GroupDeps { group } => run_group_deps(&group),
@@ -1748,6 +1761,28 @@ fn run_set_tags(name: &str, tags: &[String]) -> anyhow::Result<()> {
     }
     // Sync to detail file
     update_detail_section(name, "## Tags", &tag_str).ok();
+    Ok(())
+}
+
+/// `ccsm branch <name> <branch>` or `ccsm branch <name> --clear`
+fn run_branch(name: &str, clear: bool, branch: &[String]) -> anyhow::Result<()> {
+    let value = if clear {
+        String::new()
+    } else {
+        branch.join(" ")
+    };
+    let _ = mutate_session(name, "branch set", |entry| {
+        entry.branch = value.clone();
+    });
+    if !output_format_json() {
+        if value.is_empty() {
+            println!("  branch: cleared");
+        } else {
+            println!("  branch: {}", value);
+        }
+    }
+    // Sync to detail file
+    update_detail_section(name, "## Branch", &value).ok();
     Ok(())
 }
 
