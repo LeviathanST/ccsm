@@ -26,8 +26,9 @@ pub fn is_git_repo(workspace: &Path) -> bool {
 }
 
 /// Check whether `branch` exists locally or as `origin/<branch>`.
+/// Uses `git ls-remote` for remote check (fast, no object transfer).
 pub fn branch_exists(workspace: &Path, branch: &str) -> bool {
-    // Check local branches
+    // Check local branches first (fast)
     if Command::new("git")
         .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")])
         .current_dir(workspace)
@@ -37,57 +38,13 @@ pub fn branch_exists(workspace: &Path, branch: &str) -> bool {
     {
         return true;
     }
-    // Check remote tracking branches
+    // Check remote via ls-remote (fast — just queries refs, no fetch)
     Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")])
+        .args(["ls-remote", "--exit-code", "origin", &format!("refs/heads/{branch}")])
         .current_dir(workspace)
         .status()
         .ok()
         .map_or(false, |s| s.success())
-}
-
-/// Run `git worktree list --porcelain` and return structured data.
-/// Each worktree entry is `(path, branch)` where branch may be "detached".
-fn list_worktree_entries(workspace: &Path) -> Result<Vec<(PathBuf, String)>> {
-    let output = Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(workspace)
-        .output()
-        .context("failed to run `git worktree list`")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git worktree list failed: {stderr}");
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut entries = Vec::new();
-    let mut current_path: Option<PathBuf> = None;
-    let mut current_branch = String::new();
-
-    for line in stdout.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            // Flush previous entry
-            if let Some(ref p) = current_path {
-                entries.push((p.clone(), std::mem::take(&mut current_branch)));
-            }
-            current_path = Some(PathBuf::from(path));
-        } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
-            current_branch = branch.to_string();
-        } else if line.trim().is_empty() {
-            // Blank line = end of entry
-            if let Some(ref p) = current_path {
-                entries.push((p.clone(), std::mem::take(&mut current_branch)));
-                current_path = None;
-            }
-        }
-    }
-    // Flush last entry
-    if let Some(p) = current_path {
-        entries.push((p, current_branch));
-    }
-
-    Ok(entries)
 }
 
 // ── Gitignore management ──────────────────────────────────────────────
@@ -101,18 +58,18 @@ pub fn ensure_worktree_gitignore(workspace: &Path) {
     let contents = match std::fs::read_to_string(&gitignore_path) {
         Ok(c) => c,
         Err(_) => {
-            // No .gitignore yet — create one
             let _ = std::fs::write(&gitignore_path, format!("{pattern}\n"));
             return;
         }
     };
 
-    // Check if pattern already present
-    if contents.lines().any(|l| l.trim() == pattern || l.trim() == "/.claude/worktrees" || l.trim() == ".claude/worktrees/") {
+    if contents.lines().any(|l| {
+        let t = l.trim();
+        t == pattern || t == "/.claude/worktrees" || t == ".claude/worktrees/"
+    }) {
         return;
     }
 
-    // Append pattern
     if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&gitignore_path) {
         use std::io::Write;
         let _ = writeln!(file, "{pattern}");
@@ -137,64 +94,144 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
     anyhow::ensure!(
         !wt_path.exists(),
         "worktree for session '{}' already exists at {}\n\
-         Use `ccsm resume {}` to continue, or `ccsm worktree remove {}` to clean up.",
-        name,
-        wt_path.display(),
-        name,
-        name,
+         Use `ccsm resume {}` to continue.",
+        name, wt_path.display(), name,
     );
 
-    // ── Ensure branch is up-to-date with main ──────────────────────
-    // Fetch latest origin/main and rebase the branch if needed so the
-    // worktree starts from current state.
-    let fetch_result = Command::new("git")
-        .args(["fetch", "origin", "main"])
+    // ── Ensure branch is up-to-date with main ──────────────────────────
+    // Fast path: check local refs only. Slow path: fetch + rebase if behind.
+    let is_ancestor = Command::new("git")
+        .args(["merge-base", "--is-ancestor", "origin/main", "HEAD"])
         .current_dir(workspace)
-        .output()
-        .context("failed to run `git fetch origin main`")?;
+        .status()
+        .ok()
+        .map_or(false, |s| s.success());
 
-    if fetch_result.status.success() {
-        // Check if branch is behind origin/main
-        let behind_output = Command::new("git")
-            .args([
-                "rev-list", "--count", "--left-right",
-                &format!("{branch}...origin/main"),
-            ])
+    if !is_ancestor {
+        // Only fetch if we can reach the remote (fast ls-remote check)
+        let remote_reachable = Command::new("git")
+            .args(["ls-remote", "--exit-code", "origin", "HEAD"])
             .current_dir(workspace)
-            .output();
+            .status()
+            .ok()
+            .map_or(false, |s| s.success());
 
-        if let Ok(output) = behind_output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let parts: Vec<&str> = stdout.trim().split('\t').collect();
-            // rev-list --left-right --count: <ahead>\t<behind>
-            let behind: i64 = parts.get(1).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        if remote_reachable {
+            let fetch_ok = Command::new("git")
+                .args(["fetch", "origin", "main"])
+                .current_dir(workspace)
+                .output()
+                .ok()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
 
-            if behind > 0 {
-                eprintln!("  branch '{branch}' is {behind} commit(s) behind origin/main — rebasing...");
-                let rebase_result = Command::new("git")
-                    .args(["rebase", "origin/main"])
+            if fetch_ok {
+                // Re-check behind status after fetch
+                let behind = Command::new("git")
+                    .args(["rev-list", "--count", "--left-right", &format!("{branch}...origin/main")])
                     .current_dir(workspace)
                     .output()
-                    .context("failed to run `git rebase origin/main`")?;
+                    .ok()
+                    .and_then(|o| {
+                        let s = String::from_utf8_lossy(&o.stdout);
+                        let parts: Vec<&str> = s.trim().split('\t').collect();
+                        parts.get(1).and_then(|v| v.trim().parse::<i64>().ok())
+                    })
+                    .unwrap_or(0);
 
-                if !rebase_result.status.success() {
-                    let stderr = String::from_utf8_lossy(&rebase_result.stderr);
-                    // Abort the rebase so we don't leave the tree in a bad state
-                    let _ = Command::new("git")
-                        .args(["rebase", "--abort"])
+                if behind > 0 {
+                    eprintln!("  branch '{branch}' is {behind} commit(s) behind origin/main — rebasing...");
+
+                    let is_dirty = Command::new("git")
+                        .args(["status", "--porcelain"])
                         .current_dir(workspace)
-                        .output();
-                    anyhow::bail!(
-                        "failed to rebase '{branch}' onto origin/main:\n{}\n\
-                         Resolve conflicts manually, then run `ccsm start` again.",
-                        stderr.trim(),
-                    );
+                        .output()
+                        .ok()
+                        .map(|o| !o.stdout.is_empty())
+                        .unwrap_or(false);
+
+                    let stashed = if is_dirty {
+                        eprint!("  branch has uncommitted changes. Move them to the worktree? [y/N] ");
+                        use std::io::{self, Write};
+                        let _ = io::stdout().flush();
+                        let mut input = String::new();
+                        let ok = io::stdin().read_line(&mut input)
+                            .map(|_| matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
+                            .unwrap_or(false);
+                        if !ok {
+                            anyhow::bail!("aborted. Commit or stash changes first, then run `ccsm start {}` again.", name);
+                        }
+                        let stash_result = Command::new("git")
+                            .args(["stash", "push", "-m", "ccsm-auto-stash"])
+                            .current_dir(workspace)
+                            .output()
+                            .context("failed to run `git stash`")?;
+                        if !stash_result.status.success() {
+                            anyhow::bail!("failed to stash changes:\n{}", String::from_utf8_lossy(&stash_result.stderr).trim());
+                        }
+                        eprintln!("  changes stashed — rebasing...");
+                        true
+                    } else {
+                        false
+                    };
+
+                    let rebase_ok = Command::new("git")
+                        .args(["rebase", "origin/main"])
+                        .current_dir(workspace)
+                        .output()
+                        .ok()
+                        .map(|o| o.status.success())
+                        .unwrap_or(false);
+
+                    if !rebase_ok {
+                        let _ = Command::new("git").args(["rebase", "--abort"]).current_dir(workspace).output();
+                        if stashed {
+                            let _ = Command::new("git").args(["stash", "pop"]).current_dir(workspace).output();
+                        }
+                        anyhow::bail!("failed to rebase '{}' onto origin/main.\nResolve conflicts manually, then run `ccsm start` again.", branch);
+                    }
+                    eprintln!("  rebase complete — '{branch}' is now up-to-date with main");
+
+                    if stashed {
+                        // Create worktree + pop stash inside it
+                        if let Some(parent) = wt_path.parent() {
+                            std::fs::create_dir_all(parent)
+                                .with_context(|| format!("creating worktree parent: {}", parent.display()))?;
+                        }
+                        let add_ok = Command::new("git")
+                            .args(["worktree", "add", &wt_path.to_string_lossy(), branch])
+                            .current_dir(workspace)
+                            .output()
+                            .ok()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        if !add_ok {
+                            let _ = std::fs::remove_dir_all(&wt_path);
+                            let _ = Command::new("git").args(["stash", "pop"]).current_dir(workspace).output();
+                            anyhow::bail!("failed to create worktree after rebase.");
+                        }
+                        eprintln!("  restoring stashed changes into worktree...");
+                        let pop_ok = Command::new("git")
+                            .args(["stash", "pop"])
+                            .current_dir(&wt_path)
+                            .output()
+                            .ok()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        if !pop_ok {
+                            eprintln!("  warning: stash had conflicts in worktree. Resolve manually (git stash list).");
+                        } else {
+                            eprintln!("  changes moved to worktree successfully");
+                        }
+                        ensure_worktree_gitignore(workspace);
+                        return Ok(wt_path);
+                    }
                 }
-                eprintln!("  rebase complete — '{branch}' is now up-to-date with main");
+            } else {
+                eprintln!("  warning: fetch failed — worktree may be stale");
             }
         }
-    } else {
-        eprintln!("  warning: could not fetch origin/main — worktree may be stale");
+        // If remote unreachable, just proceed without fetching
     }
 
     // Create parent directory
@@ -203,45 +240,32 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
             .with_context(|| format!("creating worktree parent: {}", parent.display()))?;
     }
 
-    // Ensure branch exists
-    if !branch_exists(workspace, branch) {
-        // Try fetching from origin
-        let fetch_result = Command::new("git")
-            .args(["fetch", "origin", branch])
+    // Create worktree — auto-create branch from HEAD if it doesn't exist
+    let branch_exists = Command::new("git")
+        .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .current_dir(workspace)
+        .status()
+        .ok()
+        .map_or(false, |s| s.success());
+
+    let result = if branch_exists {
+        Command::new("git")
+            .args(["worktree", "add", &wt_path.to_string_lossy(), branch])
             .current_dir(workspace)
             .output()
-            .context("failed to run `git fetch origin`")?;
+            .context("failed to run `git worktree add`")?
+    } else {
+        eprintln!("  creating new branch '{}' from HEAD...", branch);
+        Command::new("git")
+            .args(["worktree", "add", "-b", branch, &wt_path.to_string_lossy(), "HEAD"])
+            .current_dir(workspace)
+            .output()
+            .context("failed to run `git worktree add -b`")?
+    };
 
-        if !fetch_result.status.success() {
-            let stderr = String::from_utf8_lossy(&fetch_result.stderr);
-            anyhow::bail!(
-                "branch '{}' does not exist locally or on origin.\n\
-                 Create it with: git checkout -b {}\n\
-                 Or push it with: git push origin {}\n\
-                 Fetch stderr: {}",
-                branch, branch, branch, stderr.trim(),
-            );
-        }
-
-        if !branch_exists(workspace, branch) {
-            anyhow::bail!(
-                "branch '{}' was fetched from origin but still not found locally.\n\
-                 Try: git checkout -b {} origin/{}",
-                branch, branch, branch,
-            );
-        }
-    }
-
-    // Create worktree via `git worktree add`
-    let result = Command::new("git")
-        .args(["worktree", "add", &wt_path.to_string_lossy(), branch])
-        .current_dir(workspace)
-        .output()
-        .context("failed to run `git worktree add`")?;
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        // Clean up the empty parent dir we created
         let _ = std::fs::remove_dir_all(&wt_path);
         anyhow::bail!(
             "git worktree add failed for branch '{}' at {}:\n{}",
@@ -284,7 +308,7 @@ pub fn remove_worktree(workspace: &Path, name: &str, force: bool) -> Result<()> 
         let stderr = String::from_utf8_lossy(&result.stderr);
         anyhow::bail!(
             "failed to remove worktree for '{}' at {}:\n{}\n\
-             Use `ccsm worktree remove {} --force` to force remove.",
+             Use `ccsm complete {} --force` to force remove.",
             name, wt_path.display(), stderr.trim(), name,
         );
     }
@@ -292,98 +316,6 @@ pub fn remove_worktree(workspace: &Path, name: &str, force: bool) -> Result<()> 
     // Clean up leftover directory if any
     if wt_path.exists() {
         let _ = std::fs::remove_dir_all(&wt_path);
-    }
-
-    Ok(())
-}
-
-// ── Standalone subcommand handlers ────────────────────────────────────
-
-/// `ccsm worktree create <name>` — create a worktree for a session.
-pub fn run_create(workspace: &Path, name: &str) -> Result<()> {
-    let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
-    let session = reg
-        .sessions
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))?;
-
-    anyhow::ensure!(
-        !session.branch.is_empty(),
-        "session '{}' has no target branch. Set one with `ccsm new -b <branch>`.",
-        name,
-    );
-
-    anyhow::ensure!(
-        session.use_worktree || crate::config::Config::load(workspace).worktrees == crate::config::WorktreePolicy::Required,
-        "session '{}' is not configured for worktree use.\n\
-         Enable it with: ccsm new {} --worktree -b <branch>\n\
-         Or set worktrees = \"required\" in .ccsm/config.toml",
-        name, name,
-    );
-
-    let wt_path = create_worktree(workspace, name, &session.branch)?;
-
-    // Store worktree path in registry (locked)
-    {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            entry.worktree = wt_path.to_string_lossy().to_string();
-            reg.updated = crate::registry::now_iso();
-            reg.save(workspace)?;
-        }
-    }
-
-    println!("worktree created: {}", wt_path.display());
-    println!("  → ccsm resume {}  to start working in the worktree", name);
-    Ok(())
-}
-
-/// `ccsm worktree remove <name> [--force]` — remove a worktree for a session.
-pub fn run_remove(workspace: &Path, name: &str, force: bool) -> Result<()> {
-    remove_worktree(workspace, name, force)?;
-
-    // Clear worktree path in registry (locked)
-    {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
-        if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-            entry.worktree.clear();
-            reg.updated = crate::registry::now_iso();
-            reg.save(workspace)?;
-        }
-    }
-
-    println!("worktree removed for '{}'", name);
-    Ok(())
-}
-
-/// `ccsm worktree list` — list all ccsm-managed worktrees.
-pub fn run_list(workspace: &Path) -> Result<()> {
-    anyhow::ensure!(
-        is_git_repo(workspace),
-        "not a git repository",
-    );
-
-    let entries = list_worktree_entries(workspace)?;
-
-    // Filter to ccsm-managed worktrees (under .claude/worktrees/)
-    let ccsm_prefix = workspace.join(".claude").join("worktrees");
-    let ccsm_entries: Vec<_> = entries
-        .into_iter()
-        .filter(|(path, _)| path.starts_with(&ccsm_prefix))
-        .collect();
-
-    if ccsm_entries.is_empty() {
-        println!("(no ccsm-managed worktrees)");
-        return Ok(());
-    }
-
-    for (path, branch) in &ccsm_entries {
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default();
-        println!("{:30}  {}  ({})", name, branch, path.display());
     }
 
     Ok(())

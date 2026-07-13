@@ -57,8 +57,9 @@ impl Drop for ChildGuard {
 
 // ── Resume subcommand ───────────────────────────────────────────────────
 
-/// `ccsm resume <name>` — promote entry, spawn agent (claude/pi/cmd) with resume or fresh.
-pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::consumer::Consumer) -> anyhow::Result<()> {
+/// `ccsm resume <name> [--worktree]` — promote entry, spawn agent (claude/pi/cmd) with resume or fresh.
+/// With `--worktree`, creates a git worktree first and resumes inside it.
+pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::consumer::Consumer, flag_worktree: bool) -> anyhow::Result<()> {
     let now = crate::registry::now_iso();
     let bin = consumer.binary();
 
@@ -191,6 +192,43 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 );
             }
         }
+    }
+
+    // ── Phase 1b: Create worktree if --worktree flag or config required ─
+    let config = crate::config::Config::load(workspace);
+    let should_create_worktree = match config.worktrees {
+        crate::config::WorktreePolicy::Required => true,
+        crate::config::WorktreePolicy::Optional => flag_worktree,
+        crate::config::WorktreePolicy::Disabled => false,
+    };
+
+    if should_create_worktree {
+        eprintln!("  preparing worktree...");
+        let branch = {
+            let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+            reg.sessions.iter()
+                .find(|s| s.name == name)
+                .map(|s| s.branch.clone())
+                .filter(|b| !b.is_empty())
+                .ok_or_else(|| anyhow::anyhow!(
+                    "session '{}' has no target branch. Set one with `ccsm new -b <branch>`.",
+                    name,
+                ))?
+        };
+
+        let wt_path = crate::commands::worktree::create_worktree(workspace, name, &branch)?;
+
+        // Store worktree path + enable use_worktree (locked)
+        {
+            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+            if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+                entry.worktree = wt_path.to_string_lossy().to_string();
+                entry.use_worktree = true;
+                reg.updated = crate::registry::now_iso();
+                reg.save(workspace)?;
+            }
+        }
+        eprintln!("📁 worktree created: {}", wt_path.display());
     }
 
     // ── Phase 2: Determine worktree directory (no lock) ──────────────
