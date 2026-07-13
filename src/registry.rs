@@ -238,18 +238,28 @@ impl WorkspaceRegistry {
 
         // Prefer .ccsm/ path
         if path.exists() {
-            let contents = std::fs::read_to_string(&path).context("reading workspace registry")?;
+            let contents = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
             let mut reg: WorkspaceRegistry =
-                serde_json::from_str(&contents).context("parsing workspace registry")?;
+                serde_json::from_str(&contents)
+                    .with_context(|| format!(
+                        "parsing {} — JSON is malformed\n  → check for trailing/missing commas, unclosed brackets, or stray characters\n  → backup or delete the file to start fresh",
+                        path.display(),
+                    ))?;
             reg.updated = now_iso();
             return Ok(reg);
         }
 
         // Fallback: load from legacy .claude/ location
         if legacy_path.exists() {
-            let contents = std::fs::read_to_string(&legacy_path).context("reading legacy workspace registry")?;
+            let contents = std::fs::read_to_string(&legacy_path)
+                .with_context(|| format!("reading {}", legacy_path.display()))?;
             let mut reg: WorkspaceRegistry =
-                serde_json::from_str(&contents).context("parsing workspace registry")?;
+                serde_json::from_str(&contents)
+                    .with_context(|| format!(
+                        "parsing {} — JSON is malformed\n  → check for trailing/missing commas, unclosed brackets, or stray characters\n  → backup or delete the file to start fresh",
+                        legacy_path.display(),
+                    ))?;
             reg.updated = now_iso();
             eprintln!("ccsm: loading from .claude/sessions.json — migrate with `ccsm migrate-ccsm`");
             return Ok(reg);

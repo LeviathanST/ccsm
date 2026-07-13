@@ -40,7 +40,14 @@ pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
 /// `ccsm doctor` — scan session registry and filesystem for health issues.
 pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     let consumer = crate::consumer::Consumer::detect(home, None);
-    let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+    let reg = match crate::registry::WorkspaceRegistry::load(workspace) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("⚠ registry file is corrupt — some checks skipped\n   {:#}", e);
+            eprintln!("   → fix the JSON manually, delete the file to start fresh, or use a JSON formatter\n");
+            crate::registry::WorkspaceRegistry::empty()
+        }
+    };
     let proj_dir = consumer.projects_dir_for(home, workspace);
     let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
 
