@@ -171,37 +171,35 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                     session_issues += 1;
                 }
             }
+        // 7. Worktree checks
+        if !s.worktree.is_empty() {
+            let wt_path = std::path::Path::new(&s.worktree);
+            let mut wt_issue = false;
+            if !wt_path.is_dir() {
+                infos.push(format!(
+                    "  stale worktree  {}\n    worktree path '{}' recorded but directory missing\n    → ccsm pending {}  or  set worktree to empty",
+                    s.name, s.worktree, s.name,
+                ));
+                wt_issue = true;
+            } else if s.status != crate::registry::SessionStatus::InProgress {
+                warnings.push(format!(
+                    "  orphaned worktree  {}\n    worktree at {} exists but session is {}\n    → ccsm worktree remove {}  or  ccsm start {}",
+                    s.name, s.worktree, s.status, s.name, s.name,
+                ));
+                wt_issue = true;
+            }
+            if wt_issue { session_issues += 1; }
+        } else if s.status == crate::registry::SessionStatus::InProgress
+            && !s.branch.is_empty()
+            && s.use_worktree
+        {
+            tips.push(format!(
+                "  worktree not created  {}\n    session targets branch '{}' with --worktree but no worktree exists\n    → ccsm worktree create {}",
+                s.name, s.branch, s.name,
+            ));
+        }
 
         if session_issues == 0 {
-	        // 7. Worktree checks
-	        if !s.worktree.is_empty() {
-	            let wt_path = std::path::Path::new(&s.worktree);
-	            if !wt_path.is_dir() {
-	                // Stale worktree field — path doesn't exist
-	                infos.push(format!(
-	                    "  stale worktree  {}\n    worktree path '{}' recorded but directory missing\n    → ccsm pending {}  or  set worktree to empty",
-	                    s.name, s.worktree, s.name,
-	                ));
-	                session_issues += 1;
-	            } else if s.status != crate::registry::SessionStatus::InProgress {
-	                // Orphaned worktree — session no longer active but dir exists
-	                warnings.push(format!(
-	                    "  orphaned worktree  {}\n    worktree at {} exists but session is {}\n    → ccsm worktree remove {}  or  ccsm start {}",
-	                    s.name, s.worktree, s.status, s.name, s.name,
-	                ));
-	                session_issues += 1;
-	            }
-	        } else if s.status == crate::registry::SessionStatus::InProgress
-	            && !s.branch.is_empty()
-	            && s.use_worktree
-	        {
-	            // Session configured for worktree but no worktree created yet
-	            tips.push(format!(
-	                "  worktree not created  {}\n    session targets branch '{}' with --worktree but no worktree exists\n    → ccsm worktree create {}",
-	                s.name, s.branch, s.name,
-	            ));
-	        }
-
             healthy += 1;
         }
     }
