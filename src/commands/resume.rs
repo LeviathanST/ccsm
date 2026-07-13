@@ -259,38 +259,68 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     };
 
     // ── Phase 3: Spawn agent (no lock) ──────────────────────────────
-    let mut cmd = std::process::Command::new(bin);
-    if let Some(ref wt) = worktree_dir {
-        cmd.current_dir(wt);
-        cmd.env("CCSM_WORKTREE", wt);
-        eprintln!("📁 worktree: {}", wt.display());
-    } else {
-        cmd.current_dir(workspace);
-    }
-    cmd.env("CCSM_SESSION", name);
 
-    match consumer {
-        crate::consumer::Consumer::Claude => {
-            if let Some(ref id) = sid {
-                cmd.arg("--resume").arg(id);
-                println!("resuming    {}  ← {bin} --resume {}", name, &id[..id.len().min(8)]);
-            } else if fresh {
-                println!("starting    {}  ← {bin} (fresh)", name);
-            } else {
-                println!("starting    {}  ← {bin} (new session)", name);
+    // When a worktree is active, wrap in `sh -c "cd <wt> && exec $bin <args>"`.
+    // This ensures claude's session file records the worktree as cwd, so on
+    // subsequent --resume the agent lands in the worktree, not the workspace root.
+    let mut cmd = if let Some(ref wt) = worktree_dir {
+        eprintln!("📁 worktree: {}", wt.display());
+        let wt_str = wt.to_string_lossy();
+        let inner = match consumer {
+            crate::consumer::Consumer::Claude => {
+                let (flag, label) = if let Some(ref id) = sid {
+                    (format!("--resume {}", id), format!("resuming    {}  ← {bin} --resume {}", name, &id[..id.len().min(8)]))
+                } else if fresh {
+                    (String::new(), format!("starting    {}  ← {bin} (fresh)", name))
+                } else {
+                    (String::new(), format!("starting    {}  ← {bin} (new session)", name))
+                };
+                println!("{}", label);
+                format!("cd '{}' && exec {} {} -n '{}'", wt_str, bin, flag, name)
             }
-            cmd.arg("-n").arg(name);
-        }
-        crate::consumer::Consumer::Pi => {
-            if let Some(ref id) = sid {
-                cmd.arg("--session").arg(id);
-                println!("resuming    {}  ← pi --session {}", name, &id[..id.len().min(8)]);
-            } else {
-                // Fresh ccsm entry → start a new Pi session
-                println!("starting    {}  ← pi (fresh session)", name);
+            crate::consumer::Consumer::Pi => {
+                let (flag, label) = if let Some(ref id) = sid {
+                    (format!("--session {}", id), format!("resuming    {}  ← pi --session {}", name, &id[..id.len().min(8)]))
+                } else {
+                    (String::new(), format!("starting    {}  ← pi (fresh session)", name))
+                };
+                println!("{}", label);
+                format!("cd '{}' && exec {} {} -n '{}'", wt_str, bin, flag, name)
             }
-            cmd.arg("-n").arg(name);
+        };
+        let mut s = std::process::Command::new("sh");
+        s.arg("-c").arg(&inner);
+        s
+    } else {
+        let mut c = std::process::Command::new(bin);
+        c.current_dir(workspace);
+        match consumer {
+            crate::consumer::Consumer::Claude => {
+                if let Some(ref id) = sid {
+                    c.arg("--resume").arg(id);
+                    println!("resuming    {}  ← {bin} --resume {}", name, &id[..id.len().min(8)]);
+                } else if fresh {
+                    println!("starting    {}  ← {bin} (fresh)", name);
+                } else {
+                    println!("starting    {}  ← {bin} (new session)", name);
+                }
+                c.arg("-n").arg(name);
+            }
+            crate::consumer::Consumer::Pi => {
+                if let Some(ref id) = sid {
+                    c.arg("--session").arg(id);
+                    println!("resuming    {}  ← pi --session {}", name, &id[..id.len().min(8)]);
+                } else {
+                    println!("starting    {}  ← pi (fresh session)", name);
+                }
+                c.arg("-n").arg(name);
+            }
         }
+        c
+    };
+    cmd.env("CCSM_SESSION", name);
+    if let Some(ref wt) = worktree_dir {
+        cmd.env("CCSM_WORKTREE", wt);
     }
 
     let mut child_guard = ChildGuard::new(cmd.spawn()?);
@@ -329,6 +359,25 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                  {bin} may have failed to start. Check for errors above.",
                 session_file.display(),
             );
+        }
+
+        // Override session file's cwd to worktree if one is active.
+        // Claude's --resume restores CWD from this file — we want the
+        // agent to land in the worktree, not the workspace root.
+        if let Some(ref wt) = worktree_dir {
+            if let Ok(contents) = std::fs::read_to_string(&session_file) {
+                if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    if let Some(obj) = json.as_object_mut() {
+                        let wt_str = wt.to_string_lossy().to_string();
+                        if obj.get("cwd").map_or(true, |v| v.as_str() != Some(&wt_str)) {
+                            obj.insert("cwd".into(), serde_json::Value::String(wt_str));
+                            if let Ok(updated) = serde_json::to_string(&json) {
+                                let _ = std::fs::write(&session_file, &updated);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Harvest session_id + started (locked)
