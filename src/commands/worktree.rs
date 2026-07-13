@@ -144,6 +144,59 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
         name,
     );
 
+    // ── Ensure branch is up-to-date with main ──────────────────────
+    // Fetch latest origin/main and rebase the branch if needed so the
+    // worktree starts from current state.
+    let fetch_result = Command::new("git")
+        .args(["fetch", "origin", "main"])
+        .current_dir(workspace)
+        .output()
+        .context("failed to run `git fetch origin main`")?;
+
+    if fetch_result.status.success() {
+        // Check if branch is behind origin/main
+        let behind_output = Command::new("git")
+            .args([
+                "rev-list", "--count", "--left-right",
+                &format!("{branch}...origin/main"),
+            ])
+            .current_dir(workspace)
+            .output();
+
+        if let Ok(output) = behind_output {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let parts: Vec<&str> = stdout.trim().split('\t').collect();
+            // rev-list --left-right --count: <ahead>\t<behind>
+            let behind: i64 = parts.get(1).and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+
+            if behind > 0 {
+                eprintln!("  branch '{branch}' is {behind} commit(s) behind origin/main — rebasing...");
+                let rebase_result = Command::new("git")
+                    .args(["rebase", "origin/main"])
+                    .current_dir(workspace)
+                    .output()
+                    .context("failed to run `git rebase origin/main`")?;
+
+                if !rebase_result.status.success() {
+                    let stderr = String::from_utf8_lossy(&rebase_result.stderr);
+                    // Abort the rebase so we don't leave the tree in a bad state
+                    let _ = Command::new("git")
+                        .args(["rebase", "--abort"])
+                        .current_dir(workspace)
+                        .output();
+                    anyhow::bail!(
+                        "failed to rebase '{branch}' onto origin/main:\n{}\n\
+                         Resolve conflicts manually, then run `ccsm start` again.",
+                        stderr.trim(),
+                    );
+                }
+                eprintln!("  rebase complete — '{branch}' is now up-to-date with main");
+            }
+        }
+    } else {
+        eprintln!("  warning: could not fetch origin/main — worktree may be stale");
+    }
+
     // Create parent directory
     if let Some(parent) = wt_path.parent() {
         std::fs::create_dir_all(parent)
