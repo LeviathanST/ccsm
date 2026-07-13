@@ -204,19 +204,33 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
     if should_create_worktree {
         eprintln!("  preparing worktree...");
-        let branch = {
+        let (branch, existing_wt) = {
             let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
-            reg.sessions.iter()
+            let session = reg.sessions.iter()
                 .find(|s| s.name == name)
-                .map(|s| s.branch.clone())
-                .filter(|b| !b.is_empty())
-                .ok_or_else(|| anyhow::anyhow!(
-                    "session '{}' has no target branch. Set one with `ccsm new -b <branch>`.",
-                    name,
-                ))?
+                .ok_or_else(|| anyhow::anyhow!("session '{}' not found", name))?;
+            let branch = session.branch.clone();
+            anyhow::ensure!(!branch.is_empty(),
+                "session '{}' has no target branch. Set one with `ccsm new -b <branch>`.", name,
+            );
+            // Check registry first, then canonical filesystem path
+            let existing = if !session.worktree.is_empty() {
+                let p = std::path::PathBuf::from(&session.worktree);
+                if p.is_dir() { Some(p) } else { None }
+            } else {
+                let canonical = crate::commands::worktree::worktree_path_for(workspace, name);
+                if canonical.is_dir() { Some(canonical) } else { None }
+            };
+            (branch, existing)
         };
 
-        let wt_path = crate::commands::worktree::create_worktree(workspace, name, &branch)?;
+        let wt_path = match existing_wt {
+            Some(path) => {
+                eprintln!("📁 worktree already exists: {}", path.display());
+                path
+            }
+            None => crate::commands::worktree::create_worktree(workspace, name, &branch)?,
+        };
 
         // Store worktree path + enable use_worktree (locked)
         {
@@ -228,7 +242,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 reg.save(workspace)?;
             }
         }
-        eprintln!("📁 worktree created: {}", wt_path.display());
+        eprintln!("📁 worktree: {}", wt_path.display());
     }
 
     // ── Phase 2: Determine worktree directory (no lock) ──────────────
