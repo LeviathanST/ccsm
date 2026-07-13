@@ -155,8 +155,13 @@ enum Commands {
         #[arg(short = 'w', long = "worktree")]
         worktree: bool,
     },
-    /// pending → in_progress
-    Start { name: String },
+    /// pending → in_progress. With --worktree, also creates a git worktree.
+    Start {
+        name: String,
+        /// Enable worktree for this start (overrides session's use_worktree)
+        #[arg(short = 'w', long = "worktree")]
+        worktree: bool,
+    },
     /// in_progress → completed, sets completed timestamp
     Complete {
         name: String,
@@ -268,8 +273,14 @@ enum Commands {
         #[arg(short = 's', long)]
         scope: Option<String>,
     },
-    /// Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit
-    Resume { name: String },
+    /// Spawn claude. --resume if session_id set, -n <name>, harvests session_id on exit.
+    /// With --worktree, creates a git worktree first and resumes inside it.
+    Resume {
+        name: String,
+        /// Create a git worktree and resume inside it
+        #[arg(short = 'w', long = "worktree")]
+        worktree: bool,
+    },
     /// Retire current Claude session, spawn a fresh one for the same ccsm session.
     /// Use when context is bloated (>40%) and the model gets biased.
     Refresh {
@@ -278,24 +289,6 @@ enum Commands {
         #[arg(short = 'r', long)]
         reason: Option<String>,
     },
-    /// Create a git worktree for a session (usually done by `ccsm start`).
-    #[command(visible_alias = "wtc")]
-    WorktreeCreate {
-        /// Session name
-        name: String,
-    },
-    /// Remove a git worktree for a session (usually done by `ccsm complete`).
-    #[command(visible_alias = "wtr")]
-    WorktreeRemove {
-        /// Session name
-        name: String,
-        /// Force removal even if dirty
-        #[arg(short, long)]
-        force: bool,
-    },
-    /// List ccsm-managed worktrees.
-    #[command(visible_alias = "wtl", visible_alias = "wts")]
-    WorktreeList,
     /// Soft-delete → trashed. Recoverable. Trash first, then `clean` to nuke.
     Trash { name: String },
     /// trashed → in_progress
@@ -425,7 +418,7 @@ fn main() -> anyhow::Result<()> {
         Commands::List { active, summary, status, verbose, group, by_rank, json } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank, json),
         Commands::Show { name, section, json } => run_show(&name, section.as_deref(), json, consumer),
         Commands::New { name, goal, force, checklist, branch, worktree } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist, branch.as_deref().unwrap_or(""), worktree, consumer),
-        Commands::Start { name } => run_start(&name),
+        Commands::Start { name, worktree } => run_start(&name, worktree),
         Commands::Complete { name, force } => run_complete(&name, force),
         Commands::Block { name } => run_status(&name, "block", false),
         Commands::Abandon { name } => run_status(&name, "abandon", false),
@@ -439,11 +432,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Depend { name, on, clear } => run_depend(&name, on.as_deref(), clear),
         Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home, consumer),
         Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path(), consumer),
-        Commands::Resume { name } => commands::resume::run_resume(&name, &workspace_path(), &home, consumer),
+        Commands::Resume { name, worktree } => commands::resume::run_resume(&name, &workspace_path(), &home, consumer, worktree),
         Commands::Refresh { name, reason } => run_refresh(&name, reason.as_deref(), &workspace_path(), &home, consumer),
-        Commands::WorktreeCreate { name } => commands::worktree::run_create(&workspace_path(), &name),
-        Commands::WorktreeRemove { name, force } => commands::worktree::run_remove(&workspace_path(), &name, force),
-        Commands::WorktreeList => commands::worktree::run_list(&workspace_path()),
         Commands::Trash { name } => run_trash(&name),
         Commands::Recover { name } => run_recover(&name),
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path(), consumer),
@@ -1535,8 +1525,8 @@ fn should_use_worktree(session: &crate::registry::WorkspaceSession, config: &cra
     }
 }
 
-/// `ccsm start <name>` — promote to InProgress, create worktree if applicable.
-fn run_start(name: &str) -> anyhow::Result<()> {
+/// `ccsm start <name> [--worktree]` — promote to InProgress, create worktree if applicable.
+fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let workspace = workspace_path();
     let config = crate::config::Config::load(&workspace);
@@ -1556,7 +1546,7 @@ fn run_start(name: &str) -> anyhow::Result<()> {
             ErrorCode::BadStatus, name, entry.status
         );
 
-        let use_wt = should_use_worktree(entry, &config);
+        let use_wt = flag_worktree || should_use_worktree(entry, &config);
         if use_wt {
             anyhow::ensure!(
                 !entry.branch.is_empty(),
@@ -1589,8 +1579,13 @@ fn run_start(name: &str) -> anyhow::Result<()> {
     // Phase 3: Status transition + store worktree path (locked)
     mutate_session(name, "start", |entry| {
         entry.status = SessionStatus::InProgress;
+        if flag_worktree {
+            entry.use_worktree = true;
+        }
         if let Some(ref path) = wt_path {
             entry.worktree = path.to_string_lossy().to_string();
+        } else {
+            entry.worktree.clear(); // Ensure stale path is cleared
         }
     })?;
 
