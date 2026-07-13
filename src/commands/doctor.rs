@@ -173,6 +173,35 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
             }
 
         if session_issues == 0 {
+	        // 7. Worktree checks
+	        if !s.worktree.is_empty() {
+	            let wt_path = std::path::Path::new(&s.worktree);
+	            if !wt_path.is_dir() {
+	                // Stale worktree field — path doesn't exist
+	                infos.push(format!(
+	                    "  stale worktree  {}\n    worktree path '{}' recorded but directory missing\n    → ccsm pending {}  or  set worktree to empty",
+	                    s.name, s.worktree, s.name,
+	                ));
+	                session_issues += 1;
+	            } else if s.status != crate::registry::SessionStatus::InProgress {
+	                // Orphaned worktree — session no longer active but dir exists
+	                warnings.push(format!(
+	                    "  orphaned worktree  {}\n    worktree at {} exists but session is {}\n    → ccsm worktree remove {}  or  ccsm start {}",
+	                    s.name, s.worktree, s.status, s.name, s.name,
+	                ));
+	                session_issues += 1;
+	            }
+	        } else if s.status == crate::registry::SessionStatus::InProgress
+	            && !s.branch.is_empty()
+	            && s.use_worktree
+	        {
+	            // Session configured for worktree but no worktree created yet
+	            tips.push(format!(
+	                "  worktree not created  {}\n    session targets branch '{}' with --worktree but no worktree exists\n    → ccsm worktree create {}",
+	                s.name, s.branch, s.name,
+	            ));
+	        }
+
             healthy += 1;
         }
     }
@@ -212,6 +241,23 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
             ));
         }
     }
+    // 11. Orphaned worktree directories (no matching session)
+    let wt_dir = workspace.join(".claude").join("worktrees");
+    if wt_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&wt_dir) {
+            for entry in entries.flatten() {
+                let dir_name = entry.file_name();
+                let name_str = dir_name.to_string_lossy();
+                if entry.path().is_dir() && !reg.sessions.iter().any(|s| s.name == name_str) {
+                    tips.push(format!(
+                        "  orphaned worktree dir  {}\n    {} has no matching session\n    → ccsm worktree remove {}  or  git worktree remove \"{}\"",
+                        name_str, entry.path().display(), name_str, entry.path().display(),
+                    ));
+                }
+            }
+        }
+    }
+
 
     // 10. Large transcripts — candidates for archive
     let mut large: Vec<(String, u64)> = Vec::new();

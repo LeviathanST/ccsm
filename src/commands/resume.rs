@@ -193,9 +193,28 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         }
     }
 
-    // ── Phase 2: Spawn agent (no lock) ──────────────────────────────
+    // ── Phase 2: Determine worktree directory (no lock) ──────────────
+    let worktree_dir: Option<std::path::PathBuf> = {
+        let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+        reg.sessions.iter()
+            .find(|s| s.name == name)
+            .and_then(|s| {
+                if !s.worktree.is_empty() {
+                    let wt = std::path::PathBuf::from(&s.worktree);
+                    if wt.is_dir() { Some(wt) } else { None }
+                } else { None }
+            })
+    };
+
+    // ── Phase 3: Spawn agent (no lock) ──────────────────────────────
     let mut cmd = std::process::Command::new(bin);
-    cmd.current_dir(workspace);
+    if let Some(ref wt) = worktree_dir {
+        cmd.current_dir(wt);
+        cmd.env("CCSM_WORKTREE", wt);
+        eprintln!("📁 worktree: {}", wt.display());
+    } else {
+        cmd.current_dir(workspace);
+    }
     cmd.env("CCSM_SESSION", name);
 
     match consumer {
@@ -225,13 +244,13 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     let mut child_guard = ChildGuard::new(cmd.spawn()?);
     let child_pid = child_guard.id();
 
-    // ── Phase 3: Write pid to registry (locked) ─────────────────────
+    // ── Phase 4: Write pid to registry (locked) ─────────────────────
     {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             Some(entry) => entry.pids = vec![child_pid],
             None => anyhow::bail!(
-                "internal error: session '{}' vanished from registry between Phase 1 and Phase 3",
+                "internal error: session '{}' vanished from registry between Phase 1 and Phase 4",
                 name
             ),
         }
@@ -239,7 +258,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         reg.save(workspace)?;
     }
 
-    // ── Phase 4: Harvest session_id (consumer-specific) ─────────────
+    // ── Phase 5: Harvest session_id (consumer-specific) ─────────────
     if consumer.is_claude() {
         // Claude: poll for PID-based session file
         let session_file = consumer.live_session_file(home, child_pid)
@@ -266,7 +285,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
-                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 5",
+                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
                     name
                 ),
             };
@@ -308,10 +327,10 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         eprintln!("  (session tracking active)");
     }
 
-    // ── Phase 5: Wait for child ─────────────────────────────────────
+    // ── Phase 6: Wait for child ─────────────────────────────────────
     let status = child_guard.wait()?;
 
-    // ── Phase 6: Clear stale pids (locked) ──────────────────────────
+    // ── Phase 7: Clear stale pids (locked) ──────────────────────────
     {
         let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {

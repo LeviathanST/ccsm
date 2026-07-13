@@ -19,6 +19,10 @@ pub struct Config {
     #[serde(default = "default_wip_limit")]
     pub wip_limit: usize,
 
+    /// Worktree policy: "required" (all branch sessions), "optional" (only with --worktree flag, default), or "disabled".
+    #[serde(default = "default_worktree_policy")]
+    pub worktrees: WorktreePolicy,
+
     /// Custom checklist templates (override built-in defaults).
     #[serde(default)]
     pub checklist_templates: HashMap<String, ChecklistTemplate>,
@@ -37,8 +41,20 @@ pub enum BranchTracking {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreePolicy {
+    Required,
+    Optional,
+    Disabled,
+}
+
 fn default_branch_tracking() -> BranchTracking {
     BranchTracking::Optional
+}
+
+fn default_worktree_policy() -> WorktreePolicy {
+    WorktreePolicy::Optional
 }
 
 fn default_wip_limit() -> usize {
@@ -75,6 +91,7 @@ impl Config {
         Self {
             branch_tracking: BranchTracking::Optional,
             wip_limit: 0,
+            worktrees: WorktreePolicy::Optional,
             checklist_templates: HashMap::new(),
             default_checklist_type: None,
         }

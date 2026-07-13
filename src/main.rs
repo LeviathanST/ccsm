@@ -151,6 +151,9 @@ enum Commands {
         /// Target git branch (metadata only — ccsm warns on mismatch at resume)
         #[arg(short = 'b', long)]
         branch: Option<String>,
+        /// Use a git worktree for this session (isolated checkout)
+        #[arg(short = 'w', long = "worktree")]
+        worktree: bool,
     },
     /// pending → in_progress
     Start { name: String },
@@ -275,6 +278,24 @@ enum Commands {
         #[arg(short = 'r', long)]
         reason: Option<String>,
     },
+    /// Create a git worktree for a session (usually done by `ccsm start`).
+    #[command(visible_alias = "wtc")]
+    WorktreeCreate {
+        /// Session name
+        name: String,
+    },
+    /// Remove a git worktree for a session (usually done by `ccsm complete`).
+    #[command(visible_alias = "wtr")]
+    WorktreeRemove {
+        /// Session name
+        name: String,
+        /// Force removal even if dirty
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// List ccsm-managed worktrees.
+    #[command(visible_alias = "wtl", visible_alias = "wts")]
+    WorktreeList,
     /// Soft-delete → trashed. Recoverable. Trash first, then `clean` to nuke.
     Trash { name: String },
     /// trashed → in_progress
@@ -403,9 +424,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Scan { group, status, search, json } => run_scan(group.as_deref(), status.as_deref(), search.as_deref(), json),
         Commands::List { active, summary, status, verbose, group, by_rank, json } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank, json),
         Commands::Show { name, section, json } => run_show(&name, section.as_deref(), json, consumer),
-        Commands::New { name, goal, force, checklist, branch } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist, branch.as_deref().unwrap_or(""), consumer),
-        Commands::Start { name } => run_status(&name, "start", false),
-        Commands::Complete { name, force } => run_status(&name, "complete", force),
+        Commands::New { name, goal, force, checklist, branch, worktree } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist, branch.as_deref().unwrap_or(""), worktree, consumer),
+        Commands::Start { name } => run_start(&name),
+        Commands::Complete { name, force } => run_complete(&name, force),
         Commands::Block { name } => run_status(&name, "block", false),
         Commands::Abandon { name } => run_status(&name, "abandon", false),
         Commands::Pending { name } => run_pending(&name),
@@ -420,6 +441,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path(), consumer),
         Commands::Resume { name } => commands::resume::run_resume(&name, &workspace_path(), &home, consumer),
         Commands::Refresh { name, reason } => run_refresh(&name, reason.as_deref(), &workspace_path(), &home, consumer),
+        Commands::WorktreeCreate { name } => commands::worktree::run_create(&workspace_path(), &name),
+        Commands::WorktreeRemove { name, force } => commands::worktree::run_remove(&workspace_path(), &name, force),
+        Commands::WorktreeList => commands::worktree::run_list(&workspace_path()),
         Commands::Trash { name } => run_trash(&name),
         Commands::Recover { name } => run_recover(&name),
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path(), consumer),
@@ -1033,6 +1057,35 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
 /// `ccsm rename <old> <new>` — rename a session across registry, detail file,
 /// live session files, and transcript.
 fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
+    // Check for existing worktree before locking (read-only)
+    let old_reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+    let has_worktree = old_reg.sessions.iter()
+        .find(|s| s.name == old)
+        .map(|s| !s.worktree.is_empty())
+        .unwrap_or(false);
+    let old_wt_path = has_worktree.then(|| {
+        commands::worktree::worktree_path_for(workspace, old)
+    });
+    drop(old_reg); // Release before git operation
+
+    // Rename worktree directory if one exists (no lock — git operation)
+    if let Some(ref old_path) = old_wt_path {
+        if old_path.exists() {
+            let new_wt_path = commands::worktree::worktree_path_for(workspace, new);
+            let result = std::process::Command::new("git")
+                .args(["worktree", "move", &old_path.to_string_lossy(), &new_wt_path.to_string_lossy()])
+                .current_dir(workspace)
+                .output()
+                .context("failed to run `git worktree move`")?;
+            if result.status.success() {
+                eprintln!("  worktree  renamed to {}", new_wt_path.display());
+            } else {
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                anyhow::bail!("failed to rename worktree: {}", stderr.trim());
+            }
+        }
+    }
+
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
 
     // Validate: old must exist, new must not
@@ -1149,6 +1202,12 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     if let Some(s) = scope {
         reg.sessions[idx].scope = s.to_string();
     }
+    // Update worktree path to reflect new name
+    if !reg.sessions[idx].worktree.is_empty() {
+        reg.sessions[idx].worktree = commands::worktree::worktree_path_for(workspace, new)
+            .to_string_lossy()
+            .to_string();
+    }
     reg.updated = crate::registry::now_iso();
     reg.save(workspace)?;
 
@@ -1212,6 +1271,9 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
 
 /// `ccsm clean <name>` — permanently delete transcript, session files, and registry entry.
 fn run_clean(name: &str, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
+    // Best-effort worktree removal before permanent delete (no lock)
+    let _ = commands::worktree::remove_worktree(workspace, name, true);
+
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
@@ -1310,7 +1372,7 @@ fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer
 }
 
 /// `ccsm new <name> [goal]` — create a new session entry.
-fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branch: &str, consumer: Consumer) -> anyhow::Result<()> {
+fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branch: &str, worktree: bool, consumer: Consumer) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let config = crate::config::Config::load(&workspace);
 
@@ -1383,6 +1445,8 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
         group: None,
         depends_on: vec![],
         branch: branch.to_string(),
+        use_worktree: worktree,
+        worktree: String::new(),
         retired_session_ids: vec![],
         consumer: consumer.to_string(),
     });
@@ -1459,6 +1523,142 @@ fn build_checklist_section(_name: &str, template_type: Option<&str>, config: &cr
             )
         }
     }
+}
+
+/// Determine whether a session should get a worktree, based on config policy + session flags.
+fn should_use_worktree(session: &crate::registry::WorkspaceSession, config: &crate::config::Config) -> bool {
+    use crate::config::WorktreePolicy;
+    match config.worktrees {
+        WorktreePolicy::Required => !session.branch.is_empty(),
+        WorktreePolicy::Optional => session.use_worktree && !session.branch.is_empty(),
+        WorktreePolicy::Disabled => false,
+    }
+}
+
+/// `ccsm start <name>` — promote to InProgress, create worktree if applicable.
+fn run_start(name: &str) -> anyhow::Result<()> {
+    use crate::registry::SessionStatus;
+    let workspace = workspace_path();
+    let config = crate::config::Config::load(&workspace);
+
+    // Phase 1: Load registry, validate, read branch (locked)
+    let (branch, use_wt) = {
+        let (reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+        let entry = reg
+            .sessions
+            .iter()
+            .find(|s| s.name == name)
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+
+        anyhow::ensure!(
+            entry.status == SessionStatus::Pending,
+            "{} session '{}' is {} — only pending sessions can be started",
+            ErrorCode::BadStatus, name, entry.status
+        );
+
+        let use_wt = should_use_worktree(entry, &config);
+        if use_wt {
+            anyhow::ensure!(
+                !entry.branch.is_empty(),
+                "session '{}' has no target branch. Use `ccsm new {} -b <branch> -g \"...\"` to set one.",
+                name, name
+            );
+            anyhow::ensure!(
+                entry.worktree.is_empty(),
+                "worktree for session '{}' already exists. Use `ccsm resume {}` to continue, or `ccsm worktree remove {}` to clean up.",
+                name, name, name
+            );
+        }
+
+        (entry.branch.clone(), use_wt)
+    }; // lock released
+
+    // Phase 2: Create worktree if configured (no lock — git operation)
+    let wt_path = if use_wt {
+        let wt = commands::worktree::create_worktree(&workspace, name, &branch)
+            .map_err(|e| {
+                eprintln!("warning: worktree creation failed — continuing without worktree");
+                e
+            })
+            .ok();
+        wt
+    } else {
+        None
+    };
+
+    // Phase 3: Status transition + store worktree path (locked)
+    mutate_session(name, "start", |entry| {
+        entry.status = SessionStatus::InProgress;
+        if let Some(ref path) = wt_path {
+            entry.worktree = path.to_string_lossy().to_string();
+        }
+    })?;
+
+    crate::registry::sync_status_line(&workspace, name);
+
+    if let Some(ref path) = wt_path {
+        println!("📁 worktree: {}", path.display());
+    }
+    eprintln!("💡 multi-step? `ccsm checklist {} --init` to add sub-task tracking", name);
+
+    Ok(())
+}
+
+/// `ccsm complete <name> [--force]` — promote to Completed, remove worktree if applicable.
+fn run_complete(name: &str, force: bool) -> anyhow::Result<()> {
+    use crate::registry::SessionStatus;
+
+    // Pre-completion gate checks
+    if !force {
+        if let Err(e) = run_gate_checks(name) {
+            eprintln!(
+                "✗ cannot complete: gate checks failed.\n\
+                 \n  → ccsm close {} to see what's needed\n\
+                 → ccsm complete {} --force to bypass\n\
+                 \n{e}",
+                name, name,
+            );
+            anyhow::bail!("{} gate checks failed — fix issues or use --force", ErrorCode::Gate);
+        }
+        println!();
+        println!(
+            "\
+🔍 Self-review:
+  [ ] Tests pass?
+  [ ] All changes committed and pushed?
+  [ ] Scope fulfilled? Anything left undocumented?
+  [ ] Dependencies resolved?
+  [ ] Detail file tags and progress log are current?"
+        );
+    }
+
+    let workspace = workspace_path();
+
+    // Phase 1: Remove worktree if one exists (best-effort)
+    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let has_worktree = reg.sessions.iter()
+        .find(|s| s.name == name)
+        .map(|s| !s.worktree.is_empty())
+        .unwrap_or(false);
+    drop(reg); // Release read lock before potentially long git operation
+
+    if has_worktree {
+        if let Err(e) = commands::worktree::remove_worktree(&workspace, name, force) {
+            // Don't fail completion — warn and continue
+            eprintln!("warning: worktree removal failed: {e}");
+            eprintln!("  (the session will still be marked as completed)");
+        }
+    }
+
+    // Phase 2: Status transition + clear worktree path (locked)
+    mutate_session(name, "complete", |entry| {
+        entry.status = SessionStatus::Completed;
+        entry.completed = crate::registry::now_iso();
+        entry.worktree.clear();
+    })?;
+
+    crate::registry::sync_status_line(&workspace, name);
+    Ok(())
 }
 
 /// `ccsm start|complete|block|abandon <name>` — status transitions.
@@ -1723,6 +1923,13 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
 /// `ccsm pending <name>` — reset to pending, clear identity fields.
 fn run_pending(name: &str) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
+
+    // Best-effort worktree removal before resetting (no lock needed)
+    if let Err(e) = commands::worktree::remove_worktree(&workspace, name, false) {
+        // Only warn, don't fail — the session reset is more important
+        eprintln!("  (worktree cleanup skipped: {e})");
+    }
+
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
     let entry = reg
         .sessions
@@ -1734,6 +1941,7 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
     entry.pids.clear();
     entry.started.clear();
     entry.completed.clear();
+    entry.worktree.clear();
     reg.updated = crate::registry::now_iso();
     reg.save(&workspace)?;
     action_msg("pending", name, "reset (identity fields cleared)");
@@ -2764,6 +2972,7 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
             consumer: String,
             depends_on: Vec<String>,
             branch: String,
+            worktree: String,
             detail_file: Option<String>,
             has_detail_file: bool,
             sections: Vec<SectionJson>,
@@ -2822,6 +3031,7 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
             consumer: session.consumer.clone(),
             depends_on: session.depends_on.clone(),
             branch: session.branch.clone(),
+            worktree: session.worktree.clone(),
             detail_file: detail_path_exists.then(|| format!(".ccsm/sessions/{}.md", name)),
             has_detail_file: detail_path_exists,
             sections,
@@ -2860,6 +3070,9 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
     }
     if !session.branch.is_empty() {
         println!("branch:     {}", session.branch);
+    }
+    if !session.worktree.is_empty() {
+        println!("worktree:   {}", session.worktree);
     }
     if let Some(ref g) = session.group {
         println!("group:      {} (rank: {})", g.name, g.rank);
@@ -3764,7 +3977,18 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
         }
     }
 
-    println!("{}", consumer.constraint_line());
+    // ── Worktree check ───────────────────────────────────────────
+    if !session.worktree.is_empty() {
+        println!("WORKTREE: {} — work inside this directory", session.worktree);
+    }
+
+    // Extend constraint line if worktree is active
+    let constraint = if !session.worktree.is_empty() {
+        "CONSTRAINT: Work within this scope and worktree. If you need to do something outside it, ask first."
+    } else {
+        consumer.constraint_line()
+    };
+    println!("{constraint}");
     println!("{close_tag}");
     Ok(())
 }
