@@ -194,6 +194,15 @@ pub struct WorkspaceSession {
     /// ccsm tracks this as metadata — it does not create or switch branches.
     #[serde(default)]
     pub branch: String,
+    /// Whether this session should use a git worktree.
+    /// Set with `ccsm new --worktree`; governed by config.worktrees policy.
+    #[serde(default)]
+    pub use_worktree: bool,
+    /// Path to the git worktree for this session (managed by ccsm).
+    /// Empty string = no worktree exists. Created by `ccsm start`,
+    /// populated by `ccsm create-worktree`, cleared by `ccsm complete`.
+    #[serde(default)]
+    pub worktree: String,
     /// Retired Claude session_ids — one ccsm session may chain through
     /// multiple Claude sessions as the context window fills up.
     #[serde(default)]
@@ -468,6 +477,8 @@ impl WorkspaceRegistry {
                 group: None,
                 depends_on: vec![],
                 branch: String::new(),
+                use_worktree: false,
+                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -484,6 +495,8 @@ impl WorkspaceRegistry {
                 group: None,
                 depends_on: vec![],
                 branch: String::new(),
+                use_worktree: false,
+                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -500,6 +513,8 @@ impl WorkspaceRegistry {
                 group: None,
                 depends_on: vec![],
                 branch: String::new(),
+                use_worktree: false,
+                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -516,6 +531,8 @@ impl WorkspaceRegistry {
                 group: None,
                 depends_on: vec![],
                 branch: String::new(),
+                use_worktree: false,
+                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -999,6 +1016,8 @@ mod tests {
                 group: None,
                 depends_on: vec![],
                 branch: String::new(),
+                use_worktree: false,
+                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             }],
@@ -1043,6 +1062,8 @@ mod tests {
             group: None,
             depends_on: vec![],
             branch: String::new(),
+            use_worktree: false,
+            worktree: String::new(),
             retired_session_ids: vec![],
             consumer: String::new(),
         });
@@ -1085,6 +1106,8 @@ mod tests {
                     group: None,
                     depends_on: vec![],
                     branch: String::new(),
+                    use_worktree: false,
+                    worktree: String::new(),
                     retired_session_ids: vec![],
                     consumer: String::new(),
                 });
@@ -1139,6 +1162,8 @@ mod tests {
                     group: None,
                     depends_on: vec![],
                     branch: String::new(),
+                    use_worktree: false,
+                    worktree: String::new(),
                     retired_session_ids: vec![],
                     consumer: String::new(),
                 });

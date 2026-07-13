@@ -33,9 +33,9 @@ ccsm finds the workspace root in this order:
 
 | Command | Transition |
 |---|---|
-| `ccsm new <name> -g <goal> [-b <branch>] [-c [<type>]]` | → pending. `-b <branch>` sets target git branch for branch-session tracking; `-c` adds ## Checklist section (empty or pre-populated from template type: feat/fix/research/chore). Config in `.ccsm/config.toml` enforces branch requirement and WIP limit |
-| `ccsm start <name>` | pending → in_progress |
-| `ccsm complete <name> [--force]` | in_progress → completed, sets timestamp. Runs gate checks first (use --force to bypass) |
+| `ccsm new <name> -g <goal> [-b <branch>] [-w] [-c [<type>]]` | → pending. `-b <branch>` sets target git branch; `-w` / `--worktree` opts into git worktree isolation (only when config `worktrees` policy is "optional"); `-c` adds ## Checklist section. Config enforces branch requirement and WIP limit |
+| `ccsm start <name>` | pending → in_progress. If worktree is enabled (per-session `--worktree` or config `worktrees = "required"` + branch set), creates a git worktree at `.claude/worktrees/<name>/` on the target branch |
+| `ccsm complete <name> [--force]` | in_progress → completed, sets timestamp. Runs gate checks first (use --force to bypass). Removes git worktree if one exists (best-effort — doesn't block completion) |
 | `ccsm block <name>` | in_progress → blocked (waiting on dependency) |
 | `ccsm abandon <name>` | in_progress → abandoned (no longer relevant) |
 | `ccsm pending <name>` | → pending, clears session_id + pids + timestamps |
