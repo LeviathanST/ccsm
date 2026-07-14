@@ -1059,7 +1059,7 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
 }
 
 /// `ccsm rename <old> <new>` — rename a session across registry, detail file,
-/// live session files, and transcript.
+/// live session files, group files, and transcript.
 fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
     // Check for existing worktree before locking (read-only)
     let old_reg = crate::registry::WorkspaceRegistry::load()?;
@@ -1070,7 +1070,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     let old_wt_path = has_worktree.then(|| {
         commands::worktree::worktree_path_for(workspace, old)
     });
-    drop(old_reg); // Release before git operation
+    drop(old_reg);
 
     // Rename worktree directory if one exists (no lock — git operation)
     if let Some(ref old_path) = old_wt_path {
@@ -1090,29 +1090,38 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
         }
     }
 
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
+    // ── Phase 1: Validate + snapshot under lock, then release for slow I/O ──
+    let (sid, old_goal, old_scope, old_group) = {
+        let (reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?; — cross-refs, group files, serde JSON, 3-phase lock)
 
-    // Validate: old must exist, new must not
-    let idx = reg
-        .sessions
-        .iter()
-        .position(|s| s.name == old)
-        .ok_or_else(|| anyhow::anyhow!("no session named '{}'", old))?;
-    if reg.sessions.iter().any(|s| s.name == new) {
-        anyhow::bail!("{} session '{}' already exists", ErrorCode::Exists, new);
-    }
-    if !crate::registry::is_kebab_case(new) {
-        anyhow::bail!(
-            "'{}' is not kebab-case. Session names must be lowercase letters, digits, and hyphens.",
-            new
-        );
-    }
+        let idx = reg
+            .sessions
+            .iter()
+            .position(|s| s.name == old)
+            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", old))?;
+        if reg.sessions.iter().any(|s| s.name == new) {
+            anyhow::bail!("{} session '{}' already exists", ErrorCode::Exists, new);
+        }
+        if !crate::registry::is_kebab_case(new) {
+            anyhow::bail!(
+                "'{}' is not kebab-case. Session names must be lowercase letters, digits, and hyphens.",
+                new
+            );
+        }
 
-    let sid = reg.sessions[idx].session_id.clone();
-    // 1. Update session name (consumer-specific)
+        let sid = reg.sessions[idx].session_id.clone();
+        let old_goal = reg.sessions[idx].goal.clone();
+        let old_scope = reg.sessions[idx].scope.clone();
+        let old_group = reg.sessions[idx].group.clone();
+
+        (sid, old_goal, old_scope, old_group)
+    }; // Lock released here — Phase 2 I/O doesn't hold it
+
+    // ── Phase 2: I/O-heavy operations (no lock held) ──
+
+    // 1. Update session name in transcript (consumer-specific)
     if !sid.is_empty() {
         if consumer.is_opencode() {
-            // OpenCode: update title in SQLite DB
             let db_path = crate::consumer::opencode_db_path(home);
             if db_path.exists() {
                 match crate::consumer::opencode_update_title(&db_path, &sid, new) {
@@ -1143,7 +1152,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
         }
     }
 
-    // 2. Update live session files (best-effort, ephemeral)
+    // 2. Update live session files (best-effort, ephemeral) — use proper serde
     let sessions_dir = consumer.sessions_dir(home);
     if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
         for entry in entries.flatten() {
@@ -1155,13 +1164,16 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
             if let Ok(session) = serde_json::from_str::<crate::session::Session>(&contents) {
                 let ws = workspace.to_string_lossy().to_string();
                 if session.name == old && session.cwd.starts_with(&ws) {
-                    // Rewrite with updated name
-                    let updated = contents.replace(
-                        &format!("\"name\":\"{}\"", old),
-                        &format!("\"name\":\"{}\"", new),
-                    );
-                    let _ = std::fs::write(&path, updated);
-                    eprintln!("  session file  pid {}  name → {}", session.pid, new);
+                    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&contents) {
+                        if let Some(obj) = value.as_object_mut() {
+                            obj.insert("name".to_string(), serde_json::Value::String(new.to_string()));
+                        }
+                        let updated = serde_json::to_string(&value);
+                        if let Ok(json) = updated {
+                            let _ = std::fs::write(&path, json);
+                            eprintln!("  session file  pid {}  name → {}", session.pid, new);
+                        }
+                    }
                 }
             }
         }
@@ -1182,12 +1194,22 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
         eprintln!("  detail file  {}.md → {}.md", old, new);
     }
 
-    // 4. Snapshot old values for logging
-    let old_goal = reg.sessions[idx].goal.clone();
-    let old_scope = reg.sessions[idx].scope.clone();
+    // ── Phase 3: Re-acquire lock for registry mutation ──
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
+
+    // Re-validate: old must still exist (another ccsm could have removed it)
+    let idx = reg
+        .sessions
+        .iter()
+        .position(|s| s.name == old)
+        .ok_or_else(|| anyhow::anyhow!("session '{}' was removed before rename completed", old))?;
+    if reg.sessions.iter().any(|s| s.name == new) {
+        anyhow::bail!("{} session '{}' was created before rename completed", ErrorCode::Exists, new);
+    }
+
     let has_topic_change = goal.is_some() || scope.is_some();
 
-    // 5. Update detail file content — replace header, goal, scope
+    // 4. Update detail file content — replace header, goal, scope
     if detail_new.exists()
         && let Ok(contents) = std::fs::read_to_string(&detail_new) {
             let mut updated = contents
@@ -1202,6 +1224,26 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
             eprintln!("  detail file  updated header");
         }
 
+    // 5. Update dependency cross-references — every session that depended_on
+    //    the old name now references the new name
+    let mut deps_updated = Vec::new();
+    for s in &mut reg.sessions {
+        for dep in &mut s.depends_on {
+            if dep == old {
+                *dep = new.to_string();
+                if !deps_updated.contains(&s.name) {
+                    deps_updated.push(s.name.clone());
+                }
+            }
+        }
+    }
+    // Sync updated cross-references to each affected session's detail file
+    for name in &deps_updated {
+        if let Some(s) = reg.sessions.iter().find(|s| s.name == *name) {
+            let _ = update_deps_in_detail(name, &s.depends_on, workspace);
+        }
+    }
+
     // 6. Update registry entry
     reg.sessions[idx].name = new.to_string();
     if let Some(g) = goal {
@@ -1210,7 +1252,6 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     if let Some(s) = scope {
         reg.sessions[idx].scope = s.to_string();
     }
-    // Update worktree path to reflect new name
     if !reg.sessions[idx].worktree.is_empty() {
         reg.sessions[idx].worktree = commands::worktree::worktree_path_for(workspace, new)
             .to_string_lossy()
@@ -1219,7 +1260,15 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     reg.updated = crate::registry::now_iso();
     reg.save()?;
 
-    // 7. Log the rename to progress log (include old values when topic changed)
+    // 7. Update group detail file if session belongs to a group
+    if let Some(ref g) = old_group {
+        ensure_group_file(&g.name, &reg, workspace)?;
+        eprintln!("  group file  {} updated ({} → {})", g.name, old, new);
+    }
+
+    drop(_lock); // Release before progress log I/O
+
+    // 8. Log the rename to progress log (include old values and dep updates)
     if detail_new.exists() {
         let ts = crate::registry::note_timestamp();
         let mut note_parts = vec![format!("Renamed from '{}' to '{}'", old, new)];
@@ -1228,6 +1277,10 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
             if !old_scope.is_empty() {
                 note_parts.push(format!("Old scope: {}", old_scope));
             }
+        }
+        if !deps_updated.is_empty() {
+            let affected = deps_updated.join(", ");
+            note_parts.push(format!("Updated dependency cross-references: {}", affected));
         }
         let note_line = format!("- [{}] {}\n", ts, note_parts.join(" | "));
         if let Ok(contents) = std::fs::read_to_string(&detail_new) {
@@ -1910,7 +1963,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
         if let Some(ref sid) = harvested_id {
             {
                 let (mut reg, _lock) =
-                    crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+                    crate::registry::WorkspaceRegistry::load_locked()?;
                 let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                     Some(e) => e,
                     None => anyhow::bail!(
@@ -1925,7 +1978,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
                     entry.started = crate::registry::now_iso();
                 }
                 reg.updated = crate::registry::now_iso();
-                reg.save(workspace)?;
+                reg.save()?;
             }
             // Best-effort: update opencode session title
             if let Err(e) = crate::consumer::opencode_update_title(&db_path, sid, name) {
