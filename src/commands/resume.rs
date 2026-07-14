@@ -475,7 +475,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 ),
             };
             if entry.session_id.is_empty() {
-                entry.session_id = harvested_id;
+                entry.session_id.clone_from(&harvested_id);
             }
             reg.updated = crate::registry::now_iso();
             reg.save()?;
