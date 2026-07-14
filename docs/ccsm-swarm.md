@@ -35,7 +35,7 @@ Read pane output. Delta-aware by default — returns only new content since the 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `target` | string | required | Pane ID (%0), label, or session:window.pane |
-| `lines` | int | null | Explicit last N lines (disables delta). -1 or omit for delta mode |
+| `lines` | int | null | Omit or pass `-1` for delta mode. Pass `N` (positive) for explicit last N lines, which bypasses delta tracking |
 
 **Delta mode:** first call returns all content, subsequent calls return only new bytes. Delta tracking uses byte offsets — content that hasn't changed returns empty string.
 

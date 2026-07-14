@@ -114,8 +114,8 @@ impl SwarmServer {
             .map_err(|e| McpError::internal_error(format!("json serialization failed: {e}"), None))
     }
 
-    /// Capture pane output. Delta-aware: returns only new content since last read.
-    /// Pass `lines: N` for explicit last N lines (no delta), omit for delta mode.
+    /// Capture pane output. Delta-aware: returns only new content since last read by default.
+    /// Omit or pass `lines: -1` for delta mode. Pass `lines: N` (positive) for explicit last N lines (bypasses delta).
     #[tool(name = "swarm-capture", description = "Capture pane output (delta-aware — returns only new content)")]
     async fn swarm_capture(
         &self,
@@ -135,6 +135,8 @@ impl SwarmServer {
         let mut state = self.state.lock().await;
 
         let output = if explicit_lines {
+            // Keep byte baseline current even when skipping delta
+            state.update_bytes(&resolved, total_bytes);
             content
         } else {
             let delta = state.update_bytes(&resolved, total_bytes);
@@ -230,10 +232,11 @@ impl SwarmServer {
 
         let mut results = Vec::new();
         for pane in &panes {
-            if let Some(ref r) = resolved {
-                if pane.pane_id != *r && pane.session != *r {
-                    continue;
-                }
+            if let Some(ref r) = resolved
+                && pane.pane_id != *r
+                && pane.session != *r
+            {
+                continue;
             }
 
             let (last_line, error) = match tmux::capture_pane(&pane.pane_id, Some(10)) {
@@ -338,9 +341,7 @@ impl rmcp::handler::server::ServerHandler for SwarmServer {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if let Err(e) = tmux::check_tmux() {
-        eprintln!("{e}");
-    }
+    tmux::check_tmux()?;
 
     let server = SwarmServer::new();
     let service = server.serve((tokio::io::stdin(), tokio::io::stdout())).await?;

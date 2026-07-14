@@ -58,18 +58,15 @@ impl SwarmState {
 }
 
 fn is_tmux_syntax(target: &str) -> bool {
-    // Pane ID: %0, %1, %12
-    if target.starts_with('%') && target[1..].chars().all(|c| c.is_ascii_digit()) {
+    // Pane ID: %0, %1, %12 (reject bare "%")
+    if target.len() > 1 && target.starts_with('%') && target[1..].chars().all(|c| c.is_ascii_digit()) {
         return true;
     }
     // session:window.pane  or  session:window
-    if let Some(colon_idx) = target.find(':') {
-        if colon_idx > 0 {
-            let after = &target[colon_idx + 1..];
-            // after colon must start with a digit or contain a dot separator
-            if !after.is_empty() && after.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '.') {
-                return true;
-            }
+    if let Some(colon_idx) = target.find(':') && colon_idx > 0 {
+        let after = &target[colon_idx + 1..];
+        if !after.is_empty() && after.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '.') {
+            return true;
         }
     }
     false
