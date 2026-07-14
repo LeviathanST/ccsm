@@ -4196,7 +4196,7 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             println!("  ✓ Injects session scope (goal + checklist) every LLM turn");
             println!("  ✓ Auto-links opencode sessions to ccsm registry");
             println!("  ✓ Consumer auto-detection (--consumer opencode or CCSM_CONSUMER=opencode)");
-            println!("  ✓ {} skill{} referenced in CLAUDE.md", copied, if copied == 1 { "" } else { "s" });
+            println!("  ✓ {} skill{} seeded to ~/.config/opencode/skills/", copied, if copied == 1 { "" } else { "s" });
             println!();
             println!("Usage: opencode (plugin auto-loaded) or ccsm --consumer opencode <command>");
             println!("       Restart opencode if it's currently running.");
@@ -4231,8 +4231,13 @@ fn seed_skills(consumer: Consumer) -> u32 {
             .join("skills")
         }
         Consumer::OpenCode => {
-            // OpenCode doesn't have a native skills dir — the plugin handles it
-            return 0;
+            // OpenCode discovers skills at ~/.config/opencode/skills/<name>/SKILL.md
+            std::path::PathBuf::from(
+                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+            )
+            .join(".config")
+            .join("opencode")
+            .join("skills")
         }
     };
 
