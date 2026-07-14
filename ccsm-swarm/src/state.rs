@@ -21,7 +21,7 @@ impl SwarmState {
     }
 
     pub fn resolve_target(&self, target: &str) -> String {
-        if target.starts_with('%') || target.contains(':') || target.contains('.') {
+        if is_tmux_syntax(target) {
             target.to_string()
         } else {
             self.labels.get(target)
@@ -32,13 +32,17 @@ impl SwarmState {
 
     pub fn update_bytes(&mut self, pane_id: &str, total_bytes: usize) -> usize {
         let state = self.panes.entry(pane_id.to_string()).or_default();
-        let delta = if total_bytes > state.captured_bytes {
-            total_bytes - state.captured_bytes
+        if total_bytes > state.captured_bytes {
+            let delta = total_bytes - state.captured_bytes;
+            state.captured_bytes = total_bytes;
+            delta
+        } else if total_bytes < state.captured_bytes {
+            // Content shrunk (e.g. buffer clear) — reset baseline, return full content
+            state.captured_bytes = total_bytes;
+            total_bytes
         } else {
             0
-        };
-        state.captured_bytes = total_bytes;
-        delta
+        }
     }
 
     pub fn label_for(&self, pane_id: &str) -> Option<&str> {
@@ -46,4 +50,27 @@ impl SwarmState {
             if s.label.is_empty() { None } else { Some(s.label.as_str()) }
         })
     }
+
+    #[allow(dead_code)]
+    pub fn prune_stale(&mut self, active_ids: &[String]) {
+        self.panes.retain(|id, _| active_ids.contains(id));
+    }
+}
+
+fn is_tmux_syntax(target: &str) -> bool {
+    // Pane ID: %0, %1, %12
+    if target.starts_with('%') && target[1..].chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // session:window.pane  or  session:window
+    if let Some(colon_idx) = target.find(':') {
+        if colon_idx > 0 {
+            let after = &target[colon_idx + 1..];
+            // after colon must start with a digit or contain a dot separator
+            if !after.is_empty() && after.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '.') {
+                return true;
+            }
+        }
+    }
+    false
 }

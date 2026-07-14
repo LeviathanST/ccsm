@@ -228,6 +228,22 @@ ccsm CLI
 
 ---
 
+## ccsm-swarm: Multi-Agent Orchestration
+
+ccsm-swarm is an MCP server for orchestrating multiple AI agents via tmux. It exposes 7 MCP tools for managing agent panes:
+
+- **swarm-list-panes** — List all tmux panes
+- **swarm-capture** — Read pane output (delta tracking, ANSI stripped)
+- **swarm-inject** — Type text into a pane
+- **swarm-wait** — Block until sentinel string (no polling)
+- **swarm-status** — Consolidated multi-pane dashboard
+- **swarm-broadcast** — Same text to all panes
+- **swarm-label** — Name panes for role-based targeting
+
+See [AGENTS.md](AGENTS.md) for workflow docs and [docs/ccsm-swarm.md](docs/ccsm-swarm.md) for the full tool reference.
+
+---
+
 ## Related
 
 - [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks)

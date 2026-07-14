@@ -1,5 +1,6 @@
+use std::io::ErrorKind;
 use std::process::Command;
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub struct PaneInfo {
@@ -8,29 +9,6 @@ pub struct PaneInfo {
     pub pane_index: String,
     pub pane_id: String,
     pub process: String,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct SessionInfo {
-    pub name: String,
-    pub windows: usize,
-}
-
-#[allow(dead_code)]
-pub fn list_sessions() -> Result<Vec<SessionInfo>> {
-    let out = tmux(&["list-sessions", "-F", "#{session_name}:#{session_windows}"])?;
-    Ok(out.lines().filter_map(|line| {
-        let parts: Vec<&str> = line.splitn(2, ':').collect();
-        if parts.len() == 2 {
-            Some(SessionInfo {
-                name: parts[0].to_string(),
-                windows: parts[1].parse().unwrap_or(0),
-            })
-        } else {
-            None
-        }
-    }).collect())
 }
 
 pub fn list_panes(session: Option<&str>) -> Result<Vec<PaneInfo>> {
@@ -59,15 +37,18 @@ pub fn list_panes(session: Option<&str>) -> Result<Vec<PaneInfo>> {
 
 pub fn capture_pane(target: &str, tail_lines: Option<usize>) -> Result<String> {
     match tail_lines {
-        Some(n) => {
+        Some(n) if n > 0 => {
             let line_arg = format!("-{}", n);
             tmux(&["capture-pane", "-p", "-t", target, "-S", &line_arg])
         }
-        None => tmux(&["capture-pane", "-p", "-t", target]),
+        _ => tmux(&["capture-pane", "-p", "-t", target]),
     }
 }
 
 pub fn send_keys(target: &str, text: &str, enter: bool) -> Result<()> {
+    if text.len() > 65536 {
+        anyhow::bail!("text too long ({} bytes, max 65536)", text.len());
+    }
     tmux(&["send-keys", "-t", target, "-l", text])?;
     if enter {
         tmux(&["send-keys", "-t", target, "Enter"])?;
@@ -76,35 +57,25 @@ pub fn send_keys(target: &str, text: &str, enter: bool) -> Result<()> {
 }
 
 #[allow(dead_code)]
-pub fn new_session(name: &str, width: &str, height: &str) -> Result<()> {
-    tmux(&["new-session", "-d", "-s", name, "-x", width, "-y", height])?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub fn split_window(session: &str, horizontal: bool) -> Result<()> {
-    let dir = if horizontal { "-h" } else { "-v" };
-    tmux(&["split-window", dir, "-t", session])?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-pub fn select_layout(session: &str, layout: &str) -> Result<()> {
-    tmux(&["select-layout", "-t", session, layout])?;
-    Ok(())
-}
-
-#[allow(dead_code)]
 pub fn kill_session(name: &str) -> Result<()> {
-    let _ = tmux(&["kill-session", "-t", name]);
-    Ok(())
+    tmux(&["kill-session", "-t", name]).map(|_| ())
+}
+
+pub fn check_tmux() -> Result<()> {
+    tmux(&["start-server"]).map(|_| ())
 }
 
 fn tmux(args: &[&str]) -> Result<String> {
     let out = Command::new("tmux")
         .args(args)
         .output()
-        .context("failed to execute tmux")?;
+        .map_err(|e| {
+            if e.kind() == ErrorKind::NotFound {
+                anyhow::anyhow!("tmux binary not found. Install tmux and ensure it's in your PATH.")
+            } else {
+                anyhow::anyhow!("failed to execute tmux: {}", e)
+            }
+        })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         anyhow::bail!("tmux error: {}", stderr.trim());
