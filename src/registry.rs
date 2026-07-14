@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 // ── Workspace Identity ────────────────────────────────────────────
 
 /// Workspace identity loaded from the `.ccsm` TOML file at project root.
+///
+/// `version` is the ccsm version that created this identity (from Cargo.toml).
+/// On upgrade, migration code checks this field to run version-specific migrations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceIdentity {
     pub version: String,
@@ -112,7 +115,7 @@ pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
             if ccsm_path.is_dir() {
                 std::fs::remove_dir_all(&ccsm_path)?;
             }
-            let content = format!("version = \"1\"\nid = \"{id}\"\n");
+            let content = format!("version = \"{}\"\nid = \"{id}\"\n", env!("CARGO_PKG_VERSION"));
             std::fs::write(&ccsm_path, &content)
                 .context("writing .ccsm identity file")?;
             let slug = project_slug(&root);
@@ -135,7 +138,7 @@ pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
         std::fs::remove_dir_all(&ccsm_path)?;
     }
     if !ccsm_path.exists() {
-        let content = format!("version = \"1\"\nid = \"{id}\"\n");
+        let content = format!("version = \"{}\"\nid = \"{id}\"\n", env!("CARGO_PKG_VERSION"));
         std::fs::write(&ccsm_path, &content)
             .context("writing .ccsm identity file")?;
     }
