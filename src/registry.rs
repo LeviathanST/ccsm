@@ -181,10 +181,29 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
             eprintln!("ccsm: migrated .ccsm identity from v{} to v{} (stale worktree fields stripped)", identity.version, current);
         }
         _ => {
-            eprintln!(
-                "ccsm: warning: .ccsm identity has unknown version \"{}\" (expected {})",
-                identity.version, current,
-            );
+            let mut input = String::new();
+            let bytes = std::io::stdin().read_line(&mut input).unwrap_or(0);
+            let input = input.trim().to_lowercase();
+
+            if bytes == 0 || input.is_empty() || input == "y" || input == "yes" {
+                // Auto-update (no stdin / default / explicit yes)
+                let content = format!("version = \"{current}\"\nid = \"{}\"\n", identity.id);
+                if let Err(e) = std::fs::write(root.join(".ccsm"), &content) {
+                    eprintln!("ccsm: warning: failed to update .ccsm identity: {e}");
+                } else if bytes > 0 {
+                    eprintln!("ccsm: updated .ccsm identity from v{} to v{}", identity.version, current);
+                } else {
+                    eprintln!(
+                        "ccsm: auto-updated .ccsm identity from v{} to v{}",
+                        identity.version, current,
+                    );
+                }
+            } else {
+                eprintln!(
+                    "ccsm: warning: .ccsm identity has unknown version \"{}\" (expected {})",
+                    identity.version, current,
+                );
+            }
         }
     }
     Ok(())
