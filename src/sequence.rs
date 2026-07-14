@@ -166,11 +166,23 @@ pub(crate) fn apply_op(
     match op {
         SeqOp::Start { name } => {
             let s = get_mut(&mut reg.sessions, name)?;
+            if !SessionStatus::transition_allowed(s.status, SessionStatus::InProgress) {
+                anyhow::bail!(
+                    "cannot transition session '{}' from {} to in_progress",
+                    name, s.status
+                );
+            }
             s.status = SessionStatus::InProgress;
             Ok(vec![status_line(s.status, name, "start")])
         }
         SeqOp::Complete { name } => {
             let s = get_mut(&mut reg.sessions, name)?;
+            if !SessionStatus::transition_allowed(s.status, SessionStatus::Completed) {
+                anyhow::bail!(
+                    "cannot transition session '{}' from {} to completed",
+                    name, s.status
+                );
+            }
             s.status = SessionStatus::Completed;
             if s.completed.is_empty() {
                 s.completed = now.to_string();
@@ -179,11 +191,23 @@ pub(crate) fn apply_op(
         }
         SeqOp::Block { name } => {
             let s = get_mut(&mut reg.sessions, name)?;
+            if !SessionStatus::transition_allowed(s.status, SessionStatus::Blocked) {
+                anyhow::bail!(
+                    "cannot transition session '{}' from {} to blocked",
+                    name, s.status
+                );
+            }
             s.status = SessionStatus::Blocked;
             Ok(vec![status_line(s.status, name, "block")])
         }
         SeqOp::Abandon { name } => {
             let s = get_mut(&mut reg.sessions, name)?;
+            if !SessionStatus::transition_allowed(s.status, SessionStatus::Abandoned) {
+                anyhow::bail!(
+                    "cannot transition session '{}' from {} to abandoned",
+                    name, s.status
+                );
+            }
             s.status = SessionStatus::Abandoned;
             if s.completed.is_empty() {
                 s.completed = now.to_string();
@@ -197,6 +221,11 @@ pub(crate) fn apply_op(
             s.pids.clear();
             s.started.clear();
             s.completed.clear();
+            s.consumer.clear();
+            s.retired_session_ids.clear();
+            s.group = None;
+            s.tags.clear();
+            s.depends_on.clear();
             Ok(vec![format!(
                 "pending     {}  ← reset (identity fields cleared)",
                 name
@@ -216,6 +245,9 @@ pub(crate) fn apply_op(
             ])
         }
         SeqOp::New { name, goal } => {
+            if !crate::registry::is_kebab_case(name) {
+                anyhow::bail!("session name '{}' must be kebab-case (lowercase, digits, hyphens only)", name);
+            }
             if reg.sessions.iter().any(|s| s.name == *name) {
                 anyhow::bail!("session '{}' already exists", name);
             }
@@ -249,6 +281,12 @@ pub(crate) fn apply_op(
         }
         SeqOp::Recover { name } => {
             let s = get_mut(&mut reg.sessions, name)?;
+            if !SessionStatus::transition_allowed(s.status, SessionStatus::InProgress) {
+                anyhow::bail!(
+                    "cannot recover session '{}' from {}",
+                    name, s.status
+                );
+            }
             s.status = SessionStatus::InProgress;
             Ok(vec![format!("recovered   {}  ← in_progress", name)])
         }
@@ -625,6 +663,18 @@ mod tests {
         reg.sessions[0].pids = vec![42];
         reg.sessions[0].started = "day0".into();
         reg.sessions[0].completed = "day1".into();
+        reg.sessions[0].consumer = "claude".into();
+        reg.sessions[0].retired_session_ids.push(crate::registry::RetiredSession {
+            id: "old-id".into(),
+            retired_at: "day0".into(),
+            reason: "test".into(),
+        });
+        reg.sessions[0].group = Some(crate::registry::Group {
+            name: "old-group".into(),
+            rank: crate::registry::GroupRank::Free,
+        });
+        reg.sessions[0].tags = vec!["old-tag".into()];
+        reg.sessions[0].depends_on = vec!["old-dep".into()];
 
         let op = SeqOp::Pending { name: "test-session".into() };
         apply_op(&mut reg, &op, "now").unwrap();
@@ -634,6 +684,11 @@ mod tests {
         assert!(s.pids.is_empty());
         assert!(s.started.is_empty());
         assert!(s.completed.is_empty());
+        assert!(s.consumer.is_empty());
+        assert!(s.retired_session_ids.is_empty());
+        assert!(s.group.is_none());
+        assert!(s.tags.is_empty());
+        assert!(s.depends_on.is_empty());
     }
 
     #[test]
