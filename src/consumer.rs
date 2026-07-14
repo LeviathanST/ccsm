@@ -537,6 +537,31 @@ pub fn opencode_update_title(db_path: &Path, session_id: &str, title: &str) -> a
     Ok(())
 }
 
+/// Read the title of an opencode session from the DB.
+pub fn opencode_get_title(db_path: &Path, session_id: &str) -> Option<String> {
+    use rusqlite::Connection;
+    let conn = Connection::open(db_path).ok()?;
+    conn.query_row(
+        "SELECT title FROM session WHERE id = ?1",
+        [session_id],
+        |row| row.get(0),
+    ).ok()
+}
+
+/// Update the directory of an opencode session in the DB.
+/// Used when a worktree is renamed so the OpenCode session still points to
+/// the correct directory for `opencode_latest_session` and `opencode_harvest_session`.
+pub fn opencode_update_directory(db_path: &Path, session_id: &str, directory: &str) -> anyhow::Result<()> {
+    use rusqlite::Connection;
+    let conn = Connection::open(db_path)
+        .map_err(|e| anyhow::anyhow!("failed to open opencode DB: {e}"))?;
+    conn.execute(
+        "UPDATE session SET directory = ?1 WHERE id = ?2",
+        [directory, session_id],
+    )?;
+    Ok(())
+}
+
 /// Get the most recent session ID for a directory (non-polling, single check).
 pub fn opencode_latest_session(db_path: &Path, directory: &str) -> Option<String> {
     use rusqlite::Connection;
@@ -625,5 +650,25 @@ mod tests {
 
         // SQLite UPDATE with no matching WHERE is not an error — 0 rows affected.
         assert!(opencode_update_title(&db_path, "ses_nonexistent", "test").is_ok());
+    }
+
+    #[test]
+    fn test_opencode_update_directory() {
+        use rusqlite::Connection;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);\
+             INSERT INTO session (id, title, directory, time_created) VALUES ('ses_test123', 'Test', '/tmp/old', 1000);",
+        )
+        .unwrap();
+
+        opencode_update_directory(&db_path, "ses_test123", "/tmp/new").unwrap();
+
+        let directory: String = conn
+            .query_row("SELECT directory FROM session WHERE id = 'ses_test123'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(directory, "/tmp/new");
     }
 }

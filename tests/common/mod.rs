@@ -76,6 +76,11 @@ impl TempWorkspace {
         self.dir.path()
     }
 
+    /// Home directory path (used as $HOME in tests).
+    pub fn home(&self) -> PathBuf {
+        self.home.clone()
+    }
+
     /// Run ccsm with args in this workspace. Returns (stdout, stderr, success).
     pub fn run(&self, args: &[&str]) -> Output {
         Command::new(ccsm_binary())
