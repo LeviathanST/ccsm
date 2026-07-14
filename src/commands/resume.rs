@@ -491,8 +491,24 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         } else {
             eprintln!("  warning: could not detect new opencode session in DB within 5s");
         }
+    } else if consumer.is_opencode() {
+        // OpenCode-resume: session_id already known — check if title drifted
+        if let Some(ref existing_sid) = sid {
+            let db_path = crate::consumer::opencode_db_path(home);
+            if db_path.exists() {
+                let current_title = crate::consumer::opencode_get_title(&db_path, existing_sid);
+                if current_title.as_deref() != Some(name) {
+                    if let Err(e) = crate::consumer::opencode_update_title(&db_path, existing_sid, name) {
+                        eprintln!("  warning: failed to sync opencode title: {e}");
+                    } else {
+                        eprintln!("  opencode DB  synced title → {name}");
+                    }
+                }
+            }
+        }
+        eprintln!("  (session tracking active)");
     } else {
-        // Pi / OpenCode-resume: session_id already set via --session — no harvest needed
+        // Pi: session_id already set — no harvest needed
         eprintln!("  (session tracking active)");
     }
 
