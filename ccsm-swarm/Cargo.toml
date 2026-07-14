@@ -2,6 +2,9 @@
 name = "ccsm-swarm"
 version = "0.1.0"
 edition = "2024"
+description = "Tmux MCP server for multi-agent orchestration — part of the ccsm tool suite"
+license = "MIT"
+repository = "https://github.com/LeviathanST/ccsm"
 
 [dependencies]
 rmcp = { version = "0.16", features = ["server"] }

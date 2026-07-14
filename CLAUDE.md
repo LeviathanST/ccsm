@@ -225,6 +225,31 @@ ccsm --consumer pi list --summary  # List with Pi consumer
 CCSM_CONSUMER=pi ccsm resume <name>  # Resume with Pi
 ```
 
+## Publishing
+
+Published on crates.io as `ccsm`. CI auto-publishes on tag push (`v*`).
+
+```bash
+# Bump version in Cargo.toml first
+git tag v0.16.1 && git push origin v0.16.1
+# CI builds, tests, then publishes
+```
+
+**Secret needed**: `CARGO_REGISTRY_TOKEN` must be set in GitHub repo secrets (Settings → Secrets and variables → Actions).
+
+For manual publish:
+```bash
+cargo publish
+```
+
+## Portability
+
+ccsm state lives at `$HOME/.ccsm/<workspace-id>/`. To share across machines:
+
+- Set `CCSM_DATA_DIR` to redirect global state to a custom path
+- Worktree paths are derived at runtime (no stored absolute paths)
+- Project slug is UUID-based: `ccsm-<uuid>` (stable across machines)
+
 ---
 
 ## Related Resources

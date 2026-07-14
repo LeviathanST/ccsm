@@ -29,9 +29,14 @@ pub fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("/tmp"))
 }
 
-/// Global data directory for a workspace: `~/.ccsm/<id>/`
+/// Global data directory for a workspace.
+/// Default: `$HOME/.ccsm/<id>/`.
+/// Override: `CCSM_DATA_DIR` env var sets a custom base (path is `<CCSM_DATA_DIR>/<id>/`).
 pub fn global_data_dir(id: &str) -> PathBuf {
-    home_dir().join(".ccsm").join(id)
+    let base = std::env::var("CCSM_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".ccsm"));
+    base.join(id)
 }
 
 /// Path to the session registry: `~/.ccsm/<id>/sessions.json`
@@ -95,7 +100,7 @@ pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
 
     if let Some((root, identity)) = find_project_root(&cwd)? {
         run_identity_migrations(&identity, &root)?;
-        let slug = project_slug(&root);
+        let slug = project_slug(&identity.id);
         return Ok(WorkspaceContext {
             id: identity.id,
             root,
@@ -120,7 +125,7 @@ pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
             let content = format!("version = \"{}\"\nid = \"{id}\"\n", env!("CARGO_PKG_VERSION"));
             std::fs::write(&ccsm_path, &content)
                 .context("writing .ccsm identity file")?;
-            let slug = project_slug(&root);
+            let slug = project_slug(&id);
             return Ok(WorkspaceContext { id, root, slug });
         }
         current = dir.parent();
@@ -144,7 +149,7 @@ pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
         std::fs::write(&ccsm_path, &content)
             .context("writing .ccsm identity file")?;
     }
-    let slug = project_slug(&root);
+    let slug = project_slug(&id);
     ensure_data_dir(&id)?;
     eprintln!("ccsm: initialised workspace {id} at {}", root.display());
     Ok(WorkspaceContext { id, root, slug })
@@ -164,6 +169,16 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
             std::fs::write(root.join(".ccsm"), &content)
                 .context("rewriting .ccsm identity with current version")?;
             eprintln!("ccsm: migrated .ccsm identity from v{} to v{}", identity.version, current);
+        }
+        "0.15.0" => {
+            // Strip stale worktree field from registry (field removed in 0.16.0)
+            if let Err(e) = strip_stale_worktree(identity) {
+                eprintln!("ccsm: warning: failed to strip worktree fields from registry: {e}");
+            }
+            let content = format!("version = \"{current}\"\nid = \"{}\"\n", identity.id);
+            std::fs::write(root.join(".ccsm"), &content)
+                .context("rewriting .ccsm identity with current version")?;
+            eprintln!("ccsm: migrated .ccsm identity from v{} to v{} (stale worktree fields stripped)", identity.version, current);
         }
         _ => {
             eprintln!(
@@ -243,6 +258,26 @@ fn migrate_legacy_data(root: &Path, id: &str) -> Result<()> {
     // Delete old .ccsm/ directory (non-critical cleanup)
     let _ = std::fs::remove_dir_all(&src);
 
+    Ok(())
+}
+
+/// Strip stale `worktree` field from sessions.json by re-reading and re-saving.
+/// In 0.16.0 the `worktree` field was removed from WorkspaceSession — serde
+/// ignores it on deserialize and omits it on serialize, so a re-save is enough.
+pub(crate) fn strip_stale_worktree(identity: &WorkspaceIdentity) -> Result<()> {
+    let reg_path = global_registry_path(&identity.id);
+    if !reg_path.exists() {
+        return Ok(());
+    }
+    let contents = std::fs::read_to_string(&reg_path)?;
+    let mut reg: WorkspaceRegistry = serde_json::from_str(&contents)
+        .context("parsing sessions.json to strip stale worktree fields")?;
+    reg.updated = now_iso();
+
+    // Re-save — serde automatically omits the removed `worktree` field
+    let new_contents = serde_json::to_string_pretty(&reg)?;
+    std::fs::write(&reg_path, new_contents)
+        .context("writing cleaned sessions.json")?;
     Ok(())
 }
 
@@ -376,11 +411,6 @@ pub struct WorkspaceSession {
     /// Set with `ccsm new --worktree`; governed by config.worktrees policy.
     #[serde(default)]
     pub use_worktree: bool,
-    /// Path to the git worktree for this session (managed by ccsm).
-    /// Empty string = no worktree exists. Created by `ccsm start`,
-    /// populated by `ccsm create-worktree`, cleared by `ccsm complete`.
-    #[serde(default)]
-    pub worktree: String,
     /// Retired Claude session_ids — one ccsm session may chain through
     /// multiple Claude sessions as the context window fills up.
     #[serde(default)]
@@ -695,7 +725,6 @@ impl WorkspaceRegistry {
                 depends_on: vec![],
                 branch: String::new(),
                 use_worktree: false,
-                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -713,7 +742,6 @@ impl WorkspaceRegistry {
                 depends_on: vec![],
                 branch: String::new(),
                 use_worktree: false,
-                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -731,7 +759,6 @@ impl WorkspaceRegistry {
                 depends_on: vec![],
                 branch: String::new(),
                 use_worktree: false,
-                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -749,7 +776,6 @@ impl WorkspaceRegistry {
                 depends_on: vec![],
                 branch: String::new(),
                 use_worktree: false,
-                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             },
@@ -846,13 +872,11 @@ pub fn session_age_days(ts: &str) -> u64 {
     }
 }
 
-/// Derive a project slug from a workspace path.
-/// Replaces non-alphanumeric chars with '-', e.g. `/home/user/my_project` → `home-user-my-project`.
-pub(crate) fn project_slug(path: &std::path::Path) -> String {
-    let s = path.to_string_lossy();
-    s.chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
-        .collect()
+/// Derive a project slug from a workspace identity UUID.
+/// Using UUID guarantees the same slug on every machine, unlike
+/// the previous path-based derivation which tied slug to filesystem layout.
+pub(crate) fn project_slug(id: &str) -> String {
+    format!("ccsm-{id}")
 }
 
 /// Simple Levenshtein distance — used to suggest corrections for typos.
@@ -1248,7 +1272,6 @@ mod tests {
                 depends_on: vec![],
                 branch: String::new(),
                 use_worktree: false,
-                worktree: String::new(),
                 retired_session_ids: vec![],
                 consumer: String::new(),
             }],
@@ -1293,7 +1316,6 @@ mod tests {
             depends_on: vec![],
             branch: String::new(),
             use_worktree: false,
-            worktree: String::new(),
             retired_session_ids: vec![],
             consumer: String::new(),
         });
@@ -1337,7 +1359,6 @@ mod tests {
                     depends_on: vec![],
                     branch: String::new(),
                     use_worktree: false,
-                    worktree: String::new(),
                     retired_session_ids: vec![],
                     consumer: String::new(),
                 });
@@ -1393,7 +1414,6 @@ mod tests {
                     depends_on: vec![],
                     branch: String::new(),
                     use_worktree: false,
-                    worktree: String::new(),
                     retired_session_ids: vec![],
                     consumer: String::new(),
                 });
@@ -1420,5 +1440,107 @@ mod tests {
         );
         // No assertion on count — the file may be corrupt, partially written,
         // or missing entries. This is expected without locking.
+    }
+
+    // ── Portability tests ──────────────────────────────────────────────
+
+    #[test]
+    fn project_slug_uses_uuid() {
+        let slug = project_slug("abc-123-def");
+        assert_eq!(slug, "ccsm-abc-123-def");
+    }
+
+    #[test]
+    fn project_slug_is_stable() {
+        let id = "some-uuid-that-never-changes";
+        assert_eq!(project_slug(id), project_slug(id));
+    }
+
+    #[test]
+    fn global_data_dir_defaults_to_home_ccsm() {
+        let prev = std::env::var("CCSM_DATA_DIR").ok();
+        unsafe { std::env::remove_var("CCSM_DATA_DIR"); }
+        let dir = global_data_dir("test-id");
+        assert!(dir.to_string_lossy().contains("/.ccsm/test-id"));
+        if let Some(v) = prev { unsafe { std::env::set_var("CCSM_DATA_DIR", v); } }
+    }
+
+    #[test]
+    fn global_data_dir_respects_env_override() {
+        let prev = std::env::var("CCSM_DATA_DIR").ok();
+        unsafe { std::env::set_var("CCSM_DATA_DIR", "/tmp/ccsm-data"); }
+        let dir = global_data_dir("test-id");
+        assert_eq!(dir, std::path::PathBuf::from("/tmp/ccsm-data/test-id"));
+        if let Some(v) = prev { unsafe { std::env::set_var("CCSM_DATA_DIR", v); } }
+            else { unsafe { std::env::remove_var("CCSM_DATA_DIR"); } }
+    }
+
+    #[test]
+    fn strip_stale_worktree_removes_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        // Write a sessions.json WITH a worktree field (simulating 0.15.0 format)
+        let old_json = serde_json::json!({
+            "updated": "test",
+            "sessions": [{
+                "session_id": "",
+                "name": "old-session",
+                "goal": "test",
+                "scope": "",
+                "status": "in_progress",
+                "pids": [],
+                "tags": [],
+                "started": "",
+                "completed": "",
+                "group": null,
+                "depends_on": [],
+                "branch": "",
+                "use_worktree": true,
+                "worktree": "/home/user/proj/.claude/worktrees/old-session",
+                "retired_session_ids": [],
+                "consumer": ""
+            }]
+        });
+        // Set up CCSM_DATA_DIR so global_registry_path resolves to our temp dir
+        let prev = std::env::var("CCSM_DATA_DIR").ok();
+        unsafe { std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref()); }
+
+        let identity = WorkspaceIdentity {
+            version: "0.16.0".into(),
+            id: "test-id".into(),
+        };
+
+        // Write registry with worktree field
+        let reg_path = global_registry_path(&identity.id);
+        if let Some(parent) = reg_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&reg_path, serde_json::to_string_pretty(&old_json).unwrap()).unwrap();
+
+        // Verify worktree FIELD exists before stripping
+        let raw = std::fs::read_to_string(&reg_path).unwrap();
+        assert!(raw.contains(r#""worktree":"#), "worktree field should exist before");
+
+        strip_stale_worktree(&identity).unwrap();
+
+        // Verify worktree FIELD is gone after stripping (use_worktree still exists)
+        let cleaned = std::fs::read_to_string(&reg_path).unwrap();
+        assert!(!cleaned.contains(r#""worktree":"#), "worktree field should be stripped");
+
+        if let Some(v) = prev { unsafe { std::env::set_var("CCSM_DATA_DIR", v); } }
+            else { unsafe { std::env::remove_var("CCSM_DATA_DIR"); } }
+    }
+
+    #[test]
+    fn worktree_path_for_is_deterministic() {
+        let ws = std::path::Path::new("/home/user/project");
+        let name = "my-session";
+        let p = crate::commands::worktree::worktree_path_for(ws, name);
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/home/user/project/.claude/worktrees/my-session")
+        );
     }
 }
