@@ -257,6 +257,55 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         }
     }
 
+    // ── Orphaned identity check ──────────────────────────────────────
+    let ccsm_dir = home.join(".ccsm");
+    if ccsm_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&ccsm_dir) {
+            for entry in entries.flatten() {
+                let id = entry.file_name();
+                let id_str = id.to_string_lossy();
+                if id_str.len() < 30 || !id_str.contains('-') { continue; }
+                let id_dir = entry.path();
+                if !id_dir.is_dir() { continue; }
+                if id_str == ctx.id { continue; }
+
+                let reg_file = id_dir.join("sessions.json");
+                let has_sessions = reg_file.exists()
+                    && std::fs::read_to_string(&reg_file).ok()
+                        .and_then(|s| serde_json::from_str::<crate::registry::WorkspaceRegistry>(&s).ok())
+                        .map(|r| !r.sessions.is_empty())
+                        .unwrap_or(false);
+
+                // Check if any .ccsm identity file references this UUID (up to 4 levels under home)
+                let has_project = std::process::Command::new("sh")
+                    .args(["-c", &format!(
+                        "find {} -maxdepth 4 -name .ccsm -exec grep -l '{}' {{}} + 2>/dev/null | head -1",
+                        home.display(),
+                        id_str
+                    )])
+                    .output()
+                    .ok()
+                    .map(|o| !o.stdout.is_empty())
+                    .unwrap_or(false);
+
+                if !has_project && has_sessions {
+                    let count = std::fs::read_to_string(&reg_file).ok()
+                        .and_then(|s| serde_json::from_str::<crate::registry::WorkspaceRegistry>(&s).ok())
+                        .map(|r| r.sessions.len())
+                        .unwrap_or(0);
+                    infos.push(format!(
+                        "  orphaned identity  {}\n    {} has {} session(s) but no project references it\n    → investigate or clean with `rm -rf {}`",
+                        id_str, id_dir.display(), count, id_dir.display(),
+                    ));
+                } else if !has_project {
+                    tips.push(format!(
+                        "  empty identity  {}\n    {} has no sessions and no project\n    → rm -rf {}",
+                        id_str, id_dir.display(), id_dir.display(),
+                    ));
+                }
+            }
+        }
+    }
 
     // 10. Large transcripts — candidates for archive
     let mut large: Vec<(String, u64)> = Vec::new();
