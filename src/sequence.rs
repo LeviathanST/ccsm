@@ -328,8 +328,15 @@ pub(crate) fn apply_op(
     }
 }
 
-/// Reject strings that don't look like UUIDs (8-4-4-4-12 hex).
+/// Reject strings that don't look like UUIDs (8-4-4-4-12 hex) or OpenCode ses_* format.
 fn validate_uuid(s: &str) -> Result<()> {
+    // Accept OpenCode ses_* format (e.g. ses_abc123...)
+    if s.starts_with("ses_") && s.len() > 4
+        && s[4..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Ok(());
+    }
+    // Accept standard 8-4-4-4-12 UUID
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() == 5
         && parts[0].len() == 8

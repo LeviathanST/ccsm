@@ -1818,6 +1818,10 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
     };
     action_msg("refreshing", name, &refresh_detail);
 
+    let before_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
     let mut child = cmd.spawn()?;
     let child_pid = child.id();
 
@@ -1894,6 +1898,41 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
                 }
             }
             reg.save()?;
+        }
+    } else if consumer.is_opencode() {
+        // OpenCode: SQLite-based session polling
+        let db_path = crate::consumer::opencode_db_path(home);
+        let harvested_id = crate::consumer::opencode_harvest_session(
+            &db_path,
+            &workspace.to_string_lossy(),
+            before_ts,
+        );
+        if let Some(ref sid) = harvested_id {
+            {
+                let (mut reg, _lock) =
+                    crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+                let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+                    Some(e) => e,
+                    None => anyhow::bail!(
+                        "internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                        name
+                    ),
+                };
+                if entry.session_id.is_empty() {
+                    entry.session_id.clone_from(sid);
+                }
+                if entry.started.is_empty() {
+                    entry.started = crate::registry::now_iso();
+                }
+                reg.updated = crate::registry::now_iso();
+                reg.save(workspace)?;
+            }
+            // Best-effort: update opencode session title
+            if let Err(e) = crate::consumer::opencode_update_title(&db_path, sid, name) {
+                eprintln!("warning: failed to update opencode session title: {e}");
+            }
+        } else {
+            eprintln!("  warning: opencode did not create a session within 5s");
         }
     } else {
         // Pi: no PID-based session file harvesting
