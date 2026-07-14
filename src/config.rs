@@ -1,11 +1,10 @@
-/// Project-level ccsm configuration at `.ccsm/config.toml`.
+/// Project-level ccsm configuration at `~/.ccsm/<id>/config.toml`.
 ///
 /// Controls branch tracking policy, WIP limits, and checklist templates.
 /// Loaded automatically by the CLI — agents don't read this file directly.
 
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
 
 // ── Config ─────────────────────────────────────────────────────────────
 
@@ -68,20 +67,23 @@ pub struct ChecklistTemplate {
 }
 
 impl Config {
-    /// Load from `.ccsm/config.toml` in the workspace. Returns defaults if missing/invalid.
-    pub fn load(workspace: &Path) -> Self {
-        let path = workspace.join(".ccsm").join("config.toml");
+    /// Load from `~/.ccsm/<id>/config.toml`. Returns defaults if missing/invalid.
+    pub fn load() -> Self {
+        let path = match crate::registry::resolve_or_create_identity() {
+            Ok(ctx) => crate::registry::global_config_path(&ctx.id),
+            Err(_) => return Config::defaults(),
+        };
         if path.exists() {
             match std::fs::read_to_string(&path) {
                 Ok(contents) => match toml::from_str(&contents) {
                     Ok(config) => return config,
                     Err(e) => {
-                        eprintln!("warning: .ccsm/config.toml parse error: {e}");
+                        eprintln!("warning: {} parse error: {e}", path.display());
                         eprintln!("  using defaults");
                     }
                 },
                 Err(e) => {
-                    eprintln!("warning: could not read .ccsm/config.toml: {e}");
+                    eprintln!("warning: could not read {}: {e}", path.display());
                 }
             }
         }

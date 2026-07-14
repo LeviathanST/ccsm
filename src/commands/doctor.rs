@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::registry;
+
 /// Canonical session detail template — embedded so doctor can recreate it.
 pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
 
@@ -39,8 +41,9 @@ pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
 
 /// `ccsm doctor` — scan session registry and filesystem for health issues.
 pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
+    let ctx = registry::resolve_or_create_identity()?;
     let consumer = crate::consumer::Consumer::detect(home, None);
-    let reg = match crate::registry::WorkspaceRegistry::load(workspace) {
+    let reg = match crate::registry::WorkspaceRegistry::load() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("⚠ registry file is corrupt — some checks skipped\n   {:#}", e);
@@ -49,7 +52,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         }
     };
     let proj_dir = consumer.projects_dir_for(home, workspace);
-    let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
+    let lock_path = registry::global_lock_path(&ctx.id);
 
     let mut warnings: Vec<String> = Vec::new();
     let mut infos: Vec<String> = Vec::new();
@@ -93,7 +96,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         // 3. Empty goal
         if s.goal.is_empty() && s.status != crate::registry::SessionStatus::Pending {
             warnings.push(format!(
-                "  empty goal  {}\n    status is {} but goal is empty\n    → edit .ccsm/sessions/{}.md",
+                "  empty goal  {}\n    status is {} but goal is empty\n    → ccsm scope {} \"<keyword-rich description>\"",
                 s.name, s.status, s.name,
             ));
             session_issues += 1;
@@ -102,15 +105,15 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         // 3b. Vague goal — too short to be searchable (< 20 chars, non-empty)
         if !s.goal.is_empty() && s.goal.len() < 20 {
             tips.push(format!(
-                "  vague goal  {}\n    goal is only {} chars — not searchable for agents\n    → ccsm scope {} \"<keyword-rich description>\"  or edit .ccsm/sessions/{}.md",
-                s.name, s.goal.len(), s.name, s.name,
+                "  vague goal  {}\n    goal is only {} chars — not searchable for agents\n    → ccsm scope {} \"<keyword-rich description>\"",
+                s.name, s.goal.len(), s.name,
             ));
         }
 
         // 3c. Goal is identical to session name (no real description)
         if !s.goal.is_empty() && s.goal.trim() == s.name {
             tips.push(format!(
-                "  name-as-goal  {}\n    goal equals session name — carries no searchable meaning\n    → edit .ccsm/sessions/{}.md and write a keyword-rich goal",
+                "  name-as-goal  {}\n    goal equals session name — carries no searchable meaning\n    → ccsm scope {} \"<keyword-rich description>\"",
                 s.name, s.name,
             ));
         }
@@ -118,7 +121,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         // 3d. CLI artifact in goal — e.g. "-g Audit ccsm stability..."
         if s.goal.starts_with("-g ") || s.goal.starts_with("-c ") {
             tips.push(format!(
-                "  cli artifact in goal  {}\n    goal starts with '{}' — flag text leaked into goal field\n    → edit .ccsm/sessions/{}.md and remove the flag prefix",
+                "  cli artifact in goal  {}\n    goal starts with '{}' — flag text leaked into goal field\n    → ccsm scope {} \"<keyword-rich description>\"",
                 s.name, &s.goal[..3], s.name,
             ));
         }
@@ -133,10 +136,10 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         }
 
         // 5. Missing detail file
-        let detail = workspace.join(".ccsm").join("sessions").join(format!("{}.md", s.name));
+        let detail = registry::global_detail_path(&ctx.id, &s.name);
         if !detail.exists() && !s.name.is_empty() {
             infos.push(format!(
-                "  no detail file  {}\n    → cp .ccsm/session-detail-template.md .ccsm/sessions/{}.md",
+                "  no detail file  {}\n    → ccsm scope {} \"<description>\" to create one",
                 s.name, s.name,
             ));
             session_issues += 1;
@@ -162,11 +165,10 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 if !residue.is_empty() {
                     residue.dedup();
                     warnings.push(format!(
-                        "  template residue  {}\n    detail file has unfilled {} — status is {}\n    → edit .ccsm/sessions/{}.md and fill the placeholder sections",
+                        "  template residue  {}\n    detail file has unfilled {} — status is {}\n    → edit detail file and fill the placeholder sections",
                         s.name,
                         residue.join(", "),
                         s.status,
-                        s.name,
                     ));
                     session_issues += 1;
                 }
@@ -240,7 +242,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         }
     }
     // 11. Orphaned worktree directories (no matching session)
-    let wt_dir = workspace.join(".claude").join("worktrees");
+    let wt_dir = registry::global_data_dir(&ctx.id).join("worktrees");
     if wt_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&wt_dir) {
             for entry in entries.flatten() {
@@ -248,8 +250,8 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 let name_str = dir_name.to_string_lossy();
                 if entry.path().is_dir() && !reg.sessions.iter().any(|s| s.name == name_str) {
                     tips.push(format!(
-                        "  orphaned worktree dir  {}\n    {} has no matching session\n    → ccsm worktree remove {}  or  git worktree remove \"{}\"",
-                        name_str, entry.path().display(), name_str, entry.path().display(),
+                        "  orphaned worktree dir  {}\n    {} has no matching session\n    → git worktree remove \"{}\"",
+                        name_str, entry.path().display(), entry.path().display(),
                     ));
                 }
             }
@@ -286,12 +288,12 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     }
 
     // 10. Auto-create essential files if missing ────────────────────────
-    let ccsm_dir = workspace.join(".ccsm");
-    let sessions_dir = ccsm_dir.join("sessions");
-    let template_path = ccsm_dir.join("session-detail-template.md");
-    let group_dir = ccsm_dir.join("session-group");
+    let global = registry::global_data_dir(&ctx.id);
+    let sessions_dir = global.join("sessions");
+    let template_path = registry::global_template_path(&ctx.id);
+    let group_dir = global.join("session-group");
 
-    // 10a. .ccsm/sessions/ directory
+    // 10a. sessions/ directory under global data dir
     if !sessions_dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
             warnings.push(format!(
@@ -299,11 +301,11 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 sessions_dir.display(), e,
             ));
         } else {
-            auto_created.push(format!("  .ccsm/sessions/"));
+            auto_created.push(format!("  {}sessions/", global.display()));
         }
     }
 
-    // 10b. .ccsm/session-detail-template.md
+    // 10b. session-detail-template.md in global data dir
     if !template_path.exists() {
         if let Err(e) = std::fs::write(&template_path, TEMPLATE_CONTENT) {
             warnings.push(format!(
@@ -311,13 +313,18 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 template_path.display(), e,
             ));
         } else {
-            auto_created.push(format!("  .ccsm/session-detail-template.md"));
+            auto_created.push(format!("  {}", template_path.display()));
         }
     }
 
-    // 10c. .ccsm/session-group/ directory (non-essential but nice to have)
+    // 10c. session-group/ directory under global data dir (non-essential)
     if !group_dir.exists() {
-        let _ = std::fs::create_dir_all(&group_dir);
+        if let Err(e) = std::fs::create_dir_all(&group_dir) {
+            warnings.push(format!(
+                "  cannot create group dir  {}\n    {}",
+                group_dir.display(), e,
+            ));
+        }
     }
 
     // ── Print results ───────────────────────────────────────────────

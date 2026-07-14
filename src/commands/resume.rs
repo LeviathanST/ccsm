@@ -65,7 +65,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
     // ── Phase 1: Promote entry (locked) ────────────────────────────
     let (sid, fresh) = {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
 
         let (sid, is_fresh) = match reg.sessions.iter().rev().position(|e| e.name == name) {
             Some(pos) => {
@@ -171,15 +171,18 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         };
 
         reg.updated = now.clone();
-        reg.save(workspace)?;
+        reg.save()?;
         (sid, is_fresh)
     }; // lock released
 
     // ── Nudge: check if session has a checklist section ──────────────
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let detail_path = match crate::registry::resolve_or_create_identity() {
+        Ok(ctx) => crate::registry::global_detail_path(&ctx.id, name),
+        Err(_) => {
+            // Can't resolve workspace identity — skip nudge
+            return Ok(());
+        }
+    };
     if detail_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&detail_path) {
             let has_checklist = contents
@@ -195,7 +198,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     }
 
     // ── Phase 1b: Create worktree if --worktree flag or config required ─
-    let config = crate::config::Config::load(workspace);
+    let config = crate::config::Config::load();
     let should_create_worktree = match config.worktrees {
         crate::config::WorktreePolicy::Required => true,
         crate::config::WorktreePolicy::Optional => flag_worktree,
@@ -205,7 +208,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     if should_create_worktree {
         eprintln!("  preparing worktree...");
         let (branch, existing_wt) = {
-            let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+            let reg = crate::registry::WorkspaceRegistry::load()?;
             let session = reg.sessions.iter()
                 .find(|s| s.name == name)
                 .ok_or_else(|| anyhow::anyhow!("session '{}' not found", name))?;
@@ -234,12 +237,12 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
         // Store worktree path + enable use_worktree (locked)
         {
-            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 entry.worktree = wt_path.to_string_lossy().to_string();
                 entry.use_worktree = true;
                 reg.updated = crate::registry::now_iso();
-                reg.save(workspace)?;
+                reg.save()?;
             }
         }
         eprintln!("📁 worktree: {}", wt_path.display());
@@ -247,7 +250,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
     // ── Phase 2: Determine worktree directory (no lock) ──────────────
     let worktree_dir: Option<std::path::PathBuf> = {
-        let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+        let reg = crate::registry::WorkspaceRegistry::load()?;
         reg.sessions.iter()
             .find(|s| s.name == name)
             .and_then(|s| {
@@ -346,7 +349,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
     // ── Phase 4: Write pid to registry (locked) ─────────────────────
     {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             Some(entry) => entry.pids = vec![child_pid],
             None => anyhow::bail!(
@@ -355,7 +358,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             ),
         }
         reg.updated = crate::registry::now_iso();
-        reg.save(workspace)?;
+        reg.save()?;
     }
 
     // ── Phase 5: Harvest session_id (consumer-specific) ─────────────
@@ -404,7 +407,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
         // Harvest session_id + started (locked)
         {
-            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
@@ -440,21 +443,30 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                     );
                 }
             }
-            reg.save(workspace)?;
+            reg.save()?;
         }
 
         // Sync detail file status line with harvested started time
-        crate::registry::sync_status_line(workspace, name);
+        crate::registry::sync_status_line(name);
     } else if consumer.is_opencode() && sid.is_none() {
         // OpenCode fresh session: poll SQLite DB for new session
         let db_path = crate::consumer::opencode_db_path(home);
-        if let Some(harvested_id) = crate::consumer::opencode_harvest_session(
-            &db_path,
-            &workspace.to_string_lossy(),
-            harvest_before,
-        ) {
+        let run_dir = worktree_dir.as_ref()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_else(|| workspace.to_string_lossy().to_string());
+        // Try run_dir first, fall back to workspace path (for mismatched dirs)
+        let harvested_id = crate::consumer::opencode_harvest_session(
+            &db_path, &run_dir, harvest_before,
+        ).or_else(|| {
+            if run_dir != workspace.to_string_lossy().as_ref() {
+                crate::consumer::opencode_harvest_session(
+                    &db_path, &workspace.to_string_lossy(), harvest_before,
+                )
+            } else { None }
+        });
+        if let Some(harvested_id) = harvested_id {
             // Harvest succeeded — store in registry
-            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
@@ -466,8 +478,8 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 entry.session_id = harvested_id;
             }
             reg.updated = crate::registry::now_iso();
-            reg.save(workspace)?;
-            crate::registry::sync_status_line(workspace, name);
+            reg.save()?;
+            crate::registry::sync_status_line(name);
             eprintln!("  (session tracked)");
         } else {
             eprintln!("  warning: could not detect new opencode session in DB within 5s");
@@ -482,7 +494,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
     // ── Phase 7: Clear stale pids (locked) ──────────────────────────
     {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             Some(entry) => {
                 entry.pids.clear();
@@ -496,7 +508,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 );
             }
         }
-        reg.save(workspace)?;
+        reg.save()?;
     }
 
     if !status.success() {
