@@ -1,3 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["ccsm-swarm"]
+
 [package]
 name = "ccsm"
 version = "0.15.0"
