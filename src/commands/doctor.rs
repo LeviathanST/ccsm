@@ -41,7 +41,7 @@ pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
 
 /// `ccsm doctor` — scan session registry and filesystem for health issues.
 pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
-    let ctx = registry::resolve_or_create_identity()?;
+    let ctx = registry::resolve_identity()?;
     let consumer = crate::consumer::Consumer::detect(home, None);
     let reg = match crate::registry::WorkspaceRegistry::load() {
         Ok(r) => r,

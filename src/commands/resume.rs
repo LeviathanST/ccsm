@@ -176,7 +176,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     }; // lock released
 
     // ── Nudge: check if session has a checklist section ──────────────
-    let detail_path = match crate::registry::resolve_or_create_identity() {
+    let detail_path = match crate::registry::resolve_identity() {
         Ok(ctx) => crate::registry::global_detail_path(&ctx.id, name),
         Err(_) => {
             // Can't resolve workspace identity — skip nudge

@@ -93,9 +93,10 @@ pub fn find_project_root(start: &Path) -> Result<Option<(PathBuf, WorkspaceIdent
 }
 
 /// Walk up from CWD to find the project root and workspace identity.
-/// If no `.ccsm` file exists, creates a fresh identity.
+/// Errors if no `.ccsm` file exists — use `init_identity()` to create one.
 /// On existing identity with stale version, runs version-gated migrations.
-pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
+/// Also handles legacy `.ccsm/sessions.json/` → identity file migration.
+pub fn resolve_identity() -> Result<WorkspaceContext> {
     let cwd = std::env::current_dir()?;
 
     if let Some((root, identity)) = find_project_root(&cwd)? {
@@ -116,9 +117,7 @@ pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
             let id = uuid_v4();
             eprintln!("ccsm: migrating from {}/.ccsm/ to ~/.ccsm/{id}/", root.display());
             let ccsm_path = root.join(".ccsm");
-            // Migrate data FIRST before deleting the source directory
             migrate_legacy_data(&root, &id)?;
-            // Then remove old .ccsm/ directory and write identity file in its place
             if ccsm_path.is_dir() {
                 std::fs::remove_dir_all(&ccsm_path)?;
             }
@@ -131,13 +130,24 @@ pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
         current = dir.parent();
     }
 
-    // Fresh project — create identity at nearest git root or CWD
-    // ⚠ TOCTOU race: between checking is_dir/is_file and writing, another
-    // process could create or modify the .ccsm identity file.  Advisory
-    // file locking isn't available at this stage because we haven't
-    // resolved the data directory yet.  The likelihood is low (identity
-    // creation happens once per project), and the consequence is harmless
-    // (duplicate identity → orphaned global data, detectable by doctor).
+    anyhow::bail!(
+        "no .ccsm identity file found in this project.\n\
+         Run `ccsm init` to set up session tracking in the current directory."
+    );
+}
+
+/// Create a `.ccsm` identity file at the nearest git root (or CWD).
+/// Idempotent — won't overwrite an existing identity.
+/// Also ensures the global data directory exists.
+pub fn init_identity() -> Result<WorkspaceContext> {
+    let cwd = std::env::current_dir()?;
+
+    if let Some((root, identity)) = find_project_root(&cwd)? {
+        eprintln!("ccsm: .ccsm identity already exists at {}", root.display());
+        let slug = project_slug(&identity.id);
+        return Ok(WorkspaceContext { id: identity.id, root, slug });
+    }
+
     let root = find_nearest_git_root(&cwd).unwrap_or(cwd);
     let id = uuid_v4();
     let ccsm_path = root.join(".ccsm");
@@ -635,7 +645,7 @@ impl WorkspaceRegistry {
         }
 
         // Delete the detail file from global data dir
-        if let Ok(ctx) = resolve_or_create_identity() {
+        if let Ok(ctx) = resolve_identity() {
             let detail = global_detail_path(&ctx.id, name);
             let _ = std::fs::remove_file(&detail);
         }
@@ -1052,9 +1062,9 @@ pub(crate) fn replace_detail_section(md: &str, header: &str, new_body: &str) -> 
 }
 
 /// Resolve the global data directory path from the current environment.
-/// Convenience: resolves identity via `resolve_or_create_identity()`.
+/// Convenience: resolves identity via `resolve_identity()`.
 pub fn resolve_data_dir() -> Result<PathBuf> {
-    let ctx = resolve_or_create_identity()?;
+    let ctx = resolve_identity()?;
     Ok(global_data_dir(&ctx.id))
 }
 

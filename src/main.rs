@@ -379,6 +379,10 @@ enum Commands {
         #[arg(short = 'S', long)]
         strict: bool,
     },
+    /// Initialize a `.ccsm` identity file in this project (run once per project).
+    /// Creates the identity at the nearest git root (or current directory).
+    /// Without this, all other commands will ask you to run it first.
+    Init,
     /// Install session tracking into global CLAUDE.md + skills (run once)
     Setup,
     /// Migrate registry + detail files from `.claude/` to `.ccsm/`.
@@ -450,6 +454,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Completions { shell } => run_completions(&shell),
         Commands::InjectScope { name } => run_inject_scope(name.as_deref(), consumer),
         Commands::GateCheck { name, strict } => run_gate_check(name.as_deref(), strict),
+        Commands::Init => run_init(),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into()), consumer),
         Commands::MigrateCcsm => run_migrate_ccsm(&workspace_path(), &home),
 
@@ -461,7 +466,7 @@ fn main() -> anyhow::Result<()> {
 ///
 /// 1. **`--workspace` flag** — handled upstream in `main()` via `set_current_dir`
 /// 2. **`CCSM_WORKSPACE` env var** — must be an absolute path to an existing dir
-/// 3. **Walk up** from PWD looking for `.ccsm` identity file (via `resolve_or_create_identity`)
+/// 3. **Walk up** from PWD looking for `.ccsm` identity file (via `resolve_identity`)
 /// 4. **PWD** as-is (current behavior, fallback when no marker is found)
 ///
 /// Returns `None` when no auto-detection succeeds — the caller uses PWD directly.
@@ -486,7 +491,7 @@ fn resolve_workspace() -> anyhow::Result<Option<PathBuf>> {
 
     // Priority: walk up from PWD looking for .ccsm identity file
     // Stops at the innermost match (closest to PWD).
-    if let Ok(ctx) = crate::registry::resolve_or_create_identity() {
+    if let Ok(ctx) = crate::registry::resolve_identity() {
         return Ok(Some(ctx.root));
     }
 
@@ -1164,7 +1169,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     }
 
     // 3. Rename detail file
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
     let detail_old = crate::registry::global_detail_path(&ctx.id, old);
     let detail_new = crate::registry::global_detail_path(&ctx.id, new);
     if detail_old.exists() {
@@ -1421,7 +1426,7 @@ fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer
 
 /// `ccsm new <name> [goal]` — create a new session entry.
 fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branch: &str, worktree: bool, consumer: Consumer) -> anyhow::Result<()> {
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
     let config = crate::config::Config::load();
 
     // ── Config enforcement: branch required ──────────────────────────
@@ -2087,7 +2092,7 @@ fn run_branch(name: &str, clear: bool, branch: &[String]) -> anyhow::Result<()> 
 /// Update a section body in the session detail file. Silently skips if the
 /// detail file doesn't exist (it might not for simple sessions).
 fn update_detail_section(name: &str, header: &str, body: &str) -> anyhow::Result<()> {
-    let Ok(ctx) = crate::registry::resolve_or_create_identity() else {
+    let Ok(ctx) = crate::registry::resolve_identity() else {
         return Ok(());
     };
     let detail_path = crate::registry::global_detail_path(&ctx.id, name);
@@ -2109,7 +2114,7 @@ fn update_detail_section(name: &str, header: &str, body: &str) -> anyhow::Result
 fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&str>, clear: bool, goal: Option<&str>, roadmap: bool) -> anyhow::Result<()> {
     use crate::registry::{Group, GroupRank};
 
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
 
     // --list: list all groups in the workspace
     if list {
@@ -2585,7 +2590,7 @@ fn status_icon(status: &crate::registry::SessionStatus) -> &'static str {
 
 /// Read a section from a session detail file.
 fn read_session_section(name: &str, header: &str) -> String {
-    let Ok(ctx) = crate::registry::resolve_or_create_identity() else {
+    let Ok(ctx) = crate::registry::resolve_identity() else {
         return String::new();
     };
     let detail_path = crate::registry::global_detail_path(&ctx.id, name);
@@ -2728,7 +2733,7 @@ fn update_deps_in_detail(
     name: &str,
     deps: &[String],
 ) -> anyhow::Result<()> {
-    let Ok(ctx) = crate::registry::resolve_or_create_identity() else {
+    let Ok(ctx) = crate::registry::resolve_identity() else {
         return Ok(());
     };
     let detail_path = crate::registry::global_detail_path(&ctx.id, name);
@@ -2752,13 +2757,13 @@ fn update_deps_in_detail(
 // ── Group Detail File Helpers ───────────────────────────────────────
 
 fn group_dir() -> std::path::PathBuf {
-    let ctx = crate::registry::resolve_or_create_identity()
+    let ctx = crate::registry::resolve_identity()
         .unwrap_or_else(|_| std::process::exit(1));
     crate::registry::global_data_dir(&ctx.id).join("session-group")
 }
 
 fn group_file_path(group_name: &str) -> std::path::PathBuf {
-    let ctx = crate::registry::resolve_or_create_identity()
+    let ctx = crate::registry::resolve_identity()
         .unwrap_or_else(|_| std::process::exit(1));
     crate::registry::global_group_path(&ctx.id, group_name)
 }
@@ -2966,7 +2971,7 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
 /// `ccsm show <name> --section <s>` — extract one section from detail file.
 /// `ccsm show <name> --json` — output all fields as JSON.
 fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -> anyhow::Result<()> {
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
     let reg = crate::registry::WorkspaceRegistry::load()?;
     let session = reg
         .sessions
@@ -3301,7 +3306,7 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
         anyhow::bail!("{} note text is required. Usage: ccsm note <name> <text>", ErrorCode::Invalid);
     }
 
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
 
     // Verify session exists in registry
     let reg = crate::registry::WorkspaceRegistry::load()?;
@@ -3380,7 +3385,7 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
 fn run_note_check() -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
 
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
 
     // Find in_progress session. CCSM_SESSION env var is authoritative if set.
     let reg = crate::registry::WorkspaceRegistry::load()?;
@@ -3486,7 +3491,7 @@ fn is_leap_year(y: i64) -> bool {
 }
 
 fn run_gate_checks(name: &str) -> anyhow::Result<()> {
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
     let reg = crate::registry::WorkspaceRegistry::load()?;
     if !reg.sessions.iter().any(|s| s.name == name) {
         anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
@@ -3682,7 +3687,7 @@ fn parse_checklist(body: &str) -> Vec<ChecklistItem> {
 
 /// `ccsm checklist <name> [--init]` — list items or add section.
 fn run_checklist(name: &str, init: bool) -> anyhow::Result<()> {
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
     let detail_path = crate::registry::global_detail_path(&ctx.id, name);
 
     if !detail_path.exists() {
@@ -3767,7 +3772,7 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
         );
     }
 
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
     let detail_path = crate::registry::global_detail_path(&ctx.id, name);
 
     if !detail_path.exists() {
@@ -3946,7 +3951,7 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
 /// hook so the agent sees its current task constraints on every turn.
 fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
     let reg = crate::registry::WorkspaceRegistry::load()?;
 
     let session = match name {
@@ -4214,6 +4219,19 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Init subcommand ───────────────────────────────────────────────────
+
+/// `ccsm init` — create `.ccsm` identity file at nearest git root (or CWD).
+fn run_init() -> anyhow::Result<()> {
+    let ctx = crate::registry::init_identity()?;
+    eprintln!(
+        "ccsm: session tracking ready at {}\n  slug: {}",
+        ctx.root.display(),
+        ctx.slug,
+    );
+    Ok(())
+}
+
 // ── Setup subcommand ──────────────────────────────────────────────────
 
 fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
@@ -4361,7 +4379,7 @@ fn seed_skills(consumer: Consumer) -> u32 {
 /// Seed `~/.ccsm/<id>/config.toml` if it doesn't exist yet.
 /// Called during `ccsm setup` and can be reused as a standalone bootstrap.
 fn seed_config() {
-    let Ok(ctx) = crate::registry::resolve_or_create_identity() else { return };
+    let Ok(ctx) = crate::registry::resolve_identity() else { return };
     let config_path = crate::registry::global_config_path(&ctx.id);
     if config_path.exists() {
         return;
@@ -4409,7 +4427,7 @@ wip_limit = 0
 /// Copies registry, detail files, group files, templates.
 /// Leaves agent transcripts untouched (Claude keeps ~/.claude/projects/, Pi keeps ~/.pi/agent/sessions/).
 fn run_migrate_ccsm(workspace: &std::path::Path, _home: &std::path::Path) -> anyhow::Result<()> {
-    let ctx = crate::registry::resolve_or_create_identity()?;
+    let ctx = crate::registry::resolve_identity()?;
     let claude = workspace.join(".claude");
     let ccsm = crate::registry::global_data_dir(&ctx.id);
 
