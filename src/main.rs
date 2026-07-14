@@ -196,7 +196,7 @@ enum Commands {
     /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
     /// `ccsm group <session> --clear` — remove from group.
     ///
-    /// Group detail files live at `.ccsm/session-group/<name>.md`.
+    /// Group detail files live at `~/.ccsm/<id>/session-group/<name>.md`.
     /// Auto-created on first join, auto-deleted when the last session leaves.
     Group {
         /// Session name (for --group/--clear) or group name (overview, when no flags given)
@@ -461,7 +461,7 @@ fn main() -> anyhow::Result<()> {
 ///
 /// 1. **`--workspace` flag** — handled upstream in `main()` via `set_current_dir`
 /// 2. **`CCSM_WORKSPACE` env var** — must be an absolute path to an existing dir
-/// 3. **Walk up** from PWD looking for `.ccsm/sessions.json` marker
+/// 3. **Walk up** from PWD looking for `.ccsm` identity file (via `resolve_or_create_identity`)
 /// 4. **PWD** as-is (current behavior, fallback when no marker is found)
 ///
 /// Returns `None` when no auto-detection succeeds — the caller uses PWD directly.
@@ -484,16 +484,10 @@ fn resolve_workspace() -> anyhow::Result<Option<PathBuf>> {
         }
     }
 
-    // Priority: walk up from PWD looking for .ccsm/sessions.json
+    // Priority: walk up from PWD looking for .ccsm identity file
     // Stops at the innermost match (closest to PWD).
-    let mut current = std::env::current_dir()?;
-    loop {
-        if current.join(".ccsm").join("sessions.json").exists() {
-            return Ok(Some(current));
-        }
-        if !current.pop() {
-            break;
-        }
+    if let Ok(ctx) = crate::registry::resolve_or_create_identity() {
+        return Ok(Some(ctx.root));
     }
 
     // No auto-detection — PWD will be used
@@ -507,7 +501,7 @@ fn workspace_path() -> PathBuf {
 }
 
 fn load_workspace_registry() -> anyhow::Result<crate::registry::WorkspaceRegistry> {
-    crate::registry::WorkspaceRegistry::load(&workspace_path())
+    crate::registry::WorkspaceRegistry::load()
 }
 
 /// Check if CCSM_OUTPUT_FORMAT=json is set for global JSON output mode.
@@ -883,8 +877,7 @@ fn mutate_session<F>(name: &str, action: &str, f: F) -> anyhow::Result<()>
 where
     F: FnOnce(&mut crate::registry::WorkspaceSession),
 {
-    let workspace = std::env::current_dir()?;
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     {
         let entry = reg
             .sessions
@@ -894,7 +887,7 @@ where
         f(entry);
     }
     reg.updated = crate::registry::now_iso();
-    reg.save(&workspace)?;
+    reg.save()?;
     // Re-borrow immutably for the status line
     let entry = reg.sessions.iter().find(|s| s.name == name).unwrap();
     action_msg(&entry.status.to_string(), &entry.name, action);
@@ -1051,7 +1044,7 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
         );
     }
 
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     let entry = reg
         .sessions
         .iter_mut()
@@ -1060,7 +1053,7 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
         .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
     entry.session_id = resolved_sid.clone();
     reg.updated = crate::registry::now_iso();
-    reg.save(&workspace)?;
+    reg.save()?;
     action_msg("attached", name, &format!("session {}", &resolved_sid[..resolved_sid.len().min(8)]));
     Ok(())
 }
@@ -1069,7 +1062,7 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
 /// live session files, and transcript.
 fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
     // Check for existing worktree before locking (read-only)
-    let old_reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+    let old_reg = crate::registry::WorkspaceRegistry::load()?;
     let has_worktree = old_reg.sessions.iter()
         .find(|s| s.name == old)
         .map(|s| !s.worktree.is_empty())
@@ -1097,7 +1090,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
         }
     }
 
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
 
     // Validate: old must exist, new must not
     let idx = reg
@@ -1175,14 +1168,9 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     }
 
     // 3. Rename detail file
-    let detail_old = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{old}.md"));
-    let detail_new = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{new}.md"));
+    let ctx = crate::registry::resolve_or_create_identity()?;
+    let detail_old = crate::registry::global_detail_path(&ctx.id, old);
+    let detail_new = crate::registry::global_detail_path(&ctx.id, new);
     if detail_old.exists() {
         std::fs::rename(&detail_old, &detail_new).with_context(|| {
             format!(
@@ -1229,7 +1217,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
             .to_string();
     }
     reg.updated = crate::registry::now_iso();
-    reg.save(workspace)?;
+    reg.save()?;
 
     // 7. Log the rename to progress log (include old values when topic changed)
     if detail_new.exists() {
@@ -1254,8 +1242,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
 
 /// `ccsm trash <name>` — soft-delete: move to Trashed status.
 fn run_trash(name: &str) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     // Get session_id for the entry (may be empty for seed entries).
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
@@ -1263,7 +1250,7 @@ fn run_trash(name: &str) -> anyhow::Result<()> {
         .unwrap_or_default();
     if reg.trash(&sid, name) {
         reg.updated = crate::registry::now_iso();
-        reg.save(&workspace)?;
+        reg.save()?;
         action_msg("trashed", name, &format!("soft-deleted (recover with `ccsm recover {}`)", name));
     } else {
         anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
@@ -1273,15 +1260,14 @@ fn run_trash(name: &str) -> anyhow::Result<()> {
 
 /// `ccsm recover <name>` — untrash: move from Trashed → InProgress.
 fn run_recover(name: &str) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
         .map(|s| s.session_id.clone())
         .unwrap_or_default();
     if reg.recover(&sid, name) {
         reg.updated = crate::registry::now_iso();
-        reg.save(&workspace)?;
+        reg.save()?;
         action_msg("recovered", name, "in_progress");
     } else {
         anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
@@ -1294,7 +1280,7 @@ fn run_clean(name: &str, home: &std::path::Path, workspace: &std::path::Path, co
     // Best-effort worktree removal before permanent delete (no lock)
     let _ = commands::worktree::remove_worktree(workspace, name, true);
 
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
         .map(|s| s.session_id.clone())
@@ -1305,14 +1291,14 @@ fn run_clean(name: &str, home: &std::path::Path, workspace: &std::path::Path, co
     }
     reg.clean(&sid, name, home, workspace, consumer);
     reg.updated = crate::registry::now_iso();
-    reg.save(workspace)?;
+    reg.save()?;
     action_msg("cleaned", name, "permanently deleted");
     Ok(())
 }
 
 /// `ccsm clean-all` — permanently delete ALL trashed entries.
 fn run_clean_all(home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     let count = reg.sessions.iter()
         .filter(|s| s.status == crate::registry::SessionStatus::Trashed)
         .count();
@@ -1322,14 +1308,14 @@ fn run_clean_all(home: &std::path::Path, workspace: &std::path::Path, consumer: 
     }
     reg.clean_all_trashed(home, workspace, consumer);
     reg.updated = crate::registry::now_iso();
-    reg.save(workspace)?;
+    reg.save()?;
     action_msg("cleaned", &format!("{} trashed", count), "permanently deleted");
     Ok(())
 }
 
 /// `ccsm archive <name>` — delete transcript + session files, keep registry entry.
 fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     let sid = reg.sessions.iter().rev()
         .find(|s| s.name == name)
         .map(|s| s.session_id.clone())
@@ -1350,7 +1336,7 @@ fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path, 
 
     let freed = reg.archive(&sid, name, home, workspace, consumer);
     reg.updated = crate::registry::now_iso();
-    reg.save(workspace)?;
+    reg.save()?;
 
     if freed > 0 {
         action_msg("archived", name, &format!("freed {} MB", freed / 1_000_000));
@@ -1362,7 +1348,7 @@ fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path, 
 
 /// `ccsm archive-all` — archive all completed sessions with transcripts.
 fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     let candidates: Vec<(String, String)> = reg
         .sessions
         .iter()
@@ -1380,7 +1366,7 @@ fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer
         total_freed += reg.archive(sid, name, home, workspace, consumer);
     }
     reg.updated = crate::registry::now_iso();
-    reg.save(workspace)?;
+    reg.save()?;
 
     println!(
         "archived    {} session{}  ← freed {} MB",
@@ -1393,20 +1379,22 @@ fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer
 
 /// `ccsm new <name> [goal]` — create a new session entry.
 fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branch: &str, worktree: bool, consumer: Consumer) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-    let config = crate::config::Config::load(&workspace);
+    let ctx = crate::registry::resolve_or_create_identity()?;
+    let config = crate::config::Config::load();
 
     // ── Config enforcement: branch required ──────────────────────────
     use crate::config::BranchTracking;
     if config.branch_tracking == BranchTracking::Required && branch.is_empty() {
+        let config_path = crate::registry::global_config_path(&ctx.id);
         anyhow::bail!(
-            "\n⚠️  This project requires branch tracking (branch_tracking=required in .ccsm/config.toml).\n\
+            "\n⚠️  This project requires branch tracking (branch_tracking=required in {}).\n\
              Use `ccsm new {} -b <branch> -g \"...\"` to set a target branch.",
+            config_path.display(),
             name
         );
     }
 
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
 
     // ── WIP guard ─────────────────────────────────────────────────────
     if config.wip_limit > 0 {
@@ -1471,17 +1459,12 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
         consumer: consumer.to_string(),
     });
     reg.updated = crate::registry::now_iso();
-    reg.save(&workspace)?;
+    reg.save()?;
 
     // Auto-create the detail file from template if it doesn't exist.
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
     if !detail_path.exists() {
-        let template_path = workspace
-            .join(".ccsm")
-            .join("session-detail-template.md");
+        let template_path = crate::registry::global_template_path(&ctx.id);
         // Auto-create the template if it's missing
         if !template_path.exists() {
             let _ = std::fs::write(&template_path, crate::commands::doctor::TEMPLATE_CONTENT);
@@ -1559,11 +1542,11 @@ fn should_use_worktree(session: &crate::registry::WorkspaceSession, config: &cra
 fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let workspace = workspace_path();
-    let config = crate::config::Config::load(&workspace);
+    let config = crate::config::Config::load();
 
     // Phase 1: Load registry, validate, read branch (locked)
     let (branch, use_wt) = {
-        let (reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+        let (reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
         let entry = reg
             .sessions
             .iter()
@@ -1619,7 +1602,7 @@ fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
         }
     })?;
 
-    crate::registry::sync_status_line(&workspace, name);
+    crate::registry::sync_status_line(name);
 
     if let Some(ref path) = wt_path {
         println!("📁 worktree: {}", path.display());
@@ -1660,7 +1643,7 @@ fn run_complete(name: &str, force: bool) -> anyhow::Result<()> {
     let workspace = workspace_path();
 
     // Phase 1: Remove worktree if one exists (best-effort)
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
     let has_worktree = reg.sessions.iter()
         .find(|s| s.name == name)
         .map(|s| !s.worktree.is_empty())
@@ -1682,7 +1665,7 @@ fn run_complete(name: &str, force: bool) -> anyhow::Result<()> {
         entry.worktree.clear();
     })?;
 
-    crate::registry::sync_status_line(&workspace, name);
+    crate::registry::sync_status_line(name);
     Ok(())
 }
 
@@ -1730,9 +1713,7 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
     })?;
 
     // Sync status line to detail file
-    if let Ok(ws) = std::env::current_dir() {
-        crate::registry::sync_status_line(&ws, name);
-    }
+    crate::registry::sync_status_line(name);
 
     // Nudge at session start: agent is about to fill scope — remind about checklist
     if action == "start" {
@@ -1759,7 +1740,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
 
     // ── Phase 1: Retire current session_id, save, auto-note (locked) ──
     {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
         let entry = reg
             .sessions
             .iter_mut()
@@ -1789,12 +1770,12 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
         entry.started.clear();
 
         reg.updated = now.clone();
-        reg.save(workspace)?;
+        reg.save()?;
     } // lock released
 
     // ── Phase 2: Auto-note to progress log ──────────────────────────
     let retired_count = {
-        let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+        let reg = crate::registry::WorkspaceRegistry::load()?;
         reg.sessions
             .iter()
             .find(|s| s.name == name)
@@ -1842,7 +1823,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
 
     // ── Phase 4: Write pid to registry (locked) ──────────────────────
     {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             Some(entry) => entry.pids = vec![child_pid],
             None => anyhow::bail!(
@@ -1851,7 +1832,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             ),
         }
         reg.updated = now_iso_ts();
-        reg.save(workspace)?;
+        reg.save()?;
     }
 
     // ── Phase 5: Poll for session file, harvest session_id ───────────
@@ -1876,7 +1857,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
 
         // Harvest session_id + started (locked)
         {
-            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
@@ -1912,7 +1893,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
                     );
                 }
             }
-            reg.save(workspace)?;
+            reg.save()?;
         }
     } else {
         // Pi: no PID-based session file harvesting
@@ -1924,7 +1905,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
 
     // ── Phase 7: Clear stale pids (locked) ───────────────────────────
     {
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             Some(entry) => {
                 entry.pids.clear();
@@ -1938,7 +1919,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
                 );
             }
         }
-        reg.save(workspace)?;
+        reg.save()?;
     }
 
     if !status.success() {
@@ -1957,7 +1938,7 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
         eprintln!("  (worktree cleanup skipped: {e})");
     }
 
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     let entry = reg
         .sessions
         .iter_mut()
@@ -1970,7 +1951,7 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
     entry.completed.clear();
     entry.worktree.clear();
     reg.updated = crate::registry::now_iso();
-    reg.save(&workspace)?;
+    reg.save()?;
     action_msg("pending", name, "reset (identity fields cleared)");
     Ok(())
 }
@@ -2024,11 +2005,10 @@ fn run_branch(name: &str, clear: bool, branch: &[String]) -> anyhow::Result<()> 
 /// Update a section body in the session detail file. Silently skips if the
 /// detail file doesn't exist (it might not for simple sessions).
 fn update_detail_section(name: &str, header: &str, body: &str) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let Ok(ctx) = crate::registry::resolve_or_create_identity() else {
+        return Ok(());
+    };
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
 
     if !detail_path.exists() {
         return Ok(());
@@ -2047,11 +2027,11 @@ fn update_detail_section(name: &str, header: &str, body: &str) -> anyhow::Result
 fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&str>, clear: bool, goal: Option<&str>, roadmap: bool) -> anyhow::Result<()> {
     use crate::registry::{Group, GroupRank};
 
-    let workspace = std::env::current_dir()?;
+    let ctx = crate::registry::resolve_or_create_identity()?;
 
     // --list: list all groups in the workspace
     if list {
-        return run_groups_list(&workspace);
+        return run_groups_list();
     }
 
     // --roadmap: render a markdown roadmap for the group
@@ -2060,7 +2040,7 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
             anyhow::bail!("--roadmap can't be combined with --group, --clear, or --goal. Usage: ccsm group <group-name> --roadmap");
         }
         let name = name.ok_or_else(|| anyhow::anyhow!("group NAME is required with --roadmap"))?;
-        return run_group_roadmap(name, &workspace);
+        return run_group_roadmap(name);
     }
 
     // All other modes require a name
@@ -2071,14 +2051,14 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
         if group.is_some() || clear {
             anyhow::bail!("--goal can't be combined with --group or --clear. Use: ccsm group <group-name> --goal <text>");
         }
-        set_group_goal(name, goal_text, &workspace)?;
+        set_group_goal(name, goal_text)?;
         action_msg("group-goal", name, goal_text);
         return Ok(());
     }
 
     if clear {
         // Remove session from its group
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
         let entry = reg
             .sessions
             .iter_mut()
@@ -2090,8 +2070,8 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
         }
         let old_group = entry.group.take().unwrap();
         reg.updated = crate::registry::now_iso();
-        reg.save(&workspace)?;
-        let deleted = update_group_members(&old_group.name, &reg, &workspace)?;
+        reg.save()?;
+        let deleted = update_group_members(&old_group.name, &reg)?;
         if deleted {
             action_msg("ungrouped", name, &format!("removed from '{}' (group file deleted)", old_group.name));
         } else {
@@ -2114,7 +2094,7 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
                 GroupRank::Number(num)
             }
         };
-        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
         let entry = reg
             .sessions
             .iter_mut()
@@ -2125,13 +2105,10 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
             rank,
         });
         reg.updated = crate::registry::now_iso();
-        reg.save(&workspace)?;
+        reg.save()?;
 
         // Update detail file — add/update ## Group section
-        let detail_path = workspace
-            .join(".ccsm")
-            .join("sessions")
-            .join(format!("{}.md", name));
+        let detail_path = crate::registry::global_detail_path(&ctx.id, name);
         if detail_path.exists() {
             if let Ok(contents) = std::fs::read_to_string(&detail_path) {
                 let body = format!("- **Group:** {}\n- **Rank:** {}", group_name, rank);
@@ -2141,14 +2118,14 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
         }
 
         // Create or update the group detail file
-        ensure_group_file(group_name, &reg, &workspace)?;
+        ensure_group_file(group_name, &reg)?;
 
         action_msg("grouped", name, &format!("{} rank {}", group_name, rank));
         return Ok(());
     }
 
     // Neither --clear nor --group: treat `name` as a group name, show overview
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
     let mut members: Vec<_> = reg
         .sessions
         .iter()
@@ -2199,7 +2176,7 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
     println!("{} member{}", members.len(), if members.len() == 1 { "" } else { "s" });
 
     // Display group detail file if it exists
-    let gpath = group_file_path(&workspace, name);
+    let gpath = group_file_path(name);
     if gpath.exists() {
         if let Ok(contents) = std::fs::read_to_string(&gpath) {
             let sections = crate::registry::parse_sections(&contents);
@@ -2216,10 +2193,10 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
 }
 
 /// `ccsm group --list` — list all groups in the workspace.
-fn run_groups_list(workspace: &std::path::Path) -> anyhow::Result<()> {
+fn run_groups_list() -> anyhow::Result<()> {
     use std::collections::BTreeMap;
 
-    let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
 
     // Collect sessions by group name
     let mut groups: BTreeMap<&str, Vec<&crate::registry::WorkspaceSession>> = BTreeMap::new();
@@ -2244,7 +2221,7 @@ fn run_groups_list(workspace: &std::path::Path) -> anyhow::Result<()> {
             let in_progress = members.iter().filter(|m| m.status == crate::registry::SessionStatus::InProgress).count();
             let pending = members.iter().filter(|m| m.status == crate::registry::SessionStatus::Pending).count();
             let goal_snippet = {
-                let path = group_file_path(workspace, name);
+                let path = group_file_path(name);
                 if path.exists() {
                     if let Ok(contents) = std::fs::read_to_string(&path) {
                         let sections = crate::registry::parse_sections(&contents);
@@ -2272,7 +2249,7 @@ fn run_groups_list(workspace: &std::path::Path) -> anyhow::Result<()> {
     for (name, members) in &groups {
         // Read goal snippet from group detail file
         let goal_snippet = {
-            let path = group_file_path(workspace, name);
+            let path = group_file_path(name);
             if path.exists() {
                 if let Ok(contents) = std::fs::read_to_string(&path) {
                     let sections = crate::registry::parse_sections(&contents);
@@ -2314,8 +2291,7 @@ fn run_groups_list(workspace: &std::path::Path) -> anyhow::Result<()> {
 fn run_group_deps(group_name: &str) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
 
-    let workspace = std::env::current_dir()?;
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
 
     let members: Vec<_> = reg
         .sessions
@@ -2390,10 +2366,10 @@ fn run_group_deps(group_name: &str) -> anyhow::Result<()> {
 ///
 /// Output: group goal header, markdown table (Rank | Session | Status | Goal | Scope),
 /// then a Mermaid dependency graph if any sessions have depends_on.
-fn run_group_roadmap(group_name: &str, workspace: &std::path::Path) -> anyhow::Result<()> {
+fn run_group_roadmap(group_name: &str) -> anyhow::Result<()> {
     use crate::registry::{GroupRank, SessionStatus};
 
-    let reg = crate::registry::WorkspaceRegistry::load(workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
 
     let mut members: Vec<&crate::registry::WorkspaceSession> = reg
         .sessions
@@ -2419,7 +2395,7 @@ fn run_group_roadmap(group_name: &str, workspace: &std::path::Path) -> anyhow::R
 
     // Read group goal from group detail file
     let group_goal = {
-        let gpath = group_file_path(workspace, group_name);
+        let gpath = group_file_path(group_name);
         if gpath.exists() {
             if let Ok(contents) = std::fs::read_to_string(&gpath) {
                 let sections = crate::registry::parse_sections(&contents);
@@ -2453,9 +2429,9 @@ fn run_group_roadmap(group_name: &str, workspace: &std::path::Path) -> anyhow::R
         let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
         let icon = status_icon(&m.status);
 
-        let goal_owned = read_session_section(&m.name, workspace, "Goal");
+        let goal_owned = read_session_section(&m.name, "Goal");
         let goal: &str = if goal_owned.is_empty() { &m.goal } else { &goal_owned };
-        let scope_owned = read_session_section(&m.name, workspace, "Scope / Plan");
+        let scope_owned = read_session_section(&m.name, "Scope / Plan");
         let scope: &str = if scope_owned.is_empty() { &m.scope } else { &scope_owned };
 
         println!(
@@ -2526,11 +2502,11 @@ fn status_icon(status: &crate::registry::SessionStatus) -> &'static str {
 }
 
 /// Read a section from a session detail file.
-fn read_session_section(name: &str, workspace: &std::path::Path, header: &str) -> String {
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+fn read_session_section(name: &str, header: &str) -> String {
+    let Ok(ctx) = crate::registry::resolve_or_create_identity() else {
+        return String::new();
+    };
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
     if detail_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&detail_path) {
             let sections = crate::registry::parse_sections(&contents);
@@ -2567,8 +2543,7 @@ fn truncate_md(s: &str, max_len: usize) -> String {
 /// `ccsm depend <name> --on <dep>` — add a dependency.
 /// `ccsm depend <name> --clear` — remove all dependencies.
 fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
 
     // Check session exists first (immutable borrow)
     if !reg.sessions.iter().any(|s| s.name == name) {
@@ -2587,8 +2562,8 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
             entry.depends_on.clone()
         };
         reg.updated = crate::registry::now_iso();
-        reg.save(&workspace)?;
-        update_deps_in_detail(name, &deps, &workspace)?;
+        reg.save()?;
+        update_deps_in_detail(name, &deps)?;
         action_msg("depend-clear", name, "cleared");
         return Ok(());
     }
@@ -2626,8 +2601,8 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
             entry.depends_on.clone()
         };
         reg.updated = crate::registry::now_iso();
-        reg.save(&workspace)?;
-        update_deps_in_detail(name, &deps, &workspace)?;
+        reg.save()?;
+        update_deps_in_detail(name, &deps)?;
         action_msg("depend", name, &format!("on '{}'", dep));
         return Ok(());
     }
@@ -2670,12 +2645,11 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
 fn update_deps_in_detail(
     name: &str,
     deps: &[String],
-    workspace: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let Ok(ctx) = crate::registry::resolve_or_create_identity() else {
+        return Ok(());
+    };
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
     if !detail_path.exists() {
         return Ok(());
     }
@@ -2695,17 +2669,22 @@ fn update_deps_in_detail(
 
 // ── Group Detail File Helpers ───────────────────────────────────────
 
-const GROUP_DIR: &str = ".ccsm/session-group";
+fn group_dir() -> std::path::PathBuf {
+    let ctx = crate::registry::resolve_or_create_identity()
+        .unwrap_or_else(|_| std::process::exit(1));
+    crate::registry::global_data_dir(&ctx.id).join("session-group")
+}
 
-fn group_file_path(workspace: &std::path::Path, group_name: &str) -> std::path::PathBuf {
-    workspace.join(GROUP_DIR).join(format!("{}.md", group_name))
+fn group_file_path(group_name: &str) -> std::path::PathBuf {
+    let ctx = crate::registry::resolve_or_create_identity()
+        .unwrap_or_else(|_| std::process::exit(1));
+    crate::registry::global_group_path(&ctx.id, group_name)
 }
 
 /// Create or update the group detail file. Called when a session joins a group.
 fn ensure_group_file(
     group_name: &str,
     reg: &crate::registry::WorkspaceRegistry,
-    workspace: &std::path::Path,
 ) -> anyhow::Result<()> {
     let members: Vec<_> = reg
         .sessions
@@ -2730,10 +2709,10 @@ fn ensure_group_file(
             .join("\n")
     };
 
-    let dir = workspace.join(GROUP_DIR);
+    let dir = group_dir();
     std::fs::create_dir_all(&dir)?;
 
-    let path = group_file_path(workspace, group_name);
+    let path = group_file_path(group_name);
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
         let updated =
@@ -2759,9 +2738,8 @@ fn ensure_group_file(
 fn update_group_members(
     group_name: &str,
     reg: &crate::registry::WorkspaceRegistry,
-    workspace: &std::path::Path,
 ) -> anyhow::Result<bool> {
-    let path = group_file_path(workspace, group_name);
+    let path = group_file_path(group_name);
     if !path.exists() {
         return Ok(false);
     }
@@ -2804,16 +2782,15 @@ fn update_group_members(
 fn set_group_goal(
     group_name: &str,
     goal: &str,
-    workspace: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let path = group_file_path(workspace, group_name);
+    let path = group_file_path(group_name);
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
         let updated = crate::registry::replace_detail_section(&contents, "## Goal", goal);
         std::fs::write(&path, updated)?;
     } else {
         // Create a minimal file with just the goal set
-        let dir = workspace.join(GROUP_DIR);
+        let dir = group_dir();
         std::fs::create_dir_all(&dir)?;
         let template = format!(
             "<!--\n  Group: {name}\n  Sessions: 0\n-->\n\n## Goal\n\n{goal}\n\n\
@@ -2836,8 +2813,7 @@ fn set_group_goal(
 fn run_next(group_name: &str) -> anyhow::Result<()> {
     use crate::registry::{GroupRank, SessionStatus};
 
-    let workspace = std::env::current_dir()?;
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
 
     // Helper: true if all deps of this session are completed
     let is_unblocked = |s: &&crate::registry::WorkspaceSession| -> bool {
@@ -2908,18 +2884,15 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
 /// `ccsm show <name> --section <s>` — extract one section from detail file.
 /// `ccsm show <name> --json` — output all fields as JSON.
 fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let ctx = crate::registry::resolve_or_create_identity()?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
     let session = reg
         .sessions
         .iter()
         .find(|s| s.name == name)
         .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
 
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
 
     // If --section is given, extract and print just that section.
     if let Some(sec) = section {
@@ -3059,7 +3032,7 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
             depends_on: session.depends_on.clone(),
             branch: session.branch.clone(),
             worktree: session.worktree.clone(),
-            detail_file: detail_path_exists.then(|| format!(".ccsm/sessions/{}.md", name)),
+            detail_file: detail_path_exists.then(|| detail_path.display().to_string()),
             has_detail_file: detail_path_exists,
             sections,
             retired: session.retired_session_ids.iter().map(|r| RetiredJson {
@@ -3130,9 +3103,9 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
     if let Some(ref contents) = detail_contents {
         let sections = crate::registry::parse_sections(contents);
         if sections.is_empty() {
-            println!("\n📄 .ccsm/sessions/{}.md (no sections)", name);
+            println!("\n📄 {} (no sections)", detail_path.display());
         } else {
-            println!("\n📄 .ccsm/sessions/{}.md", name);
+            println!("\n📄 {}", detail_path.display());
             for (header, body) in &sections {
                 // Count non-empty lines as a rough size hint
                 let lines = body.lines().filter(|l| !l.trim().is_empty()).count();
@@ -3146,7 +3119,10 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
             println!("\n   `ccsm show {} --section <name>` to read one section", name);
         }
     } else {
-        println!("\n💡 no detail file — create: cp .ccsm/session-detail-template.md .ccsm/sessions/{}.md", name);
+        println!("\n💡 no detail file — create: cp {} {}",
+            crate::registry::global_template_path(&ctx.id).display(),
+            detail_path.display(),
+        );
     }
 
     Ok(())
@@ -3191,11 +3167,10 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
         .collect::<anyhow::Result<Vec<_>>>()?;
 
     // Phase 2: Execute all operations in memory (single lock)
-    let workspace = std::env::current_dir()?;
     let now = crate::registry::now_iso();
     let outputs = {
         let (mut reg, _lock) =
-            crate::registry::WorkspaceRegistry::load_locked(&workspace)?;
+            crate::registry::WorkspaceRegistry::load_locked()?;
 
         let mut outputs = Vec::new();
         for op in &ops {
@@ -3204,7 +3179,7 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
         }
 
         reg.updated = now;
-        reg.save(&workspace)?;
+        reg.save()?;
         outputs
     }; // lock released
 
@@ -3218,7 +3193,7 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
 
 // ── Note subcommand ────────────────────────────────────────────────────
 
-/// Append a timestamped entry to `.ccsm/sessions/<name>.md` Progress Log.
+/// Append a timestamped entry to `~/.ccsm/<id>/sessions/<name>.md` Progress Log.
 /// With --cross <source>, prepends "CROSS-SESSION [source]: " to the note.
 fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     let text = text.trim();
@@ -3226,25 +3201,21 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
         anyhow::bail!("{} note text is required. Usage: ccsm note <name> <text>", ErrorCode::Invalid);
     }
 
+    let ctx = crate::registry::resolve_or_create_identity()?;
     let workspace = std::env::current_dir()?;
 
     // Verify session exists in registry
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
     if !reg.sessions.iter().any(|s| s.name == name) {
         anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
 
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
 
     if !detail_path.exists() {
         // Auto-create detail file from registry data + template
         let session = reg.sessions.iter().find(|s| s.name == name).unwrap();
-        let template_path = workspace
-            .join(".ccsm")
-            .join("session-detail-template.md");
+        let template_path = crate::registry::global_template_path(&ctx.id);
         // Ensure template exists
         if !template_path.exists() {
             let _ = std::fs::write(&template_path, crate::commands::doctor::TEMPLATE_CONTENT);
@@ -3311,10 +3282,10 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
 fn run_note_check() -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
 
-    let workspace = std::env::current_dir()?;
+    let ctx = crate::registry::resolve_or_create_identity()?;
 
     // Find in_progress session. CCSM_SESSION env var is authoritative if set.
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
     let session = {
         let env_session = std::env::var("CCSM_SESSION").ok();
         let s = if let Some(ref n) = env_session {
@@ -3329,10 +3300,7 @@ fn run_note_check() -> anyhow::Result<()> {
     };
 
     // Check detail file note recency
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", session.name));
+    let detail_path = crate::registry::global_detail_path(&ctx.id, &session.name);
     if !detail_path.exists() {
         return Ok(()); // no detail file → skip
     }
@@ -3420,22 +3388,20 @@ fn is_leap_year(y: i64) -> bool {
 }
 
 fn run_gate_checks(name: &str) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let ctx = crate::registry::resolve_or_create_identity()?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
     if !reg.sessions.iter().any(|s| s.name == name) {
         anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
 
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
 
     let mut failures: Vec<String> = Vec::new();
 
     if !detail_path.exists() {
         failures.push(format!(
-            "  no detail file → cp .ccsm/session-detail-template.md {}",
+            "  no detail file → cp {} {}",
+            crate::registry::global_template_path(&ctx.id).display(),
             detail_path.display(),
         ));
         return Err(format_err(&failures, name));
@@ -3532,7 +3498,7 @@ fn format_err(failures: &[String], name: &str) -> anyhow::Error {
         msg.push('\n');
     }
     msg.push_str(&format!(
-        "  → edit .ccsm/sessions/{}.md",
+        "  → edit ~/.ccsm/<id>/sessions/{}.md",
         name,
     ));
     anyhow::anyhow!("{}", msg)
@@ -3618,11 +3584,8 @@ fn parse_checklist(body: &str) -> Vec<ChecklistItem> {
 
 /// `ccsm checklist <name> [--init]` — list items or add section.
 fn run_checklist(name: &str, init: bool) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let ctx = crate::registry::resolve_or_create_identity()?;
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
 
     if !detail_path.exists() {
         anyhow::bail!(
@@ -3706,11 +3669,8 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
         );
     }
 
-    let workspace = std::env::current_dir()?;
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+    let ctx = crate::registry::resolve_or_create_identity()?;
+    let detail_path = crate::registry::global_detail_path(&ctx.id, name);
 
     if !detail_path.exists() {
         anyhow::bail!(
@@ -3888,7 +3848,8 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
 /// hook so the agent sees its current task constraints on every turn.
 fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let ctx = crate::registry::resolve_or_create_identity()?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
 
     let session = match name {
         Some(n) => reg
@@ -3924,10 +3885,7 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     };
 
     // Read checklist from detail file (mechanical injection — agent can't skip it)
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", session.name));
+    let detail_path = crate::registry::global_detail_path(&ctx.id, &session.name);
     let checklist_line = if detail_path.exists() {
         if let Ok(contents) = std::fs::read_to_string(&detail_path) {
             let sections = parse_sections(&contents);
@@ -4029,7 +3987,7 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
 /// Exit 0 = pass, 1 = fail (for hook integration).
 fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
-    let reg = crate::registry::WorkspaceRegistry::load(&workspace)?;
+    let reg = crate::registry::WorkspaceRegistry::load()?;
 
     let session = match name {
         Some(n) => reg
@@ -4159,10 +4117,8 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
 // ── Setup subcommand ──────────────────────────────────────────────────
 
 fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
-
-    // ── 0. Seed .ccsm/config.toml if missing ──────────────────────
-    seed_config(&workspace);
+    // ── 0. Seed ~/.ccsm/<id>/config.toml if missing ───────────────
+    seed_config();
 
     match consumer {
         Consumer::Pi => {
@@ -4272,10 +4228,11 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
     }
 }
 
-/// Seed `.ccsm/config.toml` if it doesn't exist yet.
+/// Seed `~/.ccsm/<id>/config.toml` if it doesn't exist yet.
 /// Called during `ccsm setup` and can be reused as a standalone bootstrap.
-fn seed_config(workspace: &std::path::Path) {
-    let config_path = workspace.join(".ccsm").join("config.toml");
+fn seed_config() {
+    let Ok(ctx) = crate::registry::resolve_or_create_identity() else { return };
+    let config_path = crate::registry::global_config_path(&ctx.id);
     if config_path.exists() {
         return;
     }
@@ -4313,17 +4270,18 @@ wip_limit = 0
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(&config_path, default_config) {
-        Ok(()) => eprintln!("  ✓ .ccsm/config.toml created"),
-        Err(e) => eprintln!("  ⚠ could not create .ccsm/config.toml: {e}"),
+        Ok(()) => eprintln!("  ✓ {} created", config_path.display()),
+        Err(e) => eprintln!("  ⚠ could not create {}: {e}", config_path.display()),
     }
 }
 
-/// `ccsm migrate-ccsm` — migrate ccsm workspace data from `.claude/` to `.ccsm/`.
+/// `ccsm migrate-ccsm` — migrate ccsm workspace data from `.claude/` to `~/.ccsm/<id>/`.
 /// Copies registry, detail files, group files, templates.
 /// Leaves agent transcripts untouched (Claude keeps ~/.claude/projects/, Pi keeps ~/.pi/agent/sessions/).
 fn run_migrate_ccsm(workspace: &std::path::Path, _home: &std::path::Path) -> anyhow::Result<()> {
+    let ctx = crate::registry::resolve_or_create_identity()?;
     let claude = workspace.join(".claude");
-    let ccsm = workspace.join(".ccsm");
+    let ccsm = crate::registry::global_data_dir(&ctx.id);
 
     if !claude.exists() {
         println!("No .claude/ directory found — nothing to migrate.");
@@ -4349,7 +4307,7 @@ fn run_migrate_ccsm(workspace: &std::path::Path, _home: &std::path::Path) -> any
                 s.consumer = "claude".into();
             }
         }
-        reg.save(workspace)?;
+        reg.save()?;
         copied += 1;
     } else if dst_json.exists() {
         skipped += 1;
@@ -4413,7 +4371,7 @@ fn run_migrate_ccsm(workspace: &std::path::Path, _home: &std::path::Path) -> any
         skipped += 1;
     }
 
-    println!("migrated to .ccsm/: {} copied, {} skipped", copied, skipped);
+    println!("migrated to {}: {} copied, {} skipped", ccsm.display(), copied, skipped);
     Ok(())
 }
 
