@@ -878,7 +878,7 @@ where
     F: FnOnce(&mut crate::registry::WorkspaceSession),
 {
     use crate::registry::SessionStatus;
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?; — status transitions, pending clears, kebab-case, detail sync)
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     {
         let entry = reg
             .sessions
@@ -1105,7 +1105,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
 
     // ── Phase 1: Validate + snapshot under lock, then release for slow I/O ──
     let (sid, old_goal, old_scope, old_group) = {
-        let (reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?; — cross-refs, group files, serde JSON, 3-phase lock)
+        let (reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
 
         let idx = reg
             .sessions
@@ -1253,7 +1253,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     // Sync updated cross-references to each affected session's detail file
     for name in &deps_updated {
         if let Some(s) = reg.sessions.iter().find(|s| s.name == *name) {
-            let _ = update_deps_in_detail(name, &s.depends_on, workspace);
+            let _ = update_deps_in_detail(name, &s.depends_on);
         }
     }
 
@@ -1275,7 +1275,7 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
 
     // 7. Update group detail file if session belongs to a group
     if let Some(ref g) = old_group {
-        ensure_group_file(&g.name, &reg, workspace)?;
+        ensure_group_file(&g.name, &reg)?;
         eprintln!("  group file  {} updated ({} → {})", g.name, old, new);
     }
 
@@ -1340,7 +1340,7 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
             "{} cannot recover session '{}' from {}",
             ErrorCode::BadStatus, name, status
         );
-    } — status transitions, pending clears, kebab-case, detail sync)
+    }
     if reg.recover(&sid, name) {
         reg.updated = crate::registry::now_iso();
         reg.save()?;
@@ -1479,7 +1479,7 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
         );
     }
 
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?; — status transitions, pending clears, kebab-case, detail sync)
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
 
     // ── WIP guard ─────────────────────────────────────────────────────
     if config.wip_limit > 0 {
