@@ -592,4 +592,38 @@ mod tests {
         assert_eq!(Consumer::OpenCode.data_dir(), ".local/share/opencode");
         assert_eq!(Consumer::Claude.data_dir(), "");
     }
+
+    #[test]
+    fn test_opencode_update_title() {
+        use rusqlite::Connection;
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);\
+             INSERT INTO session (id, title, directory, time_created) VALUES ('ses_test123', 'Greeting', '/tmp', 1000);",
+        )
+        .unwrap();
+
+        opencode_update_title(&db_path, "ses_test123", "swarm-mcp").unwrap();
+
+        let title: String = conn
+            .query_row("SELECT title FROM session WHERE id = 'ses_test123'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "swarm-mcp");
+    }
+
+    #[test]
+    fn test_opencode_update_title_nonexistent_id_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);",
+        )
+        .unwrap();
+
+        // SQLite UPDATE with no matching WHERE is not an error — 0 rows affected.
+        assert!(opencode_update_title(&db_path, "ses_nonexistent", "test").is_ok());
+    }
 }

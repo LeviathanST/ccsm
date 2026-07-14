@@ -475,11 +475,18 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 ),
             };
             if entry.session_id.is_empty() {
-                entry.session_id = harvested_id;
+                entry.session_id.clone_from(&harvested_id);
             }
             reg.updated = crate::registry::now_iso();
             reg.save()?;
             crate::registry::sync_status_line(name);
+            // OpenCode's `-s <uuid>` doesn't support `-n <name>` at spawn time,
+            // unlike Claude (`--resume <uuid> -n <name>`) and Pi (`--session <uuid> -n <name>`).
+            // If OpenCode ever adds a -n flag, move this rename to spawn phase.
+            // Rename the OpenCode session title to match the ccsm session name
+            if let Err(e) = crate::consumer::opencode_update_title(&db_path, &harvested_id, name) {
+                eprintln!("  warning: failed to rename opencode session: {e}");
+            }
             eprintln!("  (session tracked)");
         } else {
             eprintln!("  warning: could not detect new opencode session in DB within 5s");
