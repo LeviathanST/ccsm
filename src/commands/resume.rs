@@ -480,6 +480,10 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             reg.updated = crate::registry::now_iso();
             reg.save()?;
             crate::registry::sync_status_line(name);
+            // Rename the OpenCode session title to match the ccsm session name
+            if let Err(e) = crate::consumer::opencode_update_title(&db_path, &harvested_id, name) {
+                eprintln!("  warning: failed to rename opencode session: {e}");
+            }
             eprintln!("  (session tracked)");
         } else {
             eprintln!("  warning: could not detect new opencode session in DB within 5s");
