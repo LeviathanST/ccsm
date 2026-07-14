@@ -10,6 +10,7 @@ use std::path::Path;
 // ── Config ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Branch tracking policy: "required", "optional" (default), or "disabled".
     #[serde(default = "default_branch_tracking")]
