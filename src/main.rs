@@ -4120,35 +4120,10 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
     // ── 0. Seed ~/.ccsm/<id>/config.toml if missing ───────────────
     seed_config();
 
+    let copied = seed_skills(consumer);
+
     match consumer {
         Consumer::Pi => {
-            // Seed skills from .claude/skills/ to global Pi skills directory
-            let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let src_skills = project_root.join(".claude").join("skills");
-            let dst_skills = std::path::PathBuf::from(
-                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-            )
-            .join(".pi")
-                .join("agent")
-                .join("skills");
-
-            let mut copied = 0u32;
-            if src_skills.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&src_skills) {
-                    for entry in entries.flatten() {
-                        let src = entry.path();
-                        let name = src.file_name().unwrap_or_default();
-                        let dst = dst_skills.join(&name);
-                        if src.is_dir() && src.join("SKILL.md").exists() {
-                            std::fs::create_dir_all(&dst).ok();
-                            if std::fs::copy(src.join("SKILL.md"), dst.join("SKILL.md")).is_ok() {
-                                copied += 1;
-                            }
-                        }
-                    }
-                }
-            }
-
             println!("ccsm setup for Pi.");
             println!();
             println!("  ✓ .pi/extensions/ccsm/ — auto-discovered by Pi");
@@ -4183,6 +4158,7 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             if !status.success() {
                 anyhow::bail!("setup script exited with {status}");
             }
+            println!("  ✓ {} skill{} seeded to ~/.claude/skills/", copied, if copied == 1 { "" } else { "s" });
             Ok(())
         }
         Consumer::OpenCode => {
@@ -4220,12 +4196,61 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             println!("  ✓ Injects session scope (goal + checklist) every LLM turn");
             println!("  ✓ Auto-links opencode sessions to ccsm registry");
             println!("  ✓ Consumer auto-detection (--consumer opencode or CCSM_CONSUMER=opencode)");
+            println!("  ✓ {} skill{} referenced in CLAUDE.md", copied, if copied == 1 { "" } else { "s" });
             println!();
             println!("Usage: opencode (plugin auto-loaded) or ccsm --consumer opencode <command>");
             println!("       Restart opencode if it's currently running.");
             Ok(())
         }
     }
+}
+
+/// Seed project skills from `.claude/skills/` to the consumer's global skills directory.
+/// Returns count of skills seeded.
+fn seed_skills(consumer: Consumer) -> u32 {
+    let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src_skills = project_root.join(".claude").join("skills");
+    if !src_skills.is_dir() {
+        return 0;
+    }
+
+    let dst_skills = match consumer {
+        Consumer::Claude => {
+            std::path::PathBuf::from(
+                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+            )
+            .join(".claude")
+            .join("skills")
+        }
+        Consumer::Pi => {
+            std::path::PathBuf::from(
+                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+            )
+            .join(".pi")
+            .join("agent")
+            .join("skills")
+        }
+        Consumer::OpenCode => {
+            // OpenCode doesn't have a native skills dir — the plugin handles it
+            return 0;
+        }
+    };
+
+    let mut copied = 0u32;
+    if let Ok(entries) = std::fs::read_dir(&src_skills) {
+        for entry in entries.flatten() {
+            let src = entry.path();
+            let name = src.file_name().unwrap_or_default();
+            let dst = dst_skills.join(&name);
+            if src.is_dir() && src.join("SKILL.md").exists() {
+                std::fs::create_dir_all(&dst).ok();
+                if std::fs::copy(src.join("SKILL.md"), dst.join("SKILL.md")).is_ok() {
+                    copied += 1;
+                }
+            }
+        }
+    }
+    copied
 }
 
 /// Seed `~/.ccsm/<id>/config.toml` if it doesn't exist yet.
