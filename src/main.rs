@@ -1074,30 +1074,6 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
 /// `ccsm rename <old> <new>` — rename a session across registry, detail file,
 /// live session files, group files, and transcript.
 fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
-    // Check for existing worktree before locking (read-only)
-    let old_wt_path = {
-        let p = commands::worktree::worktree_path_for(workspace, old);
-        if p.exists() { Some(p) } else { None }
-    };
-
-    // Rename worktree directory if one exists (no lock — git operation)
-    if let Some(ref old_path) = old_wt_path {
-        if old_path.exists() {
-            let new_wt_path = commands::worktree::worktree_path_for(workspace, new);
-            let result = std::process::Command::new("git")
-                .args(["worktree", "move", &old_path.to_string_lossy(), &new_wt_path.to_string_lossy()])
-                .current_dir(workspace)
-                .output()
-                .context("failed to run `git worktree move`")?;
-            if result.status.success() {
-                eprintln!("  worktree  renamed to {}", new_wt_path.display());
-            } else {
-                let stderr = String::from_utf8_lossy(&result.stderr);
-                anyhow::bail!("failed to rename worktree: {}", stderr.trim());
-            }
-        }
-    }
-
     // ── Phase 1: Validate + snapshot under lock, then release for slow I/O ──
     let (sid, old_goal, old_scope, old_group) = {
         let (reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
