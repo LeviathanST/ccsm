@@ -27,7 +27,7 @@ pub fn ccsm_binary() -> PathBuf {
     PathBuf::from("target/release/ccsm")
 }
 
-/// A temp workspace with a .ccsm/sessions.json skeleton.
+/// A temp workspace with ccsm identity + global data directory.
 pub struct TempWorkspace {
     dir: tempfile::TempDir,
     home: PathBuf,
@@ -36,8 +36,23 @@ pub struct TempWorkspace {
 impl TempWorkspace {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        let ccsm_dir = dir.path().join(".ccsm");
-        std::fs::create_dir_all(&ccsm_dir).expect("create .ccsm");
+        let home = dir.path().join("home");
+
+        // Create identity file at workspace root (a FILE named .ccsm)
+        let id = format!("{:x}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos());
+        let identity_path = dir.path().join(".ccsm");
+        std::fs::write(
+            &identity_path,
+            format!("version = \"1\"\nid = \"{id}\"\n"),
+        )
+        .expect("write .ccsm identity");
+
+        // Create global data directory at $HOME/.ccsm/<id>/
+        let global_dir = home.join(".ccsm").join(&id);
+        std::fs::create_dir_all(&global_dir).expect("create global dir");
 
         // Write empty registry
         let registry = serde_json::json!({
@@ -45,12 +60,11 @@ impl TempWorkspace {
             "sessions": []
         });
         std::fs::write(
-            ccsm_dir.join("sessions.json"),
+            global_dir.join("sessions.json"),
             serde_json::to_string_pretty(&registry).unwrap(),
         )
         .expect("write sessions.json");
 
-        let home = dir.path().join("home");
         std::fs::create_dir_all(home.join(".claude").join("sessions"))
             .expect("create sessions dir");
 
@@ -96,17 +110,30 @@ impl TempWorkspace {
         String::from_utf8_lossy(&out.stderr).to_string()
     }
 
+    /// Resolve the global data dir from the identity file.
+    fn global_dir(&self) -> PathBuf {
+        let identity = self.path().join(".ccsm");
+        let content = std::fs::read_to_string(&identity).expect("read .ccsm identity");
+        let id = content
+            .lines()
+            .find_map(|l| l.strip_prefix("id = \"").and_then(|s| s.strip_suffix('"')))
+            .expect("parse identity id")
+            .to_string();
+        self.home.join(".ccsm").join(id)
+    }
+
     /// Write session detail file content.
+    #[allow(dead_code)]
     pub fn write_detail(&self, name: &str, content: &str) {
-        let sessions_dir = self.path().join(".ccsm").join("sessions");
+        let sessions_dir = self.global_dir().join("sessions");
         std::fs::create_dir_all(&sessions_dir).ok();
         std::fs::write(sessions_dir.join(format!("{name}.md")), content)
             .expect("write detail file");
     }
 
-    /// Read the registry file.
+    /// Read the registry file from global data dir.
     pub fn read_registry(&self) -> serde_json::Value {
-        let path = self.path().join(".ccsm").join("sessions.json");
+        let path = self.global_dir().join("sessions.json");
         let contents = std::fs::read_to_string(&path).expect("read registry");
         serde_json::from_str(&contents).expect("parse registry")
     }

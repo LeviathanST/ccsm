@@ -1,8 +1,266 @@
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
-use crate::session::Session;
+// ── Workspace Identity ────────────────────────────────────────────
+
+/// Workspace identity loaded from the `.ccsm` TOML file at project root.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceIdentity {
+    pub version: String,
+    pub id: String,
+}
+
+/// Resolved workspace context for the current invocation.
+pub struct WorkspaceContext {
+    pub id: String,
+    pub root: PathBuf,
+    pub slug: String,
+}
+
+/// Home directory used for `~/.ccsm/` resolution. Override via `HOME` env var.
+pub fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
+/// Global data directory for a workspace: `~/.ccsm/<id>/`
+pub fn global_data_dir(id: &str) -> PathBuf {
+    home_dir().join(".ccsm").join(id)
+}
+
+/// Path to the session registry: `~/.ccsm/<id>/sessions.json`
+pub fn global_registry_path(id: &str) -> PathBuf {
+    global_data_dir(id).join("sessions.json")
+}
+
+/// Path to the lock file: `~/.ccsm/<id>/sessions.json.lock`
+pub fn global_lock_path(id: &str) -> PathBuf {
+    global_data_dir(id).join("sessions.json.lock")
+}
+
+/// Path to a session detail file: `~/.ccsm/<id>/sessions/<name>.md`
+pub fn global_detail_path(id: &str, name: &str) -> PathBuf {
+    global_data_dir(id).join("sessions").join(format!("{name}.md"))
+}
+
+/// Path to the session detail template: `~/.ccsm/<id>/session-detail-template.md`
+pub fn global_template_path(id: &str) -> PathBuf {
+    global_data_dir(id).join("session-detail-template.md")
+}
+
+/// Path to a group detail file: `~/.ccsm/<id>/session-group/<name>.md`
+pub fn global_group_path(id: &str, name: &str) -> PathBuf {
+    global_data_dir(id).join("session-group").join(format!("{name}.md"))
+}
+
+/// Path to a worktree: `~/.ccsm/<id>/worktrees/<name>/`
+pub fn global_worktree_path(id: &str, name: &str) -> PathBuf {
+    global_data_dir(id).join("worktrees").join(name)
+}
+
+/// Path to the project config: `~/.ccsm/<id>/config.toml`
+pub fn global_config_path(id: &str) -> PathBuf {
+    global_data_dir(id).join("config.toml")
+}
+
+/// Walk up from `start` looking for a `.ccsm` identity file.
+/// Returns the directory containing the file and its parsed contents.
+pub fn find_project_root(start: &Path) -> Result<Option<(PathBuf, WorkspaceIdentity)>> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        let ccsm_file = dir.join(".ccsm");
+        if ccsm_file.is_file() {
+            let content = std::fs::read_to_string(&ccsm_file)
+                .with_context(|| format!("reading {}", ccsm_file.display()))?;
+            let identity: WorkspaceIdentity = toml::from_str(&content)
+                .with_context(|| format!("parsing {} — expected `version` and `id` fields", ccsm_file.display()))?;
+            return Ok(Some((dir.to_path_buf(), identity)));
+        }
+        current = dir.parent();
+    }
+    Ok(None)
+}
+
+/// Walk up from CWD to find the project root and workspace identity.
+/// If no `.ccsm` file exists, creates a fresh identity.
+pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
+    let cwd = std::env::current_dir()?;
+
+    if let Some((root, identity)) = find_project_root(&cwd)? {
+        let slug = project_slug(&root);
+        return Ok(WorkspaceContext {
+            id: identity.id,
+            root,
+            slug,
+        });
+    }
+
+    // Check for legacy `.ccsm/sessions.json` to auto-migrate
+    let mut current = Some(cwd.as_path());
+    while let Some(dir) = current {
+        if dir.join(".ccsm").join("sessions.json").exists() {
+            let root = dir.to_path_buf();
+            let id = uuid_v4();
+            eprintln!("ccsm: migrating from {}/.ccsm/ to ~/.ccsm/{id}/", root.display());
+            let ccsm_path = root.join(".ccsm");
+            // Migrate data FIRST before deleting the source directory
+            migrate_legacy_data(&root, &id)?;
+            // Then remove old .ccsm/ directory and write identity file in its place
+            if ccsm_path.is_dir() {
+                std::fs::remove_dir_all(&ccsm_path)?;
+            }
+            let content = format!("version = \"1\"\nid = \"{id}\"\n");
+            std::fs::write(&ccsm_path, &content)
+                .context("writing .ccsm identity file")?;
+            let slug = project_slug(&root);
+            return Ok(WorkspaceContext { id, root, slug });
+        }
+        current = dir.parent();
+    }
+
+    // Fresh project — create identity at nearest git root or CWD
+    // ⚠ TOCTOU race: between checking is_dir/is_file and writing, another
+    // process could create or modify the .ccsm identity file.  Advisory
+    // file locking isn't available at this stage because we haven't
+    // resolved the data directory yet.  The likelihood is low (identity
+    // creation happens once per project), and the consequence is harmless
+    // (duplicate identity → orphaned global data, detectable by doctor).
+    let root = find_nearest_git_root(&cwd).unwrap_or(cwd);
+    let id = uuid_v4();
+    let ccsm_path = root.join(".ccsm");
+    if ccsm_path.is_dir() {
+        std::fs::remove_dir_all(&ccsm_path)?;
+    }
+    if !ccsm_path.exists() {
+        let content = format!("version = \"1\"\nid = \"{id}\"\n");
+        std::fs::write(&ccsm_path, &content)
+            .context("writing .ccsm identity file")?;
+    }
+    let slug = project_slug(&root);
+    ensure_data_dir(&id)?;
+    eprintln!("ccsm: initialised workspace {id} at {}", root.display());
+    Ok(WorkspaceContext { id, root, slug })
+}
+
+/// Migrate legacy `<project>/.ccsm/` data to `~/.ccsm/<id>/`.
+fn migrate_legacy_data(root: &Path, id: &str) -> Result<()> {
+    ensure_data_dir(id)?;
+    let src = root.join(".ccsm");
+
+    // sessions.json
+    let src_json = src.join("sessions.json");
+    let dst_json = global_registry_path(id);
+    if src_json.exists() {
+        std::fs::copy(&src_json, &dst_json)
+            .context("copying legacy sessions.json")?;
+    }
+
+    // sessions/ detail files
+    let src_sessions = src.join("sessions");
+    let dst_sessions = global_data_dir(id).join("sessions");
+    if src_sessions.is_dir() {
+        std::fs::create_dir_all(&dst_sessions)
+            .context("creating global sessions dir")?;
+        if let Ok(entries) = std::fs::read_dir(&src_sessions) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "md") {
+                    let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+                    let dst = global_detail_path(id, name);
+                    std::fs::copy(&path, &dst)
+                        .with_context(|| format!("copying detail file {}", path.display()))?;
+                }
+            }
+        }
+    }
+
+    // session-group/
+    let src_group = src.join("session-group");
+    let dst_group = global_data_dir(id).join("session-group");
+    if src_group.is_dir() {
+        std::fs::create_dir_all(&dst_group)
+            .context("creating global session-group dir")?;
+        if let Ok(entries) = std::fs::read_dir(&src_group) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "md") {
+                    let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
+                    let dst = global_group_path(id, name);
+                    std::fs::copy(&path, &dst)
+                        .with_context(|| format!("copying group file {}", path.display()))?;
+                }
+            }
+        }
+    }
+
+    // session-detail-template.md
+    let src_tpl = src.join("session-detail-template.md");
+    if src_tpl.exists() {
+        std::fs::copy(&src_tpl, global_template_path(id))
+            .context("copying template file")?;
+    }
+
+    // config.toml
+    let src_config = src.join("config.toml");
+    if src_config.exists() {
+        std::fs::copy(&src_config, global_config_path(id))
+            .context("copying config.toml")?;
+    }
+
+    // Delete old .ccsm/ directory (non-critical cleanup)
+    let _ = std::fs::remove_dir_all(&src);
+
+    Ok(())
+}
+
+/// Ensure the global data directory structure exists for a workspace.
+fn ensure_data_dir(id: &str) -> Result<()> {
+    let dir = global_data_dir(id);
+    std::fs::create_dir_all(dir.join("sessions"))
+        .context("creating global sessions dir")?;
+    std::fs::create_dir_all(dir.join("session-group"))
+        .context("creating global session-group dir")?;
+    std::fs::create_dir_all(dir.join("worktrees"))
+        .context("creating global worktrees dir")?;
+    Ok(())
+}
+
+/// Generate a random UUID v4 (no external crate dependency).
+fn uuid_v4() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id() as u128;
+    let r1 = ts.wrapping_mul(pid).wrapping_add(0xdeadbeef);
+    let r2 = ts.wrapping_add(pid).wrapping_mul(0xcafebabe);
+    let r3 = r1.wrapping_mul(r2).wrapping_add(0xdecafbad);
+    let r4 = r2.wrapping_mul(0x9e3779b9).wrapping_add(ts);
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        (r1 & 0xffffffff) as u32,
+        ((r2 >> 16) & 0xffff) as u16,
+        ((r3 >> 48) & 0x0fff) as u16,
+        (0x8000 | ((r4 >> 32) & 0x3fff)) as u16,
+        (r3.wrapping_mul(r4) & 0xffffffffffff) as u64,
+    )
+}
+
+/// Find the nearest git repository root from a starting path.
+fn find_nearest_git_root(start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.join(".git").exists() || dir.join(".git").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        current = dir.parent();
+    }
+    None
+}
 
 // ── Group ─────────────────────────────────────────────────────────────
 
@@ -34,119 +292,9 @@ pub struct Group {
     pub rank: GroupRank,
 }
 
-// ── Tier 1: Global Overview ─────────────────────────────────────────
+// ── Workspace Detail ────────────────────────────────────────────────
 
-/// Global session registry at `~/.claude/sessions.json`.
-/// Lightweight overview of all workspaces and their sessions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GlobalRegistry {
-    pub updated: String,
-    pub workspaces: Vec<WorkspaceOverview>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkspaceOverview {
-    pub path: String,
-    pub name: String,
-    pub session_count: usize,
-    pub last_activity: String,
-    pub sessions: Vec<GlobalSessionEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GlobalSessionEntry {
-    pub pid: u32,
-    pub session_id: String,
-    pub name: String,
-    pub status: String,
-}
-
-impl GlobalRegistry {
-    /// Build from the raw session files in `~/.claude/sessions/`.
-    pub fn build(sessions_dir: &std::path::Path) -> Result<Self> {
-        let sessions = crate::session::load_all(sessions_dir, None)?;
-
-        // Group by workspace (cwd)
-        let mut ws_map: std::collections::BTreeMap<String, Vec<&Session>> =
-            std::collections::BTreeMap::new();
-        for s in &sessions {
-            ws_map.entry(s.cwd.clone()).or_default().push(s);
-        }
-
-        let mut workspaces: Vec<WorkspaceOverview> = ws_map
-            .into_iter()
-            .map(|(path, ss)| {
-                let name = std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&path)
-                    .to_string();
-
-                let session_count = ss.len();
-
-                let last_activity = ss
-                    .iter()
-                    .filter_map(|s| s.updated_at)
-                    .max()
-                    .map(format_ts)
-                    .unwrap_or_default();
-
-                let sessions: Vec<GlobalSessionEntry> = ss
-                    .iter()
-                    .map(|s| GlobalSessionEntry {
-                        pid: s.pid,
-                        session_id: s.session_id.clone(),
-                        name: s.display_name().to_string(),
-                        status: s.status.clone(),
-                    })
-                    .collect();
-
-                WorkspaceOverview {
-                    path,
-                    name,
-                    session_count,
-                    last_activity,
-                    sessions,
-                }
-            })
-            .collect();
-
-        // Sort by most recently active first
-        workspaces.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
-
-        Ok(Self {
-            updated: now_iso(),
-            workspaces,
-        })
-    }
-
-    /// Load from disk, or build fresh if missing.
-    pub fn load_or_build(global_path: &std::path::Path, sessions_dir: &std::path::Path) -> Result<Self> {
-        if global_path.exists()
-            && let Ok(contents) = std::fs::read_to_string(global_path)
-            && let Ok(reg) = serde_json::from_str::<GlobalRegistry>(&contents)
-        {
-            return Ok(reg);
-        }
-        let reg = Self::build(sessions_dir)?;
-        reg.save(global_path)?;
-        Ok(reg)
-    }
-
-    pub fn save(&self, path: &std::path::Path) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::write(path, json).context("writing global registry")?;
-        Ok(())
-    }
-
-}
-
-// ── Tier 2: Workspace Detail ────────────────────────────────────────
-
-/// Per-workspace session registry at `.ccsm/sessions.json` in the repo.
+/// Per-workspace session registry at `~/.ccsm/<id>/sessions.json`.
 /// Rich detail with human/agent-curated goal, scope, status, and tags.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceRegistry {
@@ -239,13 +387,17 @@ impl std::fmt::Display for SessionStatus {
 }
 
 impl WorkspaceRegistry {
-    /// Load from the repo's `.ccsm/sessions.json`, or return empty.
-    /// Checks `.claude/sessions.json` as a fallback for migration.
-    pub fn load(repo_path: &std::path::Path) -> Result<Self> {
-        let path = repo_path.join(".ccsm").join("sessions.json");
-        let legacy_path = repo_path.join(".claude").join("sessions.json");
+    /// Load from `~/.ccsm/<id>/sessions.json` where `<id>` is resolved from
+    /// the `.ccsm` identity file in the project root (found by walking up from CWD).
+    /// Returns an empty registry if no file exists yet (fresh project).
+    pub fn load() -> Result<Self> {
+        let data_dir = resolve_data_dir()?;
+        Self::load_from(&data_dir)
+    }
 
-        // Prefer .ccsm/ path
+    /// Load from a specific data directory (used for migration and tests).
+    pub fn load_from(data_dir: &Path) -> Result<Self> {
+        let path = data_dir.join("sessions.json");
         if path.exists() {
             let contents = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
@@ -258,22 +410,6 @@ impl WorkspaceRegistry {
             reg.updated = now_iso();
             return Ok(reg);
         }
-
-        // Fallback: load from legacy .claude/ location
-        if legacy_path.exists() {
-            let contents = std::fs::read_to_string(&legacy_path)
-                .with_context(|| format!("reading {}", legacy_path.display()))?;
-            let mut reg: WorkspaceRegistry =
-                serde_json::from_str(&contents)
-                    .with_context(|| format!(
-                        "parsing {} — JSON is malformed\n  → check for trailing/missing commas, unclosed brackets, or stray characters\n  → backup or delete the file to start fresh",
-                        legacy_path.display(),
-                    ))?;
-            reg.updated = now_iso();
-            eprintln!("ccsm: loading from .claude/sessions.json — migrate with `ccsm migrate-ccsm`");
-            return Ok(reg);
-        }
-
         Ok(Self {
             updated: now_iso(),
             sessions: Vec::new(),
@@ -283,15 +419,29 @@ impl WorkspaceRegistry {
     /// Load with an exclusive lock held for the lifetime of the returned `LockFile`.
     /// Use this for every read-modify-write cycle to prevent races between
     /// chained `ccsm` mutation commands.
-    pub fn load_locked(repo_path: &std::path::Path) -> Result<(Self, LockFile)> {
-        let lock = LockFile::acquire(repo_path)?;
-        let reg = Self::load(repo_path)?;
+    pub fn load_locked() -> Result<(Self, LockFile)> {
+        let data_dir = resolve_data_dir()?;
+        let lock = LockFile::acquire_for_data_dir(&data_dir)?;
+        let reg = Self::load_from(&data_dir)?;
         Ok((reg, lock))
     }
 
-    /// Save back to disk.
-    pub fn save(&self, repo_path: &std::path::Path) -> Result<()> {
-        let path = repo_path.join(".ccsm").join("sessions.json");
+    /// Load from a specific data directory with an exclusive lock (for tests).
+    pub fn load_locked_from(data_dir: &Path) -> Result<(Self, LockFile)> {
+        let lock = LockFile::acquire_for_data_dir(data_dir)?;
+        let reg = Self::load_from(data_dir)?;
+        Ok((reg, lock))
+    }
+
+    /// Save to `~/.ccsm/<id>/sessions.json`.
+    pub fn save(&self) -> Result<()> {
+        let data_dir = resolve_data_dir()?;
+        self.save_to(&data_dir)
+    }
+
+    /// Save to a specific data directory (used for migration and tests).
+    pub fn save_to(&self, data_dir: &Path) -> Result<()> {
+        let path = data_dir.join("sessions.json");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -332,7 +482,7 @@ impl WorkspaceRegistry {
     }
 
     /// Permanently delete a single session: transcript JSONL, any lingering
-    /// session files, and the registry entry.  `workspace` is the repo root.
+    /// session files, and the registry entry.
     /// Matches by session_id; falls back to name for seed entries.
     pub fn clean(
         &mut self,
@@ -371,12 +521,11 @@ impl WorkspaceRegistry {
             }
         }
 
-        // Delete the detail file
-        let detail = workspace
-            .join(".ccsm")
-            .join("sessions")
-            .join(format!("{name}.md"));
-        let _ = std::fs::remove_file(&detail);
+        // Delete the detail file from global data dir
+        if let Ok(ctx) = resolve_or_create_identity() {
+            let detail = global_detail_path(&ctx.id, name);
+            let _ = std::fs::remove_file(&detail);
+        }
 
         self.sessions.retain(|e| {
             !(e.session_id == session_id
@@ -525,8 +674,8 @@ impl WorkspaceRegistry {
             WorkspaceSession {
                 session_id: String::new(),
                 name: "session-registry".into(),
-                goal: "Two-tier session registry for team visibility".into(),
-                scope: "Tier 1: global overview at ~/.claude/sessions.json scanning all workspaces. Tier 2: per-repo .claude/sessions.json with goal/scope/status/tags. Auto-merges live session data. Survives ephemeral session cleanup.".into(),
+                goal: "Global session registry at ~/.ccsm/ with per-project isolation".into(),
+                scope: "Global data at ~/.ccsm/<id>/ with sessions.json, detail files, groups, worktrees, and config. Per-project .ccsm identity file for UUID-based workspace resolution. Survives ephemeral agent cleanup.".into(),
                 status: SessionStatus::InProgress,
                 pids: vec![],
                 tags: vec!["registry".into(), "sessions".into(), "team".into()],
@@ -554,7 +703,7 @@ impl WorkspaceRegistry {
 
 // ── File Locking ─────────────────────────────────────────────────────
 
-/// Advisory exclusive lock on `.ccsm/sessions.json.lock`.
+/// Advisory exclusive lock on `~/.ccsm/<id>/sessions.json.lock`.
 ///
 /// Acquired before reading the registry and held until dropped —
 /// this prevents the read-modify-write race when multiple `ccsm`
@@ -567,8 +716,9 @@ pub struct LockFile {
 }
 
 impl LockFile {
-    pub fn acquire(repo_path: &std::path::Path) -> Result<Self> {
-        let lock_path = repo_path.join(".ccsm").join("sessions.json.lock");
+    /// Acquire a lock within a specific data directory (tests/migration).
+    pub fn acquire_for_data_dir(data_dir: &Path) -> Result<Self> {
+        let lock_path = data_dir.join("sessions.json.lock");
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -632,9 +782,8 @@ pub fn session_age_days(ts: &str) -> u64 {
     }
 }
 
-/// Derive the Claude Code project slug from a workspace path.
-/// Claude replaces '/' and other non-alphanumeric chars with '-' in the
-/// absolute path, e.g. `/home/user/my_project` → `-home-user-my-project`.
+/// Derive a project slug from a workspace path.
+/// Replaces non-alphanumeric chars with '-', e.g. `/home/user/my_project` → `home-user-my-project`.
 pub(crate) fn project_slug(path: &std::path::Path) -> String {
     let s = path.to_string_lossy();
     s.chars()
@@ -795,19 +944,27 @@ pub(crate) fn replace_detail_section(md: &str, header: &str, new_body: &str) -> 
     }
 }
 
+/// Resolve the global data directory path from the current environment.
+/// Convenience: resolves identity via `resolve_or_create_identity()`.
+pub fn resolve_data_dir() -> Result<PathBuf> {
+    let ctx = resolve_or_create_identity()?;
+    Ok(global_data_dir(&ctx.id))
+}
+
 /// Sync the `> **status** | started ... | completed ...` line in the detail file
 /// for a session to match the registry state. No-op if detail file doesn't exist.
-pub fn sync_status_line(workspace: &std::path::Path, name: &str) {
-    let detail_path = workspace
-        .join(".ccsm")
-        .join("sessions")
-        .join(format!("{}.md", name));
+/// The detail file lives in `~/.ccsm/<id>/sessions/<name>.md`.
+pub fn sync_status_line(name: &str) {
+    let detail_path = match resolve_data_dir() {
+        Ok(dir) => dir.join("sessions").join(format!("{name}.md")),
+        Err(_) => return,
+    };
 
     if !detail_path.exists() {
         return;
     }
 
-    let reg = match WorkspaceRegistry::load(workspace) {
+    let reg = match WorkspaceRegistry::load() {
         Ok(r) => r,
         Err(_) => return,
     };
@@ -916,59 +1073,59 @@ pub(crate) fn parse_sections(md: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::sync::Arc;
+        use std::path::PathBuf;
+        use std::sync::Arc;
 
     /// Create a temp workspace with `.claude/sessions.json` pre-populated.
+    /// Create a temp directory with a data directory structure for testing.
+    /// Returns `(tempdir, data_dir)` where `data_dir` is `tempdir/data/`.
     fn temp_workspace() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let claude_dir = dir.path().join(".claude");
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        let reg_path = claude_dir.join("sessions.json");
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
         // Start with an empty but valid registry
         let reg = WorkspaceRegistry {
             updated: "test".into(),
             sessions: vec![],
         };
+        let reg_path = data_dir.join("sessions.json");
         std::fs::write(&reg_path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
-        (dir, reg_path)
+        (dir, data_dir)
     }
 
     // ── LockFile tests ─────────────────────────────────────────────
 
     #[test]
     fn lock_acquire_creates_lockfile() {
-        let (dir, _reg_path) = temp_workspace();
-        let lock_path = dir.path().join(".ccsm").join("sessions.json.lock");
+        let (_dir, data_dir) = temp_workspace();
+        let lock_path = data_dir.join("sessions.json.lock");
         assert!(!lock_path.exists());
 
-        let _lock = LockFile::acquire(&dir.path().to_path_buf()).unwrap();
+        let _lock = LockFile::acquire_for_data_dir(&data_dir).unwrap();
         assert!(lock_path.exists());
     }
 
     #[test]
     fn lock_drop_releases() {
-        let (dir, _reg_path) = temp_workspace();
-        let workspace = dir.path().to_path_buf();
+        let (_dir, data_dir) = temp_workspace();
 
         // Acquire and drop
-        let lock = LockFile::acquire(&workspace).unwrap();
+        let lock = LockFile::acquire_for_data_dir(&data_dir).unwrap();
         drop(lock);
 
         // Should be able to acquire again immediately (lock released)
-        let _lock2 = LockFile::acquire(&workspace).unwrap();
+        let _lock2 = LockFile::acquire_for_data_dir(&data_dir).unwrap();
     }
 
     #[test]
     fn lock_exclusive_blocks_same_process() {
-        let (dir, _reg_path) = temp_workspace();
-        let workspace = dir.path().to_path_buf();
+        let (_dir, data_dir) = temp_workspace();
 
         // Acquire exclusive lock on one fd
-        let _lock1 = LockFile::acquire(&workspace).unwrap();
+        let _lock1 = LockFile::acquire_for_data_dir(&data_dir).unwrap();
 
         // Try to acquire on a different fd — should fail with try_lock
-        let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
+        let lock_path = data_dir.join("sessions.json.lock");
         let file2 = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -982,14 +1139,13 @@ mod tests {
 
     #[test]
     fn lock_released_after_drop_allows_new_lock() {
-        let (dir, _reg_path) = temp_workspace();
-        let workspace = dir.path().to_path_buf();
+        let (_dir, data_dir) = temp_workspace();
 
-        let lock = LockFile::acquire(&workspace).unwrap();
+        let lock = LockFile::acquire_for_data_dir(&data_dir).unwrap();
         drop(lock);
 
         // Now try_lock should succeed
-        let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
+        let lock_path = data_dir.join("sessions.json.lock");
         let file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -1003,7 +1159,7 @@ mod tests {
 
     #[test]
     fn load_locked_loads_registry() {
-        let (dir, reg_path) = temp_workspace();
+        let (_dir, data_dir) = temp_workspace();
         // Write a known entry
         let reg = WorkspaceRegistry {
             updated: "day0T00:00:00Z".into(),
@@ -1026,9 +1182,9 @@ mod tests {
                 consumer: String::new(),
             }],
         };
-        std::fs::write(&reg_path, serde_json::to_string_pretty(&reg).unwrap()).unwrap();
+        std::fs::write(&data_dir.join("sessions.json"), serde_json::to_string_pretty(&reg).unwrap()).unwrap();
 
-        let (loaded, _lock) = WorkspaceRegistry::load_locked(&dir.path().to_path_buf()).unwrap();
+        let (loaded, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
         assert_eq!(loaded.sessions.len(), 1);
         assert_eq!(loaded.sessions[0].name, "test-session");
         assert_eq!(loaded.sessions[0].goal, "test goal");
@@ -1037,13 +1193,12 @@ mod tests {
 
     #[test]
     fn load_locked_holds_lock_during_mutation() {
-        let (dir, _reg_path) = temp_workspace();
-        let workspace = dir.path().to_path_buf();
+        let (_dir, data_dir) = temp_workspace();
 
-        let (mut reg, _lock) = WorkspaceRegistry::load_locked(&workspace).unwrap();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
 
         // While lock is held, try_lock should fail on another fd
-        let lock_path = workspace.join(".ccsm").join("sessions.json.lock");
+        let lock_path = data_dir.join("sessions.json.lock");
         let other_file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -1071,14 +1226,14 @@ mod tests {
             retired_session_ids: vec![],
             consumer: String::new(),
         });
-        reg.save(&workspace).unwrap();
+        reg.save_to(&data_dir).unwrap();
 
         // Drop the lock
         drop(_lock);
         drop(reg);
 
         // Now another lock can be acquired
-        let (_reg2, _lock2) = WorkspaceRegistry::load_locked(&workspace).unwrap();
+        let (_reg2, _lock2) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
         assert_eq!(_reg2.sessions.len(), 1);
         assert_eq!(_reg2.sessions[0].name, "locked-mutation");
     }
@@ -1087,16 +1242,16 @@ mod tests {
 
     #[test]
     fn concurrent_mutations_preserve_all_entries() {
-        let (dir, _reg_path) = temp_workspace();
-        let workspace = Arc::new(dir.path().to_path_buf());
+        let (_dir, data_dir) = temp_workspace();
         let num_threads = 8;
+        let data_dir = Arc::new(data_dir);
 
         let mut handles = vec![];
         for i in 0..num_threads {
-            let ws = workspace.clone();
+            let d = Arc::clone(&data_dir);
             handles.push(std::thread::spawn(move || {
                 let name = format!("thread-{}", i);
-                let (mut reg, _lock) = WorkspaceRegistry::load_locked(&ws).unwrap();
+                let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&d).unwrap();
                 reg.sessions.push(WorkspaceSession {
                     session_id: String::new(),
                     name,
@@ -1115,7 +1270,7 @@ mod tests {
                     retired_session_ids: vec![],
                     consumer: String::new(),
                 });
-                reg.save(&ws).unwrap();
+                reg.save_to(&d).unwrap();
                 // _lock dropped here
             }));
         }
@@ -1125,7 +1280,7 @@ mod tests {
         }
 
         // All entries should be present — none lost to race
-        let reg = WorkspaceRegistry::load(&workspace).unwrap();
+        let reg = WorkspaceRegistry::load_from(&data_dir).unwrap();
         assert_eq!(reg.sessions.len(), num_threads,
             "expected {} entries, got {} — mutations were lost to a race",
             num_threads, reg.sessions.len());
@@ -1142,16 +1297,16 @@ mod tests {
         // This test demonstrates WHY the lock is necessary.
         // Without locks, concurrent read-modify-write can corrupt the file
         // (empty reads, parse failures) or silently lose entries.
-        let (dir, _reg_path) = temp_workspace();
-        let workspace = Arc::new(dir.path().to_path_buf());
+        let (_dir, data_dir) = temp_workspace();
         let num_threads = 8;
+        let data_dir = Arc::new(data_dir);
 
         let mut handles = vec![];
         for i in 0..num_threads {
-            let ws = workspace.clone();
+            let d = Arc::clone(&data_dir);
             handles.push(std::thread::spawn(move || {
                 let name = format!("unlocked-{}", i);
-                let mut reg = WorkspaceRegistry::load(&ws)
+                let mut reg = WorkspaceRegistry::load_from(&d)
                     .unwrap_or_else(|_| WorkspaceRegistry::empty());
                 reg.sessions.push(WorkspaceSession {
                     session_id: String::new(),
@@ -1171,7 +1326,7 @@ mod tests {
                     retired_session_ids: vec![],
                     consumer: String::new(),
                 });
-                let _ = reg.save(&ws);
+                let _ = reg.save_to(&d);
             }));
         }
 
@@ -1182,7 +1337,7 @@ mod tests {
         // Without locks, the file is often corrupted or entries are lost.
         // We just verify the locked version works correctly — this test
         // exists to document the race condition that load_locked prevents.
-        let reg = WorkspaceRegistry::load(&workspace).unwrap_or_else(|_| {
+        let reg = WorkspaceRegistry::load_from(&data_dir).unwrap_or_else(|_| {
             // File was corrupted by concurrent writes — exactly what the lock prevents
             WorkspaceRegistry::empty()
         });
