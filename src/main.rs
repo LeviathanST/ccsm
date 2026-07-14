@@ -57,7 +57,7 @@ impl std::fmt::Display for ErrorCode {
 #[derive(Parser)]
 #[command(name = "ccsm", version, about = "Session registry CLI", long_about = None)]
 struct Cli {
-    /// Target agent: "claude" (default) or "pi". Detects automatically. Also via CCSM_CONSUMER env var.
+    /// Target agent: auto-detected (opencode, claude, or pi). Also via CCSM_CONSUMER env var.
     #[arg(long)]
     consumer: Option<String>,
 

@@ -113,7 +113,7 @@ ccsm-swarm  ──tmux commands──►  tmux
 (binary)                      (sessions/panes)
     │
     ▼
-ccsm CLI (planned Phase 3: direct library integration)
+ccsm CLI (library integration)
 ```
 
 ## Delta Tracking

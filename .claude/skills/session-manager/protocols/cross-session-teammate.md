@@ -81,7 +81,7 @@ ccsm note <our-session> --cross <their-session> "RELATED: `<their-session>` is w
 Use `ccsm note --cross <source>` which auto-prepends `CROSS-SESSION [<source>]:`. This makes cross-session coordination greppable and traceable:
 
 ```bash
-grep -r "CROSS-SESSION" .claude/sessions/   # find all cross-session coordination
+grep -r "CROSS-SESSION" ~/.ccsm/*/sessions/   # find all cross-session coordination
 ```
 
 - Use `--cross` when writing to **another** session's detail file

@@ -1,7 +1,7 @@
 ---
 name: session-manager
 description: >
-  Maintain the ccsm session registry (.claude/sessions.json). Every agent working
+  Maintain the ccsm session registry (~/.ccsm/<id>/sessions.json). Every agent working
   on this project MUST use this — create entries, update status, fill goal/scope,
   track sub-tasks with checklist. This is the single source of truth for team session tracking.
 argument-hint: "<start|status|complete|list> — manage your session entry"
@@ -9,12 +9,12 @@ argument-hint: "<start|status|complete|list> — manage your session entry"
 
 # Session Manager — ccsm Session Registry
 
-You are working on **ccsm**, a CLI session registry and workflow harness for Claude Code. This project has a session registry at `.claude/sessions.json` that tracks every work session. **You MUST maintain it.**
+You are working on **ccsm**, a CLI session registry and workflow harness for Claude Code. This project has a session registry at `~/.ccsm/<id>/sessions.json` (global data directory) that tracks every work session. **You MUST maintain it.**
 
 ## Quick Reference
 
 ```
-On session START  →  read .claude/sessions.json, create/claim entry (status: pending)
+On session START  →  read ~/.ccsm/<id>/sessions.json, create/claim entry (status: pending)
 Multi-step work?  →  ccsm new <name> -c -g "goal" — checklist for sub-task tracking
 Branch tracking?  →  ccsm new <name> -b feat/my-branch -g "goal" — warns on branch mismatch at resume
 Checklist types?  →  ccsm new <name> -c feat|fix|research|chore -g "goal" — pre-populated items
@@ -50,7 +50,7 @@ ccsm show <name>         # registry fields + detail file section headlines
    ```bash
    ccsm sequence -q new <name> -g "<goal>" -q start <name> -q scope <name> "<approach>" -q tag <name> <tag1> <tag2>
    # Use `ccsm new <name> -c -g "<goal>"` for complex multi-step work — checklist tracks sub-tasks.
-   # `new` auto-creates .claude/sessions/<name>.md from template.
+   # `new` auto-creates ~/.ccsm/<id>/sessions/<name>.md from template.
    # Use `ccsm new <name> -b <branch> -g "<goal>"` for branch-tracked sessions — inject-scope warns on mismatch.
    ```
 

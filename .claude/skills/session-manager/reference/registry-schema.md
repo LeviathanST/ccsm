@@ -2,7 +2,7 @@
 
 ## Registry Schema
 
-`.claude/sessions.json` at the workspace root:
+`~/.ccsm/<id>/sessions.json` in the global data directory:
 
 ```json
 {
@@ -33,7 +33,7 @@
 
 | Field | Who | When |
 |-------|-----|------|
-| `session_id` | **ccsm** — NEVER touch | Harvested from `~/.claude/sessions/<pid>.json` on exit. Use `ccsm attach` to set manually |
+| `session_id` | **ccsm** — NEVER touch | Harvested from consumer session file (~/.claude/sessions/<pid>.json for Claude, OpenCode/SQLite) on exit. Use `ccsm attach` to set manually |
 | `pids` | **ccsm** — NEVER touch | Set at spawn, cleared on exit |
 | `started` | **ccsm** — NEVER touch | Set on first spawn |
 | `name`, `goal`, `scope`, `tags` | **You** | On session create, refine as needed |
@@ -54,11 +54,11 @@ NEW → start → (work → note → work → note → ...) → END-GATE → com
 
 ## Session Detail Files
 
-Detail files live at `.claude/sessions/<name>.md`. `ccsm new` auto-creates them from the template — your job is to **fill them in**, not create them.
+Detail files live at `~/.ccsm/<id>/sessions/<name>.md`. `ccsm new` auto-creates them from the template — your job is to **fill them in**, not create them.
 
 ```bash
 ccsm show <name>          # check what's already filled
-# Then Edit .claude/sessions/<name>.md to replace remaining {{placeholders}}
+# Then Edit ~/.ccsm/<id>/sessions/<name>.md to replace remaining {{placeholders}}
 ```
 
 **Token-efficient reading:**

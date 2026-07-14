@@ -92,28 +92,29 @@ trashed      — soft-deleted, recoverable
 
 ## Consumer Detection
 
-ccsm supports two agents (consumers), auto-detected or explicitly set:
+ccsm supports three agents (consumers), auto-detected or explicitly set:
 
 | Method | Example |
 |--------|---------|
 | **Flag** | `ccsm --consumer pi resume <name>` |
 | **Env var** | `CCSM_CONSUMER=pi ccsm resume <name>` |
-| **Auto-detect** | `ccsm <command>` — picks the most recently active config dir (`~/.pi/agent/` or `~/.claude/`) |
+| **Auto-detect** | `ccsm <command>` — most recently active config dir wins. Fallback: OpenCode |
 
 | Consumer | Binary | Config Dir | Session Files |
 |----------|--------|------------|---------------|
+| `opencode` (default) | `opencode` | `~/.config/opencode/` | SQLite at `~/.local/share/opencode/opencode.db` |
 | `claude` | `claude` | `~/.claude/` | `~/.claude/sessions/<pid>.json` + `~/.claude/projects/<slug>/<uuid>.jsonl` |
 | `pi` | `pi` | `~/.pi/agent/` | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` |
 
 ### What changes per consumer
 
-| Feature | Claude | Pi |
-|---------|--------|----|
-| `resume` spawns | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` |
-| `refresh` spawns | `claude -n <name>` (fresh) | `pi --continue -n <name>` |
-| `attach` auto-discovers | Reads live `~/.claude/sessions/<pid>.json` for exact UUID | Scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` (mtime approximation) |
-| `inject-scope` format | `<system-reminder>...</system-reminder>` | Same (both agents accept it) |
-| Session harvesting | PID-based JSON polling | UUID already known from `--session` flag |
+| Feature | OpenCode | Claude | Pi |
+|---------|----------|--------|----|
+| `resume` spawns | `opencode -s <uuid>` (resume) / `opencode` (fresh) | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` |
+| `refresh` spawns | `opencode` (fresh, no flags) | `claude -n <name>` (fresh) | `pi --continue -n <name>` |
+| `attach` auto-discovers | Queries SQLite for most recent session in workspace | Reads live `~/.claude/sessions/<pid>.json` for exact UUID | Scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` (mtime approximation) |
+| `inject-scope` format | `<system-reminder>...</system-reminder>` | Same (all accept it) | Same |
+| Session harvesting | SQLite DB polling after fresh spawn | PID-based JSON polling | UUID already known from `--session` flag |
 
 ---
 
@@ -162,12 +163,12 @@ ccsm resolves the workspace root in this priority order:
 ## Design Decisions
 
 1. **CLI-first.** Purpose-built subcommands for every operation. Same output format across Claude, Pi, and shell scripts.
-2. **`<workspace>/.ccsm/sessions.json` is the canonical source.** Structured JSON, diffable in git, parseable by any tool.
+2. **`~/.ccsm/<id>/sessions.json` is the canonical source.** Structured JSON, diffable in git, parseable by any tool.
 3. **Never parse JSONL transcripts.** Use `claude --resume` or `pi --session` for session replay — let the agent handle its own data format.
 4. **Consumer abstraction.** `src/consumer.rs` encapsulates all agent-specific paths and binary names. Adding a new consumer means adding one enum variant.
 5. **Pi extension.** `.pi/extensions/ccsm/index.ts` registers all ccsm operations as native Pi tools (20+ tools). The extension always passes `--consumer pi`.
 6. **Auto-managed fields.** `session_id`, `pids`, and `started` are managed by ccsm. Agents use CLI commands, never touch these fields directly.
-7. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `.ccsm/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
+7. **Advisory file locking.** Every mutation acquires an exclusive `flock` on `~/.ccsm/<id>/sessions.json.lock` before reading and holds it through writing. This eliminates the read-modify-write race when commands are chained (`&&` or `sequence`).
 8. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
 9. **Keyword-rich goals.** Session goals must be self-contained and searchable. Bad: `"Fix bugs"`. Good: `"Fix PTY spawn race condition in ccsm resume command"`. Never use the session name as the goal. `ccsm doctor` flags vague goals (< 20 chars), name-as-goal, and CLI-artifact goals (`-g ` prefix).
 
@@ -179,13 +180,14 @@ ccsm resolves the workspace root in this priority order:
 
 | Path | Contains | Use For |
 |------|----------|---------|
-| `<workspace>/.ccsm/sessions.json` | Registry entries: name, goal, scope, status, session_id, pids, tags, timestamps | All CLI operations |
-| `<workspace>/.ccsm/sessions/<name>.md` | Session detail files | Notes, checklists, dependencies |
+| `~/.ccsm/<id>/sessions.json` | Registry entries: name, goal, scope, status, session_id, pids, tags, timestamps | All CLI operations |
+| `~/.ccsm/<id>/sessions/<name>.md` | Session detail files | Notes, checklists, dependencies |
+| `~/.local/share/opencode/opencode.db` | OpenCode SQLite DB (all session data) | Session attach, harvest, rename |
 | `~/.claude/sessions/<pid>.json` | Live Claude session: sessionId, cwd, status, name | `resume` harvesting |
 | `~/.claude/projects/<slug>/<session_id>.jsonl` | Claude transcript | Resume check (exists → --resume) |
 | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` | Pi session files | `resume` (--session), `attach` auto-discover |
 
-> **Decision: `<workspace>/.ccsm/sessions.json` is the canonical session data source.** ccsm reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
+> **Decision: `~/.ccsm/<id>/sessions.json` is the canonical session data source.** ccsm reads and writes this file via purpose-built CLI commands. No manual JSON editing needed — the CLI validates input and enforces schema integrity.
 
 ---
 

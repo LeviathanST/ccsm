@@ -25,10 +25,13 @@ Prerequisites: Rust toolchain, tmux (for swarm). Build times ~30s.
 ccsm CLI              — Session registry (new, start, resume, complete, archive)
 ccsm-swarm (MCP)      — Multi-agent orchestration via tmux
     │
-    ├── ccsm commands               # Session lifecycle, groups, dependencies
-    ├── .ccsm/sessions.json         # Canonical registry (single source of truth)
-    ├── .ccsm/sessions/<name>.md    # Per-session detail files (progress, checklists)
-    └── rmcp (stdio MCP)            # Rust MCP SDK for ccsm-swarm tooling
+    ├── <workspace>/.ccsm                  # Identity file (TOML: version + id)
+    ├── ~/.ccsm/<id>/sessions.json         # Canonical registry (single source of truth)
+    ├── ~/.ccsm/<id>/sessions/<name>.md    # Per-session detail files (progress, checklists)
+    ├── ~/.ccsm/<id>/session-group/        # Group detail files
+    ├── ~/.ccsm/<id>/worktrees/            # Git worktrees for branch isolation
+    ├── ~/.ccsm/<id>/config.toml           # Project policy config
+    └── rmcp (stdio MCP)                   # Rust MCP SDK for ccsm-swarm tooling
 ```
 
 ### Design Principles
@@ -98,8 +101,8 @@ ccsm supports multiple AI coding agents via the `--consumer` flag:
 
 | Consumer | Flag | Binary | Sessions |
 |----------|------|--------|----------|
-| OpenCode | `--consumer opencode` | `opencode` | SQLite at `~/.local/share/opencode/opencode.db` |
-| Claude Code (default) | `--consumer claude` | `claude` | `~/.claude/sessions/<pid>.json` |
+| OpenCode (default) | `--consumer opencode` | `opencode` | SQLite at `~/.local/share/opencode/opencode.db` |
+| Claude Code | `--consumer claude` | `claude` | `~/.claude/sessions/<pid>.json` |
 | Pi | `--consumer pi` | `pi` | `~/.pi/agent/sessions/<slug>/` |
 
 Detection order: `--consumer` flag → `CCSM_CONSUMER` env var → auto-detect (most recently active config dir wins).
@@ -122,8 +125,9 @@ See [.claude/skills/session-manager/SKILL.md](.claude/skills/session-manager/SKI
 
 | Path | Contains |
 |------|----------|
-| `<workspace>/.ccsm/sessions.json` | Registry entries (canonical) |
-| `<workspace>/.ccsm/sessions/<name>.md` | Session detail files (progress, checklists) |
+| `<workspace>/.ccsm` | Identity file (TOML with workspace ID) |
+| `~/.ccsm/<id>/sessions.json` | Registry entries (canonical) |
+| `~/.ccsm/<id>/sessions/<name>.md` | Session detail files (progress, checklists) |
 | `<workspace>/.claude/skills/` | Workflow skills (session-manager, seed-session, wrap-up) |
 | `~/.claude/sessions/<pid>.json` | Live Claude session ID |
 | `~/.claude/projects/<slug>/<uuid>.jsonl` | Claude transcript |
