@@ -451,11 +451,20 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     } else if consumer.is_opencode() && sid.is_none() {
         // OpenCode fresh session: poll SQLite DB for new session
         let db_path = crate::consumer::opencode_db_path(home);
-        if let Some(harvested_id) = crate::consumer::opencode_harvest_session(
-            &db_path,
-            &workspace.to_string_lossy(),
-            harvest_before,
-        ) {
+        let run_dir = worktree_dir.as_ref()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_else(|| workspace.to_string_lossy().to_string());
+        // Try run_dir first, fall back to workspace path (for mismatched dirs)
+        let harvested_id = crate::consumer::opencode_harvest_session(
+            &db_path, &run_dir, harvest_before,
+        ).or_else(|| {
+            if run_dir != workspace.to_string_lossy().as_ref() {
+                crate::consumer::opencode_harvest_session(
+                    &db_path, &workspace.to_string_lossy(), harvest_before,
+                )
+            } else { None }
+        });
+        if let Some(harvested_id) = harvested_id {
             // Harvest succeeded — store in registry
             let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
