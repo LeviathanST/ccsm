@@ -89,10 +89,12 @@ pub fn find_project_root(start: &Path) -> Result<Option<(PathBuf, WorkspaceIdent
 
 /// Walk up from CWD to find the project root and workspace identity.
 /// If no `.ccsm` file exists, creates a fresh identity.
+/// On existing identity with stale version, runs version-gated migrations.
 pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
     let cwd = std::env::current_dir()?;
 
     if let Some((root, identity)) = find_project_root(&cwd)? {
+        run_identity_migrations(&identity, &root)?;
         let slug = project_slug(&root);
         return Ok(WorkspaceContext {
             id: identity.id,
@@ -146,6 +148,31 @@ pub fn resolve_or_create_identity() -> Result<WorkspaceContext> {
     ensure_data_dir(&id)?;
     eprintln!("ccsm: initialised workspace {id} at {}", root.display());
     Ok(WorkspaceContext { id, root, slug })
+}
+
+/// Run version-gated migrations when the `.ccsm` identity file is from an older version.
+/// Add new migration arms here as ccsm evolves.
+fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    if identity.version == current {
+        return Ok(());
+    }
+    match identity.version.as_str() {
+        "1" => {
+            // Old hardcoded version from pre-0.15.0 dev — update to semver
+            let content = format!("version = \"{current}\"\nid = \"{}\"\n", identity.id);
+            std::fs::write(root.join(".ccsm"), &content)
+                .context("rewriting .ccsm identity with current version")?;
+            eprintln!("ccsm: migrated .ccsm identity from v{} to v{}", identity.version, current);
+        }
+        _ => {
+            eprintln!(
+                "ccsm: warning: .ccsm identity has unknown version \"{}\" (expected {})",
+                identity.version, current,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Migrate legacy `<project>/.ccsm/` data to `~/.ccsm/<id>/`.
