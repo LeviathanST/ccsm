@@ -6,3 +6,5 @@
 | Lesson Systems | lesson-systems.md | Don't create parallel lesson stores — use .claude/lessons/ | 2026-06-25 |
 | Agent-First Docs | agent-first-docs.md | Decision tree + token budget table pattern for agent-facing docs | 2026-07-05 |
 | Structured Errors | structured-errors.md | ErrorCode enum for agent-parsable CLI error codes | 2026-07-05 |
+| CI/CD | ci-publish-tag-guard.md | Guard publish jobs to only run on tags that are ancestors of main | 2026-07-14 |
+| CI/CD | github-secrets-environment-vs-repo.md | Environment secrets require `environment:` in job — use repo-level secrets for general CI | 2026-07-14 |
