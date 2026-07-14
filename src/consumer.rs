@@ -22,6 +22,10 @@ pub enum Consumer {
     /// Pi — binary `pi`, config at `~/.pi/agent/`.
     /// Sessions: `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl`.
     Pi,
+    /// OpenCode — binary `opencode`, config at `~/.config/opencode/`.
+    /// Sessions in SQLite at `~/.local/share/opencode/opencode.db`.
+    /// No PID-based session files.
+    OpenCode,
 }
 
 impl Consumer {
@@ -48,13 +52,22 @@ impl Consumer {
     fn auto_detect(home: &Path) -> Self {
         let pi_dir = home.join(".pi").join("agent");
         let claude_dir = home.join(".claude");
+        // OpenCode check: look for the SQLite DB
+        let opencode_db = home.join(".local").join("share").join("opencode").join("opencode.db");
 
-        let candidates = [(Self::Pi, &pi_dir), (Self::Claude, &claude_dir)];
+        let candidates: [(Self, &Path); 3] = [(Self::OpenCode, &opencode_db), (Self::Pi, &pi_dir), (Self::Claude, &claude_dir)];
 
         let mut found: Vec<(Self, std::time::SystemTime)> = candidates
             .iter()
-            .filter(|(_, dir)| dir.is_dir())
-            .map(|(consumer, dir)| (*consumer, Self::recent_file(dir)))
+            .filter(|(_, path)| path.exists())
+            .map(|(consumer, path)| {
+                let mtime = if path.is_dir() {
+                    Self::recent_file(path)
+                } else {
+                    path.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)
+                };
+                (*consumer, mtime)
+            })
             .collect();
 
         if found.is_empty() {
@@ -66,8 +79,10 @@ impl Consumer {
                 if cwd.join(".claude").is_dir() {
                     return Self::Claude;
                 }
+                // Prefer OpenCode on fresh systems
+                return Self::OpenCode;
             }
-            return Self::Claude; // default fallback
+            return Self::OpenCode; // default fallback
         }
 
         // Return the one with most recent activity
@@ -110,7 +125,8 @@ impl Consumer {
         match s.to_lowercase().as_str() {
             "claude" => Ok(Self::Claude),
             "pi" => Ok(Self::Pi),
-            other => anyhow::bail!("unknown consumer '{other}'. Expected: claude, pi"),
+            "opencode" | "open-code" | "oc" => Ok(Self::OpenCode),
+            other => anyhow::bail!("unknown consumer '{other}'. Expected: claude, pi, opencode"),
         }
     }
 
@@ -122,6 +138,10 @@ impl Consumer {
         matches!(self, Self::Pi)
     }
 
+    pub fn is_opencode(&self) -> bool {
+        matches!(self, Self::OpenCode)
+    }
+
     // ── Binary ────────────────────────────────────────────────────
 
     /// The CLI binary to spawn for `resume`.
@@ -129,6 +149,7 @@ impl Consumer {
         match self {
             Self::Claude => "claude",
             Self::Pi => "pi",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -137,6 +158,16 @@ impl Consumer {
         match self {
             Self::Claude => ".claude",
             Self::Pi => ".pi",
+            Self::OpenCode => ".config/opencode",
+        }
+    }
+
+    /// Data directory for session storage (e.g. SQLite DB).
+    /// Only meaningful for OpenCode; Claude/Pi store sessions elsewhere.
+    pub fn data_dir(self) -> &'static str {
+        match self {
+            Self::OpenCode => ".local/share/opencode",
+            _ => "",
         }
     }
 
@@ -158,6 +189,14 @@ impl Consumer {
                 let base = slugify_path(workspace);
                 format!("--{}--", base)
             }
+            Self::OpenCode => {
+                // Deterministic path-based slug for ccsm matching
+                workspace
+                    .to_string_lossy()
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                    .collect()
+            }
         }
     }
 
@@ -168,6 +207,7 @@ impl Consumer {
         match self {
             Self::Claude => home.join(".claude").join("sessions"),
             Self::Pi => home.join(".pi").join("agent").join("sessions"),
+            Self::OpenCode => home.join(".local").join("share").join("opencode"),
         }
     }
 
@@ -176,6 +216,7 @@ impl Consumer {
         match self {
             Self::Claude => home.join(".claude").join("projects").join(slug),
             Self::Pi => home.join(".pi").join("agent").join("sessions").join(slug),
+            Self::OpenCode => home.join(".local").join("share").join("opencode"),
         }
     }
 
@@ -190,7 +231,7 @@ impl Consumer {
             Self::Claude => {
                 Some(home.join(self.home_config_dir()).join("sessions").join(format!("{pid}.json")))
             }
-            Self::Pi => None, // Pi doesn't write PID-based session files
+            Self::Pi | Self::OpenCode => None,
         }
     }
 
@@ -220,6 +261,14 @@ impl Consumer {
                 }
                 None
             }
+            Self::OpenCode => {
+                let db_path = opencode_db_path(home);
+                if opencode_session_exists(&db_path, session_id) {
+                    Some(db_path) // DB file exists — signals "found"
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -230,24 +279,29 @@ impl Consumer {
 
     /// List all session/transcript files for a workspace slug, sorted by filename.
     pub fn list_session_files(self, home: &Path, slug: &str) -> Vec<PathBuf> {
-        let dir = self.projects_dir(home, slug);
-        if !dir.is_dir() {
-            return vec![];
-        }
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| {
-                let path = e.ok()?.path();
-                if path.extension().is_some_and(|ext| ext == "jsonl") {
-                    Some(path)
-                } else {
-                    None
+        match self {
+            Self::OpenCode => vec![], // No individual transcript files — all in DB
+            _ => {
+                let dir = self.projects_dir(home, slug);
+                if !dir.is_dir() {
+                    return vec![];
                 }
-            })
-            .collect();
-        files.sort();
-        files
+                let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| {
+                        let path = e.ok()?.path();
+                        if path.extension().is_some_and(|ext| ext == "jsonl") {
+                            Some(path)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                files.sort();
+                files
+            }
+        }
     }
 
     // ── System prompt format ─────────────────────────────────────
@@ -268,6 +322,7 @@ impl std::fmt::Display for Consumer {
         match self {
             Self::Claude => write!(f, "claude"),
             Self::Pi => write!(f, "pi"),
+            Self::OpenCode => write!(f, "opencode"),
         }
     }
 }
@@ -407,6 +462,94 @@ fn extract_session_name(text: &str) -> Option<String> {
     None
 }
 
+// ── OpenCode DB helpers ─────────────────────────────────────────────
+
+/// Path to opencode's SQLite session database.
+pub fn opencode_db_path(home: &Path) -> PathBuf {
+    home.join(".local").join("share").join("opencode").join("opencode.db")
+}
+
+/// Check if a session exists in opencode's database.
+pub fn opencode_session_exists(db_path: &Path, session_id: &str) -> bool {
+    use rusqlite::Connection;
+    let conn = match Connection::open(db_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    conn.query_row(
+        "SELECT 1 FROM session WHERE id = ?1",
+        [session_id],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+/// List all session IDs in opencode's database.
+pub fn opencode_list_sessions(db_path: &Path) -> Vec<String> {
+    use rusqlite::Connection;
+    let conn = match Connection::open(db_path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare("SELECT id FROM session ORDER BY time_created DESC") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], |row| row.get::<_, String>(0))
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r.ok())
+        .collect()
+}
+
+/// Harvest a newly created opencode session ID by polling the DB.
+/// Returns the first session with `time_created > before` and matching `directory`.
+/// Polls up to ~5s (50 attempts × 100ms).
+pub fn opencode_harvest_session(db_path: &Path, directory: &str, before_ts: i64) -> Option<String> {
+    use rusqlite::Connection;
+    for _ in 0..50 {
+        let conn = Connection::open(db_path).ok()?;
+        let mut stmt = conn
+            .prepare("SELECT id FROM session WHERE directory = ?1 AND time_created > ?2 ORDER BY time_created DESC LIMIT 1")
+            .ok()?;
+        let result: Option<String> = stmt
+            .query_map([directory, &before_ts.to_string()], |row| row.get(0))
+            .ok()?
+            .filter_map(|r| r.ok())
+            .next();
+        if result.is_some() {
+            return result;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    None
+}
+
+/// Update the title of an opencode session in the DB.
+pub fn opencode_update_title(db_path: &Path, session_id: &str, title: &str) -> anyhow::Result<()> {
+    use rusqlite::Connection;
+    let conn = Connection::open(db_path)
+        .map_err(|e| anyhow::anyhow!("failed to open opencode DB: {e}"))?;
+    conn.execute(
+        "UPDATE session SET title = ?1 WHERE id = ?2",
+        [title, session_id],
+    )?;
+    Ok(())
+}
+
+/// Get the most recent session ID for a directory (non-polling, single check).
+pub fn opencode_latest_session(db_path: &Path, directory: &str) -> Option<String> {
+    use rusqlite::Connection;
+    let conn = Connection::open(db_path).ok()?;
+    let mut stmt = conn
+        .prepare("SELECT id FROM session WHERE directory = ?1 ORDER BY time_created DESC LIMIT 1")
+        .ok()?;
+    stmt.query_map([directory], |row| row.get(0))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .next()
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -417,6 +560,9 @@ mod tests {
     fn test_consumer_parse() {
         assert_eq!(Consumer::parse("claude").unwrap(), Consumer::Claude);
         assert_eq!(Consumer::parse("pi").unwrap(), Consumer::Pi);
+        assert_eq!(Consumer::parse("opencode").unwrap(), Consumer::OpenCode);
+        assert_eq!(Consumer::parse("open-code").unwrap(), Consumer::OpenCode);
+        assert_eq!(Consumer::parse("oc").unwrap(), Consumer::OpenCode);
         assert!(Consumer::parse("unknown").is_err());
     }
 
@@ -424,11 +570,26 @@ mod tests {
     fn test_binary_names() {
         assert_eq!(Consumer::Claude.binary(), "claude");
         assert_eq!(Consumer::Pi.binary(), "pi");
+        assert_eq!(Consumer::OpenCode.binary(), "opencode");
     }
 
     #[test]
     fn test_home_config_dirs() {
         assert_eq!(Consumer::Claude.home_config_dir(), ".claude");
         assert_eq!(Consumer::Pi.home_config_dir(), ".pi");
+        assert_eq!(Consumer::OpenCode.home_config_dir(), ".config/opencode");
+    }
+
+    #[test]
+    fn test_is_opencode() {
+        assert!(Consumer::OpenCode.is_opencode());
+        assert!(!Consumer::Claude.is_opencode());
+        assert!(!Consumer::Pi.is_opencode());
+    }
+
+    #[test]
+    fn test_data_dir() {
+        assert_eq!(Consumer::OpenCode.data_dir(), ".local/share/opencode");
+        assert_eq!(Consumer::Claude.data_dir(), "");
     }
 }

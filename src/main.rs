@@ -1016,6 +1016,27 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
                     eprintln!("auto-detected session {} from {}", &meta.session_id[..8], latest.display());
                     meta.session_id
                 }
+                Consumer::OpenCode => {
+                    // OpenCode: query SQLite for the most recent session in this workspace
+                    let db_path = crate::consumer::opencode_db_path(home);
+                    if !db_path.exists() {
+                        anyhow::bail!(
+                            "no opencode DB found at {}. Start opencode first, then `ccsm attach {}`.",
+                            db_path.display(), name
+                        );
+                    }
+                    match crate::consumer::opencode_latest_session(&db_path, &workspace.to_string_lossy()) {
+                        Some(sid) => {
+                            eprintln!("auto-detected session {} from opencode DB", &sid[..sid.len().min(8)]);
+                            sid
+                        }
+                        None => anyhow::bail!(
+                            "no opencode sessions found in this workspace.\n\
+                             Start opencode first, then `ccsm attach {}`.",
+                            name
+                        ),
+                    }
+                }
             }
         }
     };
@@ -1095,9 +1116,18 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     }
 
     let sid = reg.sessions[idx].session_id.clone();
-    // 1. Append rename entries to transcript (if session_id is set)
+    // 1. Update session name (consumer-specific)
     if !sid.is_empty() {
-        if let Some(transcript) = consumer.find_session_file_for(home, workspace, &sid) {
+        if consumer.is_opencode() {
+            // OpenCode: update title in SQLite DB
+            let db_path = crate::consumer::opencode_db_path(home);
+            if db_path.exists() {
+                match crate::consumer::opencode_update_title(&db_path, &sid, new) {
+                    Ok(_) => eprintln!("  opencode DB  title '{}' → '{}'", old, new),
+                    Err(e) => eprintln!("  opencode DB  failed to update title: {e}"),
+                }
+            }
+        } else if let Some(transcript) = consumer.find_session_file_for(home, workspace, &sid) {
             let rename_line = format!(
                 "{{\"type\":\"custom-title\",\"customTitle\":\"{}\",\"sessionId\":\"{}\"}}\n\
                  {{\"type\":\"agent-name\",\"agentName\":\"{}\",\"sessionId\":\"{}\"}}\n",
@@ -1792,8 +1822,10 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             cmd.arg("-n").arg(name);
         }
         Consumer::Pi => {
-            // Pi: start fresh
             cmd.arg("-n").arg(name);
+        }
+        Consumer::OpenCode => {
+            // OpenCode TUI: no name/title flag at top level
         }
     }
 
@@ -4195,6 +4227,46 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             if !status.success() {
                 anyhow::bail!("setup script exited with {status}");
             }
+            Ok(())
+        }
+        Consumer::OpenCode => {
+            // Install ccsm plugin to opencode's global plugins directory
+            let plugins_dir = std::path::PathBuf::from(
+                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+            )
+            .join(".config")
+            .join("opencode")
+            .join("plugins");
+
+            std::fs::create_dir_all(&plugins_dir)
+                .context("creating opencode plugins directory")?;
+
+            let plugin_src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("plugins")
+                .join("opencode")
+                .join("ccsm-plugin.ts");
+
+            if !plugin_src.exists() {
+                anyhow::bail!(
+                    "plugin file not found at {}\n\
+                     (ccsm must be run from its source tree)",
+                    plugin_src.display()
+                );
+            }
+
+            let plugin_dst = plugins_dir.join("ccsm-plugin.ts");
+            std::fs::copy(&plugin_src, &plugin_dst)
+                .with_context(|| format!("copying plugin to {}", plugin_dst.display()))?;
+
+            println!("ccsm setup for OpenCode.");
+            println!();
+            println!("  ✓ Plugin installed to ~/.config/opencode/plugins/ccsm-plugin.ts");
+            println!("  ✓ Injects session scope (goal + checklist) every LLM turn");
+            println!("  ✓ Auto-links opencode sessions to ccsm registry");
+            println!("  ✓ Consumer auto-detection (--consumer opencode or CCSM_CONSUMER=opencode)");
+            println!();
+            println!("Usage: opencode (plugin auto-loaded) or ccsm --consumer opencode <command>");
+            println!("       Restart opencode if it's currently running.");
             Ok(())
         }
     }

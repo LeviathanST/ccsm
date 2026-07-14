@@ -287,6 +287,15 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 println!("{}", label);
                 format!("cd '{}' && exec {} {} -n '{}'", wt_str, bin, flag, name)
             }
+            crate::consumer::Consumer::OpenCode => {
+                let (flag, label) = if let Some(ref id) = sid {
+                    (format!("-s {}", id), format!("resuming    {}  ← opencode -s {}", name, &id[..id.len().min(8)]))
+                } else {
+                    (String::new(), format!("starting    {}  ← opencode (fresh)", name))
+                };
+                println!("{}", label);
+                format!("cd '{}' && exec opencode {}", wt_str, flag)
+            }
         };
         let mut s = std::process::Command::new("sh");
         s.arg("-c").arg(&inner);
@@ -315,6 +324,15 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 }
                 c.arg("-n").arg(name);
             }
+            crate::consumer::Consumer::OpenCode => {
+                if let Some(ref id) = sid {
+                    c.arg("-s").arg(id);
+                    println!("resuming    {}  ← opencode -s {}", name, &id[..id.len().min(8)]);
+                } else {
+                    println!("starting    {}  ← opencode (fresh)", name);
+                }
+                // OpenCode TUI has no name/title flag at top level
+            }
         }
         c
     };
@@ -341,6 +359,10 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     }
 
     // ── Phase 5: Harvest session_id (consumer-specific) ─────────────
+    let harvest_before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
     if consumer.is_claude() {
         // Claude: poll for PID-based session file
         let session_file = consumer.live_session_file(home, child_pid)
@@ -423,8 +445,35 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
         // Sync detail file status line with harvested started time
         crate::registry::sync_status_line(workspace, name);
+    } else if consumer.is_opencode() && sid.is_none() {
+        // OpenCode fresh session: poll SQLite DB for new session
+        let db_path = crate::consumer::opencode_db_path(home);
+        if let Some(harvested_id) = crate::consumer::opencode_harvest_session(
+            &db_path,
+            &workspace.to_string_lossy(),
+            harvest_before,
+        ) {
+            // Harvest succeeded — store in registry
+            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked(workspace)?;
+            let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+                Some(e) => e,
+                None => anyhow::bail!(
+                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 5",
+                    name
+                ),
+            };
+            if entry.session_id.is_empty() {
+                entry.session_id = harvested_id;
+            }
+            reg.updated = crate::registry::now_iso();
+            reg.save(workspace)?;
+            crate::registry::sync_status_line(workspace, name);
+            eprintln!("  (session tracked)");
+        } else {
+            eprintln!("  warning: could not detect new opencode session in DB within 5s");
+        }
     } else {
-        // Pi: session_id already set via --session — no PID file to harvest
+        // Pi / OpenCode-resume: session_id already set via --session — no harvest needed
         eprintln!("  (session tracking active)");
     }
 

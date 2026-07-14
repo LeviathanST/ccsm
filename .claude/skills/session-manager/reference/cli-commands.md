@@ -94,21 +94,23 @@ trashed      — soft-deleted, recoverable with `ccsm recover <name>`
 
 ccsm supports multiple AI coding agents via the `--consumer` flag:
 
-| Consumer | Flag | Binary | Sessions Dir |
-|----------|------|--------|-------------|
-| Claude Code (default) | `--consumer claude` | `claude` | `~/.claude/sessions/<pid>.json` |
+| Consumer | Flag | Binary | Sessions / Data |
+|----------|------|--------|----------------|
+| OpenCode (default) | `--consumer opencode` | `opencode` | SQLite `~/.local/share/opencode/opencode.db` |
+| Claude Code | `--consumer claude` | `claude` | `~/.claude/sessions/<pid>.json` |
 | Pi | `--consumer pi` | `pi` | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` |
 
 Detection order: `--consumer` flag → `CCSM_CONSUMER` env var → auto-detect.
+Auto-detect prefers OpenCode if its DB exists, then Pi, then Claude.
 
 ### What changes per consumer
 
-| Feature | Claude | Pi |
-|---------|--------|----|
-| `resume` | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` |
-| `refresh` | `claude -n <name>` (fresh) | `pi --continue -n <name>` |
-| `attach` (auto) | Reads live `~/.claude/sessions/<pid>.json` (PID-based live session files) | Scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` (no live PID files in Pi) |
-| Session harvesting | PID-based JSON polling | UUID known from `--session` flag |
+| Feature | OpenCode | Claude | Pi |
+|---------|----------|--------|----|
+| `resume` | `opencode -s <uuid>` (resume) / `opencode` (fresh) | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` |
+| `refresh` | `opencode` (fresh, no flags) | `claude -n <name>` (fresh) | `pi --continue -n <name>` |
+| `attach` (auto) | Queries SQLite for most recent session in workspace | Reads live `~/.claude/sessions/<pid>.json` | Scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` |
+| Session harvesting | SQLite DB polling after fresh spawn | PID-based JSON polling | UUID known from `--session` flag |
 
 ## Miscellaneous
 

@@ -344,15 +344,17 @@ impl WorkspaceRegistry {
     ) {
         // Only delete files if we have a real session_id
         if !session_id.is_empty() {
-            let proj_dir = consumer.projects_dir_for(home, workspace);
-            let slug = consumer.project_slug(workspace);
-            let transcript = if consumer.is_pi() {
-                consumer.find_session_file(home, &slug, session_id)
-                    .unwrap_or_else(|| proj_dir.join(format!("_{session_id}.jsonl")))
-            } else {
-                proj_dir.join(format!("{session_id}.jsonl"))
-            };
-            let _ = std::fs::remove_file(&transcript);
+            if !consumer.is_opencode() {
+                let proj_dir = consumer.projects_dir_for(home, workspace);
+                let slug = consumer.project_slug(workspace);
+                let transcript = if consumer.is_pi() {
+                    consumer.find_session_file(home, &slug, session_id)
+                        .unwrap_or_else(|| proj_dir.join(format!("_{session_id}.jsonl")))
+                } else {
+                    proj_dir.join(format!("{session_id}.jsonl"))
+                };
+                let _ = std::fs::remove_file(&transcript);
+            }
 
             // Remove any live session files with this session_id
             if let Ok(entries) = std::fs::read_dir(consumer.sessions_dir(home)) {
@@ -396,16 +398,18 @@ impl WorkspaceRegistry {
     ) -> u64 {
         let mut freed: u64 = 0;
         if !session_id.is_empty() {
-            let slug = consumer.project_slug(workspace);
-            let transcript = consumer.find_session_file(home, &slug, session_id)
-                .unwrap_or_else(|| {
-                    consumer.projects_dir(home, &slug).join(format!("{session_id}.jsonl"))
-                });
-            if transcript.exists() {
-                if let Ok(meta) = std::fs::metadata(&transcript) {
-                    freed += meta.len();
+            if !consumer.is_opencode() {
+                let slug = consumer.project_slug(workspace);
+                let transcript = consumer.find_session_file(home, &slug, session_id)
+                    .unwrap_or_else(|| {
+                        consumer.projects_dir(home, &slug).join(format!("{session_id}.jsonl"))
+                    });
+                if transcript.exists() {
+                    if let Ok(meta) = std::fs::metadata(&transcript) {
+                        freed += meta.len();
+                    }
+                    let _ = std::fs::remove_file(&transcript);
                 }
-                let _ = std::fs::remove_file(&transcript);
             }
 
             // Remove any live session files with this session_id
