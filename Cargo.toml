@@ -6,6 +6,10 @@ members = ["ccsm-swarm"]
 name = "ccsm"
 version = "0.16.0"
 edition = "2024"
+description = "Context-managed session orchestration for AI coding agents — track, resume, and manage work across sessions"
+license = "MIT"
+repository = "https://github.com/LeviathanST/ccsm"
+homepage = "https://github.com/LeviathanST/ccsm"
 
 [dependencies]
 anyhow = "1.0.102"
