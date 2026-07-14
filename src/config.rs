@@ -69,7 +69,7 @@ pub struct ChecklistTemplate {
 impl Config {
     /// Load from `~/.ccsm/<id>/config.toml`. Returns defaults if missing/invalid.
     pub fn load() -> Self {
-        let path = match crate::registry::resolve_or_create_identity() {
+        let path = match crate::registry::resolve_identity() {
             Ok(ctx) => crate::registry::global_config_path(&ctx.id),
             Err(_) => return Config::defaults(),
         };
