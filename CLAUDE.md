@@ -229,9 +229,15 @@ CCSM_CONSUMER=pi ccsm resume <name>  # Resume with Pi
 
 Published on crates.io as `ccsm`. CI auto-publishes on tag push (`v*`).
 
+**Important**: Tag must be on `main` branch — CI publish guard rejects tags on feature branches.
+
 ```bash
-# Bump version in Cargo.toml first
-git tag v0.16.1 && git push origin v0.16.1
+# 1. Make sure PR is merged to main first
+# 2. Checkout main, pull latest
+git checkout main && git pull
+# 3. Bump version in Cargo.toml, commit
+# 4. Tag from main
+git tag v0.x.y && git push origin v0.x.y
 # CI builds, tests, then publishes
 ```
 
