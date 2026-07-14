@@ -866,6 +866,13 @@ pub(crate) fn harvest_from_pid(home: &std::path::Path, pid: u32) -> anyhow::Resu
 }
 
 pub(crate) fn validate_session_id(sid: &str) -> anyhow::Result<()> {
+    // Accept OpenCode ses_* format (e.g. ses_abc123...)
+    if sid.starts_with("ses_") && sid.len() > 4
+        && sid[4..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Ok(());
+    }
+    // Accept standard 8-4-4-4-12 UUID
     let parts: Vec<&str> = sid.split('-').collect();
     if parts.len() == 5
         && parts[0].len() == 8

@@ -65,7 +65,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         let mut session_issues = 0usize;
 
         // 1. Orphaned session_id (non-empty but transcript missing)
-        if !s.session_id.is_empty() {
+        if !s.session_id.is_empty() && !consumer.is_opencode() {
             let transcript = proj_dir.join(format!("{}.jsonl", s.session_id));
             if !transcript.exists() {
                 warnings.push(format!(
@@ -260,7 +260,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     // 10. Large transcripts — candidates for archive
     let mut large: Vec<(String, u64)> = Vec::new();
     for s in &reg.sessions {
-        if s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty() {
+        if s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty() && !consumer.is_opencode() {
             let transcript = proj_dir.join(format!("{}.jsonl", s.session_id));
             if let Ok(meta) = std::fs::metadata(&transcript) {
                 let mb = meta.len() / 1_000_000;
