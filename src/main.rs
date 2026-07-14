@@ -877,14 +877,27 @@ fn mutate_session<F>(name: &str, action: &str, f: F) -> anyhow::Result<()>
 where
     F: FnOnce(&mut crate::registry::WorkspaceSession),
 {
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
+    use crate::registry::SessionStatus;
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?; — status transitions, pending clears, kebab-case, detail sync)
     {
         let entry = reg
             .sessions
             .iter_mut()
             .find(|s| s.name == name)
             .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+        let old_status = entry.status;
         f(entry);
+        if entry.status != old_status
+            && !SessionStatus::transition_allowed(old_status, entry.status)
+        {
+            anyhow::bail!(
+                "{} cannot transition session '{}' from {} to {}",
+                ErrorCode::BadStatus,
+                name,
+                old_status,
+                entry.status,
+            );
+        }
     }
     reg.updated = crate::registry::now_iso();
     reg.save()?;
@@ -1261,10 +1274,20 @@ fn run_trash(name: &str) -> anyhow::Result<()> {
 /// `ccsm recover <name>` — untrash: move from Trashed → InProgress.
 fn run_recover(name: &str) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
-    let sid = reg.sessions.iter().rev()
-        .find(|s| s.name == name)
-        .map(|s| s.session_id.clone())
-        .unwrap_or_default();
+
+    // Validate: only trashed sessions can be recovered
+    let (sid, status) = {
+        let entry = reg.sessions.iter().rev()
+            .find(|s| s.name == name)
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+        (entry.session_id.clone(), entry.status)
+    };
+    if !crate::registry::SessionStatus::transition_allowed(status, crate::registry::SessionStatus::InProgress) {
+        anyhow::bail!(
+            "{} cannot recover session '{}' from {}",
+            ErrorCode::BadStatus, name, status
+        );
+    } — status transitions, pending clears, kebab-case, detail sync)
     if reg.recover(&sid, name) {
         reg.updated = crate::registry::now_iso();
         reg.save()?;
@@ -1394,7 +1417,16 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
         );
     }
 
-    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
+    // ── Kebab-case validation ──────────────────────────────────────────
+    if !crate::registry::is_kebab_case(name) {
+        anyhow::bail!(
+            "{} session name '{}' must be kebab-case (lowercase, digits, hyphens only)",
+            ErrorCode::Invalid,
+            name,
+        );
+    }
+
+    let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?; — status transitions, pending clears, kebab-case, detail sync)
 
     // ── WIP guard ─────────────────────────────────────────────────────
     if config.wip_limit > 0 {
@@ -1989,6 +2021,11 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
     entry.started.clear();
     entry.completed.clear();
     entry.worktree.clear();
+    entry.consumer.clear();
+    entry.retired_session_ids.clear();
+    entry.group = None;
+    entry.tags.clear();
+    entry.depends_on.clear();
     reg.updated = crate::registry::now_iso();
     reg.save()?;
     action_msg("pending", name, "reset (identity fields cleared)");
@@ -3221,6 +3258,19 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
         reg.save()?;
         outputs
     }; // lock released
+
+    // Phase 2.5: Sync detail files for scope/tag ops (after lock release — no registry I/O)
+    for op in &ops {
+        match op {
+            crate::sequence::SeqOp::Scope { name, text } => {
+                update_detail_section(name, "## Scope / Plan", text).ok();
+            }
+            crate::sequence::SeqOp::Tag { name, tags } => {
+                update_detail_section(name, "## Tags", &tags.join(", ")).ok();
+            }
+            _ => {}
+        }
+    }
 
     // Phase 3: Print all output
     for line in &outputs {

@@ -416,6 +416,40 @@ impl std::fmt::Display for SessionStatus {
     }
 }
 
+/// Allowed status transitions:
+///
+/// | from → to           | command        |
+/// |---------------------|----------------|
+/// | pending → in_progress | start       |
+/// | in_progress → completed | complete  |
+/// | in_progress → blocked  | block     |
+/// | in_progress → abandoned | abandon  |
+/// | blocked → abandoned    | abandon   |
+/// | trashed → in_progress  | recover   |
+/// | * → pending         | pending (reset) |
+/// | * → trashed         | trash           |
+/// | from == to          | (no-op)         |
+///
+/// All other transitions return `false`.
+impl SessionStatus {
+    pub fn transition_allowed(from: Self, to: Self) -> bool {
+        if from == to {
+            return true;
+        }
+        matches!(
+            (from, to),
+            (Self::Pending, Self::InProgress)
+                | (Self::InProgress, Self::Completed)
+                | (Self::InProgress, Self::Blocked)
+                | (Self::InProgress, Self::Abandoned)
+                | (Self::Blocked, Self::Abandoned)
+                | (Self::Trashed, Self::InProgress)
+                | (_, Self::Pending)
+                | (_, Self::Trashed)
+        )
+    }
+}
+
 impl WorkspaceRegistry {
     /// Load from `~/.ccsm/<id>/sessions.json` where `<id>` is resolved from
     /// the `.ccsm` identity file in the project root (found by walking up from CWD).
