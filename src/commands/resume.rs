@@ -216,14 +216,9 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             anyhow::ensure!(!branch.is_empty(),
                 "session '{}' has no target branch. Set one with `ccsm new -b <branch>`.", name,
             );
-            // Check registry first, then canonical filesystem path
-            let existing = if !session.worktree.is_empty() {
-                let p = std::path::PathBuf::from(&session.worktree);
-                if p.is_dir() { Some(p) } else { None }
-            } else {
-                let canonical = crate::commands::worktree::worktree_path_for(workspace, name);
-                if canonical.is_dir() { Some(canonical) } else { None }
-            };
+            // Worktree path is derived deterministically from workspace + name
+            let canonical = crate::commands::worktree::worktree_path_for(workspace, name);
+            let existing = if canonical.is_dir() { Some(canonical) } else { None };
             (branch, existing)
         };
 
@@ -235,11 +230,10 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             None => crate::commands::worktree::create_worktree(workspace, name, &branch)?,
         };
 
-        // Store worktree path + enable use_worktree (locked)
+        // Enable use_worktree (locked)
         {
             let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             if let Some(entry) = reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-                entry.worktree = wt_path.to_string_lossy().to_string();
                 entry.use_worktree = true;
                 reg.updated = crate::registry::now_iso();
                 reg.save()?;
@@ -250,15 +244,8 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
     // ── Phase 2: Determine worktree directory (no lock) ──────────────
     let worktree_dir: Option<std::path::PathBuf> = {
-        let reg = crate::registry::WorkspaceRegistry::load()?;
-        reg.sessions.iter()
-            .find(|s| s.name == name)
-            .and_then(|s| {
-                if !s.worktree.is_empty() {
-                    let wt = std::path::PathBuf::from(&s.worktree);
-                    if wt.is_dir() { Some(wt) } else { None }
-                } else { None }
-            })
+        let wt = crate::commands::worktree::worktree_path_for(workspace, name);
+        if wt.is_dir() { Some(wt) } else { None }
     };
 
     // ── Phase 3: Spawn agent (no lock) ──────────────────────────────

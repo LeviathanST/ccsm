@@ -1075,15 +1075,10 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
 /// live session files, group files, and transcript.
 fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
     // Check for existing worktree before locking (read-only)
-    let old_reg = crate::registry::WorkspaceRegistry::load()?;
-    let has_worktree = old_reg.sessions.iter()
-        .find(|s| s.name == old)
-        .map(|s| !s.worktree.is_empty())
-        .unwrap_or(false);
-    let old_wt_path = has_worktree.then(|| {
-        commands::worktree::worktree_path_for(workspace, old)
-    });
-    drop(old_reg);
+    let old_wt_path = {
+        let p = commands::worktree::worktree_path_for(workspace, old);
+        if p.exists() { Some(p) } else { None }
+    };
 
     // Rename worktree directory if one exists (no lock — git operation)
     if let Some(ref old_path) = old_wt_path {
@@ -1264,11 +1259,6 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
     }
     if let Some(s) = scope {
         reg.sessions[idx].scope = s.to_string();
-    }
-    if !reg.sessions[idx].worktree.is_empty() {
-        reg.sessions[idx].worktree = commands::worktree::worktree_path_for(workspace, new)
-            .to_string_lossy()
-            .to_string();
     }
     reg.updated = crate::registry::now_iso();
     reg.save()?;
@@ -1539,7 +1529,6 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
         depends_on: vec![],
         branch: branch.to_string(),
         use_worktree: worktree,
-        worktree: String::new(),
         retired_session_ids: vec![],
         consumer: consumer.to_string(),
     });
@@ -1652,7 +1641,7 @@ fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
                 name, name
             );
             anyhow::ensure!(
-                entry.worktree.is_empty(),
+                !commands::worktree::worktree_path_for(&workspace, name).exists(),
                 "worktree for session '{}' already exists. Use `ccsm resume {}` to continue, or `ccsm worktree remove {}` to clean up.",
                 name, name, name
             );
@@ -1674,16 +1663,11 @@ fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
         None
     };
 
-    // Phase 3: Status transition + store worktree path (locked)
+    // Phase 3: Status transition (locked)
     mutate_session(name, "start", |entry| {
         entry.status = SessionStatus::InProgress;
         if flag_worktree {
             entry.use_worktree = true;
-        }
-        if let Some(ref path) = wt_path {
-            entry.worktree = path.to_string_lossy().to_string();
-        } else {
-            entry.worktree.clear(); // Ensure stale path is cleared
         }
     })?;
 
@@ -1728,12 +1712,7 @@ fn run_complete(name: &str, force: bool) -> anyhow::Result<()> {
     let workspace = workspace_path();
 
     // Phase 1: Remove worktree if one exists (best-effort)
-    let reg = crate::registry::WorkspaceRegistry::load()?;
-    let has_worktree = reg.sessions.iter()
-        .find(|s| s.name == name)
-        .map(|s| !s.worktree.is_empty())
-        .unwrap_or(false);
-    drop(reg); // Release read lock before potentially long git operation
+    let has_worktree = commands::worktree::worktree_path_for(&workspace, name).exists();
 
     if has_worktree {
         if let Err(e) = commands::worktree::remove_worktree(&workspace, name, force) {
@@ -1743,11 +1722,10 @@ fn run_complete(name: &str, force: bool) -> anyhow::Result<()> {
         }
     }
 
-    // Phase 2: Status transition + clear worktree path (locked)
+    // Phase 2: Status transition (locked)
     mutate_session(name, "complete", |entry| {
         entry.status = SessionStatus::Completed;
         entry.completed = crate::registry::now_iso();
-        entry.worktree.clear();
     })?;
 
     crate::registry::sync_status_line(name);
@@ -2073,7 +2051,6 @@ fn run_pending(name: &str) -> anyhow::Result<()> {
     entry.pids.clear();
     entry.started.clear();
     entry.completed.clear();
-    entry.worktree.clear();
     entry.consumer.clear();
     entry.retired_session_ids.clear();
     entry.group = None;
@@ -3160,7 +3137,11 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
             consumer: session.consumer.clone(),
             depends_on: session.depends_on.clone(),
             branch: session.branch.clone(),
-            worktree: session.worktree.clone(),
+            worktree: if session.use_worktree {
+                crate::commands::worktree::worktree_path_for(&ctx.root, &session.name).to_string_lossy().to_string()
+            } else {
+                String::new()
+            },
             detail_file: detail_path_exists.then(|| detail_path.display().to_string()),
             has_detail_file: detail_path_exists,
             sections,
@@ -3200,8 +3181,9 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
     if !session.branch.is_empty() {
         println!("branch:     {}", session.branch);
     }
-    if !session.worktree.is_empty() {
-        println!("worktree:   {}", session.worktree);
+    if session.use_worktree {
+        let wt = crate::commands::worktree::worktree_path_for(&ctx.root, &session.name);
+        println!("worktree:   {}", wt.display());
     }
     if let Some(ref g) = session.group {
         println!("group:      {} (rank: {})", g.name, g.rank);
@@ -3344,7 +3326,6 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     }
 
     let ctx = crate::registry::resolve_or_create_identity()?;
-    let workspace = std::env::current_dir()?;
 
     // Verify session exists in registry
     let reg = crate::registry::WorkspaceRegistry::load()?;
@@ -3374,7 +3355,6 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
                     .replace("{{scope}}", &session.scope)
                     .replace("{{tags}}", &tags)
                     .replace("{{session_id}}", &if session.session_id.is_empty() { "(auto — ccsm manages)".into() } else { session.session_id.clone() })
-                    .replace("{{cwd}}", &workspace.to_string_lossy())
                     .replace("{{pids}}", &pids)
                     .replace("{{kind}}", "(auto)")
                     .replace("{{version}}", "(auto)")
@@ -4105,12 +4085,14 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     }
 
     // ── Worktree check ───────────────────────────────────────────
-    if !session.worktree.is_empty() {
-        println!("WORKTREE: {} — work inside this directory", session.worktree);
+    let wt_path = crate::commands::worktree::worktree_path_for(&workspace, &session.name);
+    if session.use_worktree || wt_path.is_dir() {
+        println!("WORKTREE: {} — work inside this directory", wt_path.display());
     }
 
     // Extend constraint line if worktree is active
-    let constraint = if !session.worktree.is_empty() {
+    let has_worktree = session.use_worktree || wt_path.is_dir();
+    let constraint = if has_worktree {
         "CONSTRAINT: Work within this scope and worktree. If you need to do something outside it, ask first."
     } else {
         consumer.constraint_line()
@@ -4541,6 +4523,22 @@ fn run_migrate_ccsm(workspace: &std::path::Path, _home: &std::path::Path) -> any
         copied += 1;
     } else if dst_tpl.exists() {
         skipped += 1;
+    }
+
+    // 5. Strip stale worktree fields from destination registry (field removed in 0.16.0)
+    if ccsm.join("sessions.json").exists() {
+        use crate::registry::strip_stale_worktree;
+        // Create a temporary WorkspaceIdentity with the same id
+        let identity = crate::registry::WorkspaceIdentity {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            id: ctx.id.clone(),
+        };
+        if let Err(e) = strip_stale_worktree(&identity) {
+            // Non-fatal — serde already ignores the field at runtime
+            eprintln!("  (worktree cleanup skipped: {e})");
+        } else {
+            eprintln!("  stale worktree fields stripped from registry");
+        }
     }
 
     println!("migrated to {}: {} copied, {} skipped", ccsm.display(), copied, skipped);
