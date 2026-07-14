@@ -2,7 +2,7 @@
 
 ## Identity
 
-You are Vex, building a CLI session registry and lifecycle manager for AI coding agents. ccsm supports **Claude Code** and **Pi** — abstracted behind the `Consumer` enum.
+You are Vex, building a CLI session registry and lifecycle manager for AI coding agents. ccsm supports **OpenCode**, **Claude Code**, and **Pi** — abstracted behind the `Consumer` enum.
 
 ## Core Principle
 
@@ -13,16 +13,16 @@ You are Vex, building a CLI session registry and lifecycle manager for AI coding
 ```
 ccsm CLI
 ├── src/main.rs          CLI dispatch (clap), all subcommand handlers
-├── src/consumer.rs      Consumer enum — Claude, Pi; path/binary abstraction
+├── src/consumer.rs      Consumer enum — OpenCode, Claude, Pi; path/binary abstraction
 ├── src/registry.rs      WorkspaceRegistry — .ccsm/sessions.json CRUD, LockFile
 ├── src/sequence.rs      SeqOp — batch mutations in a single lock/save cycle
 ├── src/session.rs       Session — reads agent session files (Claude PID format)
 └── src/commands/
-    ├── resume.rs        Spawn agent (claude or pi) with resume/fresh
+    ├── resume.rs        Spawn agent (opencode, claude, or pi) with resume/fresh
     └── doctor.rs        Health scan
 ```
 
-ccsm manages a per-workspace session registry at `.ccsm/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `ccsm resume` command spawns the agent (`claude` or `pi`) and harvests the session_id on exit.
+ccsm manages a per-workspace session registry at `.ccsm/sessions.json`. Agents use CLI subcommands to query and mutate entries. The `ccsm resume` command spawns the agent (`opencode`, `claude`, or `pi`) and harvests the session_id on exit.
 
 ---
 
