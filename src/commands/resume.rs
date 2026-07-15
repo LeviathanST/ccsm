@@ -435,14 +435,19 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
         // Sync detail file status line with harvested started time
         crate::registry::sync_status_line(name);
-    } else if consumer.is_opencode() && sid.is_none() {
-        // OpenCode fresh session: poll SQLite DB for new session
+    } else if consumer.is_opencode() {
+        // OpenCode: poll for sessions created after spawn.
+        // OpenCode's `-s <uuid>` doesn't support `-n <name>` at spawn time,
+        // unlike Claude (`--resume <uuid> -n <name>`) and Pi (`--session <uuid> -n <name>`).
+        // If OpenCode ever adds a -n flag, move this rename to spawn phase.
+        // Even on resume with an existing sid, OpenCode may start fresh and create
+        // a new session — so we always poll and only fall back to drift detection
+        // if no new session appeared.
         let db_path = crate::consumer::opencode_db_path(home);
         let run_dir = worktree_dir.as_ref()
             .map(|d| d.to_string_lossy().to_string())
             .unwrap_or_else(|| workspace.to_string_lossy().to_string());
-        // Try run_dir first, fall back to workspace path (for mismatched dirs)
-        let harvested_id = crate::consumer::opencode_harvest_session(
+        let new_sid = crate::consumer::opencode_harvest_session(
             &db_path, &run_dir, harvest_before,
         ).or_else(|| {
             if run_dir != workspace.to_string_lossy().as_ref() {
@@ -451,8 +456,9 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 )
             } else { None }
         });
-        if let Some(harvested_id) = harvested_id {
-            // Harvest succeeded — store in registry
+
+        if let Some(harvested_id) = new_sid {
+            // New session detected (fresh start, or --resume was ignored)
             let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
@@ -461,39 +467,33 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                     name
                 ),
             };
-            if entry.session_id.is_empty() {
-                entry.session_id.clone_from(&harvested_id);
+            entry.session_id.clone_from(&harvested_id);
+            if entry.started.is_empty() {
+                entry.started = crate::registry::now_iso();
             }
             reg.updated = crate::registry::now_iso();
             reg.save()?;
             crate::registry::sync_status_line(name);
-            // OpenCode's `-s <uuid>` doesn't support `-n <name>` at spawn time,
-            // unlike Claude (`--resume <uuid> -n <name>`) and Pi (`--session <uuid> -n <name>`).
-            // If OpenCode ever adds a -n flag, move this rename to spawn phase.
             // Rename the OpenCode session title to match the ccsm session name
             if let Err(e) = crate::consumer::opencode_update_title(&db_path, &harvested_id, name) {
                 eprintln!("  warning: failed to rename opencode session: {e}");
             }
-            eprintln!("  (session tracked)");
+            let src = if sid.is_none() { "fresh" } else { "fresh (resume ignored)" };
+            eprintln!("  opencode  {src} session tracked");
+        } else if let Some(ref existing_sid) = sid {
+            // Existing session was resumed — check if title drifted
+            let current_title = crate::consumer::opencode_get_title(&db_path, existing_sid);
+            if current_title.as_deref() != Some(name) {
+                if let Err(e) = crate::consumer::opencode_update_title(&db_path, existing_sid, name) {
+                    eprintln!("  warning: failed to sync opencode title: {e}");
+                } else {
+                    eprintln!("  opencode DB  synced title → {name}");
+                }
+            }
+            eprintln!("  (session resumed)");
         } else {
             eprintln!("  warning: could not detect new opencode session in DB within 5s");
         }
-    } else if consumer.is_opencode() {
-        // OpenCode-resume: session_id already known — check if title drifted
-        if let Some(ref existing_sid) = sid {
-            let db_path = crate::consumer::opencode_db_path(home);
-            if db_path.exists() {
-                let current_title = crate::consumer::opencode_get_title(&db_path, existing_sid);
-                if current_title.as_deref() != Some(name) {
-                    if let Err(e) = crate::consumer::opencode_update_title(&db_path, existing_sid, name) {
-                        eprintln!("  warning: failed to sync opencode title: {e}");
-                    } else {
-                        eprintln!("  opencode DB  synced title → {name}");
-                    }
-                }
-            }
-        }
-        eprintln!("  (session tracking active)");
     } else {
         // Pi: session_id already set — no harvest needed
         eprintln!("  (session tracking active)");
