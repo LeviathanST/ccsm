@@ -469,7 +469,9 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                     name
                 ),
             };
-            entry.session_id.clone_from(&harvested_id);
+            if entry.session_id.is_empty() {
+                entry.session_id.clone_from(&harvested_id);
+            }
             if entry.started.is_empty() {
                 entry.started = crate::registry::now_iso();
             }
