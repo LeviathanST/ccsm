@@ -491,10 +491,12 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 }
             }
             eprintln!("  (session resumed)");
-        } else if sid.is_some() {
-            eprintln!("  warning: expected opencode session but none found");
         } else {
-            eprintln!("  opencode  exited without creating a session");
+            if sid.is_some() {
+                eprintln!("  warning: expected opencode session but none found");
+            } else {
+                eprintln!("  opencode  exited without creating a session");
+            }
         }
     }
 
