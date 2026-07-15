@@ -10,6 +10,7 @@ mod sequence;
 mod session;
 #[allow(dead_code)]
 pub(crate) mod commands;
+mod migrate;
 
 use std::path::PathBuf;
 
@@ -385,9 +386,19 @@ enum Commands {
     Init,
     /// Install session tracking into global CLAUDE.md + skills (run once)
     Setup,
-    /// Migrate registry + detail files from `.claude/` to `.ccsm/`.
-    /// Leaves agent transcripts in their original locations.
-    MigrateCcsm,
+    /// Auto-chain migration: bring workspace from v0.0.0 (no ccsm) to current version.
+    ///
+    /// Detects current workspace state and runs all needed migration steps in order:
+    ///   1. Create .ccsm identity if missing
+    ///   2. Migrate from .claude/ if legacy data exists (replaces `migrate-ccsm`)
+    ///   3. Migrate from old .ccsm/ directory format
+    ///   4. Bump identity version if stale
+    ///   5. Ensure data directory structure
+    ///   6. Seed config if missing
+    ///   7. Validate consistency
+    ///
+    /// Safe to re-run — skips completed steps. Subsumes the old `migrate-ccsm` command.
+    Migrate,
     /// Set or clear the target git branch for a session.
     ///
     /// This is metadata only — ccsm does not create or switch branches.
@@ -409,12 +420,19 @@ fn main() -> anyhow::Result<()> {
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
     let consumer = Consumer::detect(&home, cli.consumer.as_deref());
 
+    // Version check FIRST — uses find_project_root (raw read, no auto-migration).
+    // Must happen before resolve_workspace() which auto-migrates the identity.
+    check_version(&cli.command)?;
+
     // Resolve workspace root: --workspace flag > CCSM_WORKSPACE env > walk-up > PWD
     // We chdir so every downstream function reads the right registry via PWD.
+    // Migrate command handles its own workspace resolution (needs raw identity).
     if let Some(ref ws) = cli.workspace {
         std::env::set_current_dir(ws)?;
-    } else if let Some(auto_ws) = resolve_workspace()? {
-        std::env::set_current_dir(&auto_ws)?;
+    } else if !matches!(cli.command, Commands::Migrate) {
+        if let Some(auto_ws) = resolve_workspace()? {
+            std::env::set_current_dir(&auto_ws)?;
+        }
     }
 
     match cli.command {
@@ -456,7 +474,7 @@ fn main() -> anyhow::Result<()> {
         Commands::GateCheck { name, strict } => run_gate_check(name.as_deref(), strict),
         Commands::Init => run_init(),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into()), consumer),
-        Commands::MigrateCcsm => run_migrate_ccsm(&workspace_path(), &home),
+        Commands::Migrate => run_migrate(),
 
     }
 }
@@ -4423,119 +4441,72 @@ wip_limit = 0
     }
 }
 
-/// `ccsm migrate-ccsm` — migrate ccsm workspace data from `.claude/` to `~/.ccsm/<id>/`.
-/// Copies registry, detail files, group files, templates.
-/// Leaves agent transcripts untouched (Claude keeps ~/.claude/projects/, Pi keeps ~/.pi/agent/sessions/).
-fn run_migrate_ccsm(workspace: &std::path::Path, _home: &std::path::Path) -> anyhow::Result<()> {
-    let ctx = crate::registry::resolve_identity()?;
-    let claude = workspace.join(".claude");
-    let ccsm = crate::registry::global_data_dir(&ctx.id);
+/// Check that the binary version is compatible with the project's identity version.
+/// The identity is read raw (no auto-migration) so we see the actual on-disk state.
+fn check_version(cmd: &Commands) -> anyhow::Result<()> {
+    // Exempt version-management commands from the check
+    match cmd {
+        Commands::Init | Commands::Setup | Commands::Migrate => {
+            return Ok(());
+        }
+        _ => {}
+    }
 
-    if !claude.exists() {
-        println!("No .claude/ directory found — nothing to migrate.");
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(_) => return Ok(()),
+    };
+    let Some((_root, identity)) = crate::registry::find_project_root(&cwd)? else {
+        // No identity yet — nothing to check
+        return Ok(());
+    };
+
+    let binary = env!("CARGO_PKG_VERSION");
+    if identity.version == binary {
         return Ok(());
     }
 
-    if !ccsm.exists() {
-        std::fs::create_dir_all(&ccsm)?;
+    // Check if binary is older than project version
+    let version_old = if let (Ok(bv), Ok(iv)) = (parse_version(binary), parse_version(&identity.version)) {
+        bv < iv
+    } else {
+        // Can't parse; identity version is non-semver (e.g. "1") → binary is always newer
+        false
+    };
+
+    if version_old {
+        anyhow::bail!(
+            "This project requires ccsm v{} but you have v{}.\n\
+             Please upgrade ccsm before working in this project.",
+            identity.version,
+            binary,
+        );
     }
 
-    let mut copied = 0u32;
-    let mut skipped = 0u32;
-
-    // 1. sessions.json
-    let src_json = claude.join("sessions.json");
-    let dst_json = ccsm.join("sessions.json");
-    if src_json.exists() && !dst_json.exists() {
-        let contents = std::fs::read_to_string(&src_json)?;
-        let mut reg: crate::registry::WorkspaceRegistry =
-            serde_json::from_str(&contents).context("parsing legacy registry")?;
-        for s in &mut reg.sessions {
-            if s.consumer.is_empty() {
-                s.consumer = "claude".into();
-            }
-        }
-        reg.save()?;
-        copied += 1;
-    } else if dst_json.exists() {
-        skipped += 1;
-    }
-
-    // 2. sessions/ detail files
-    let src_sessions = claude.join("sessions");
-    let dst_sessions = ccsm.join("sessions");
-    if src_sessions.is_dir() {
-        if !dst_sessions.exists() {
-            std::fs::create_dir_all(&dst_sessions)?;
-        }
-        if let Ok(entries) = std::fs::read_dir(&src_sessions) {
-            for entry in entries.flatten() {
-                let src = entry.path();
-                if src.extension().is_some_and(|e| e == "md") {
-                    let name = src.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-                    let dst = dst_sessions.join(format!("{name}.md"));
-                    if !dst.exists() {
-                        std::fs::copy(&src, &dst)?;
-                        copied += 1;
-                    } else {
-                        skipped += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. session-group/ directory
-    let src_group = claude.join("session-group");
-    let dst_group = ccsm.join("session-group");
-    if src_group.is_dir() {
-        if !dst_group.exists() {
-            std::fs::create_dir_all(&dst_group)?;
-        }
-        if let Ok(entries) = std::fs::read_dir(&src_group) {
-            for entry in entries.flatten() {
-                let src = entry.path();
-                if src.extension().is_some_and(|e| e == "md") {
-                    let name = src.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-                    let dst = dst_group.join(format!("{name}.md"));
-                    if !dst.exists() {
-                        std::fs::copy(&src, &dst)?;
-                        copied += 1;
-                    } else {
-                        skipped += 1;
-                    }
-                }
-            }
-        }
-    }
-
-    // 4. session-detail-template.md
-    let src_tpl = claude.join("session-detail-template.md");
-    let dst_tpl = ccsm.join("session-detail-template.md");
-    if src_tpl.exists() && !dst_tpl.exists() {
-        std::fs::copy(&src_tpl, &dst_tpl)?;
-        copied += 1;
-    } else if dst_tpl.exists() {
-        skipped += 1;
-    }
-
-    // 5. Strip stale worktree fields from destination registry (field removed in 0.16.0)
-    if ccsm.join("sessions.json").exists() {
-        use crate::registry::strip_stale_worktree;
-        // Create a temporary WorkspaceIdentity with the same id
-        let identity = crate::registry::WorkspaceIdentity {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            id: ctx.id.clone(),
-        };
-        if let Err(e) = strip_stale_worktree(&identity) {
-            // Non-fatal — serde already ignores the field at runtime
-            eprintln!("  (worktree cleanup skipped: {e})");
-        } else {
-            eprintln!("  stale worktree fields stripped from registry");
-        }
-    }
-
-    println!("migrated to {}: {} copied, {} skipped", ccsm.display(), copied, skipped);
+    // binary > project — let run_identity_migrations (called downstream)
+    // handle the upgrade prompt. We only guard against binary < project here.
     Ok(())
 }
+
+/// Parse a semver "X.Y.Z" string into a comparable tuple.
+fn parse_version(v: &str) -> anyhow::Result<(u32, u32, u32)> {
+    let parts: Vec<&str> = v.split('.').collect();
+    if parts.len() != 3 {
+        anyhow::bail!("invalid semver: {v}");
+    }
+    Ok((
+        parts[0].parse::<u32>()?,
+        parts[1].parse::<u32>()?,
+        parts[2].parse::<u32>()?,
+    ))
+}
+
+/// `ccsm migrate` — auto-chain migration from v0.0.0 → current.
+fn run_migrate() -> anyhow::Result<()> {
+    crate::migrate::run_migrate()?;
+    Ok(())
+}
+
+
+
 

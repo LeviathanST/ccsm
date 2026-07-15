@@ -58,3 +58,27 @@ Agents should print `##DONE##` (or a custom sentinel) as their last line when th
 cargo build --release -p ccsm-swarm
 cp target/release/ccsm-swarm ~/.local/bin/
 ```
+
+## Engineering Rules
+
+### Never read stdin without a visible prompt
+
+A silent `std::io::stdin().read_line()` blocks the parent process (opencode, Claude, Pi) with zero feedback — no output, no cursor, nothing. The user sees a frozen terminal and assumes the tool hung.
+
+**Always print a prompt before reading stdin.** Even better: don't prompt at all. Print a warning and a remediation command instead. This works identically whether the user is at a terminal or running inside an agent subprocess.
+
+Bad:
+```rust
+// Silent block — steals stdin from parent
+let mut input = String::new();
+std::io::stdin().read_line(&mut input)?;
+```
+
+Good:
+```rust
+// Warn and tell user what to do
+eprintln!("ccsm: cannot resolve X. Run `ccsm fix` to repair.");
+return Ok(());
+```
+
+If you must prompt interactively, guard with `std::io::stdin().is_terminal()` and only prompt when TTY. On non-TTY (pipe, subprocess), fall through with a warning.

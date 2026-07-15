@@ -92,6 +92,30 @@ impl TempWorkspace {
             .expect("ccsm execution failed")
     }
 
+    /// Read identity file content as string.
+    pub fn read_identity(&self) -> String {
+        let path = self.path().join(".ccsm");
+        std::fs::read_to_string(&path).expect("read .ccsm identity")
+    }
+
+    /// Overwrite the identity version field. Preserves id.
+    pub fn set_identity_version(&self, version: &str) {
+        let content = self.read_identity();
+        let id = content
+            .lines()
+            .find_map(|l| l.strip_prefix("id = \"").and_then(|s| s.strip_suffix('"')))
+            .expect("parse identity id");
+        let identity_path = self.path().join(".ccsm");
+        std::fs::write(&identity_path, format!("version = \"{version}\"\nid = \"{id}\"\n"))
+            .expect("write updated identity");
+    }
+
+    /// Run ccsm and return stderr as String (regardless of exit status).
+    pub fn run_stderr(&self, args: &[&str]) -> String {
+        let out = self.run(args);
+        String::from_utf8_lossy(&out.stderr).to_string()
+    }
+
     /// Run ccsm and expect success. Returns stdout as String.
     pub fn run_ok(&self, args: &[&str]) -> String {
         let out = self.run(args);
