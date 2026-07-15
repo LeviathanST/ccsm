@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 
 // ── Workspace Identity ────────────────────────────────────────────
@@ -166,9 +167,17 @@ pub fn init_identity() -> Result<WorkspaceContext> {
     Ok(WorkspaceContext { id, root, slug })
 }
 
+static MIGRATIONS_RAN: AtomicBool = AtomicBool::new(false);
+
 /// Run version-gated migrations when the `.ccsm` identity file is from an older version.
 /// Add new migration arms here as ccsm evolves.
+/// Guarded by MIGRATIONS_RAN to avoid re-prompting when multiple code paths
+/// call resolve_identity() in a single process.
 fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<()> {
+    if MIGRATIONS_RAN.swap(true, Ordering::Relaxed) {
+        return Ok(());
+    }
+
     let current = env!("CARGO_PKG_VERSION");
     if identity.version == current {
         return Ok(());
@@ -193,7 +202,7 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
         }
         _ => {
             anyhow::bail!(
-                ".ccsm identity version \"{}\" doesn't match (expected {}). Run `ccsm migrate-ccsm` to update.",
+                ".ccsm identity version \"{}\" doesn't match (expected {}). Run `ccsm migrate` to update.",
                 identity.version, current,
             );
         }
@@ -202,7 +211,7 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
 }
 
 /// Migrate legacy `<project>/.ccsm/` data to `~/.ccsm/<id>/`.
-fn migrate_legacy_data(root: &Path, id: &str) -> Result<()> {
+pub fn migrate_legacy_data(root: &Path, id: &str) -> Result<()> {
     ensure_data_dir(id)?;
     let src = root.join(".ccsm");
 
@@ -293,7 +302,7 @@ pub(crate) fn strip_stale_worktree(identity: &WorkspaceIdentity) -> Result<()> {
 }
 
 /// Ensure the global data directory structure exists for a workspace.
-fn ensure_data_dir(id: &str) -> Result<()> {
+pub fn ensure_data_dir(id: &str) -> Result<()> {
     let dir = global_data_dir(id);
     std::fs::create_dir_all(dir.join("sessions"))
         .context("creating global sessions dir")?;
@@ -305,7 +314,7 @@ fn ensure_data_dir(id: &str) -> Result<()> {
 }
 
 /// Generate a random UUID v4 (no external crate dependency).
-fn uuid_v4() -> String {
+pub fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -327,7 +336,7 @@ fn uuid_v4() -> String {
 }
 
 /// Find the nearest git repository root from a starting path.
-fn find_nearest_git_root(start: &Path) -> Option<PathBuf> {
+pub fn find_nearest_git_root(start: &Path) -> Option<PathBuf> {
     let mut current = Some(start);
     while let Some(dir) = current {
         if dir.join(".git").exists() || dir.join(".git").is_file() {
