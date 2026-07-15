@@ -548,18 +548,19 @@ pub fn opencode_get_title(db_path: &Path, session_id: &str) -> Option<String> {
     ).ok()
 }
 
-/// Update the directory of an opencode session in the DB.
-/// Used when a worktree is renamed so the OpenCode session still points to
-/// the correct directory for `opencode_latest_session` and `opencode_harvest_session`.
-pub fn opencode_update_directory(db_path: &Path, session_id: &str, directory: &str) -> anyhow::Result<()> {
+/// Find a session for a directory created after a timestamp (single query, no polling).
+/// Unlike `opencode_harvest_session`, this does NOT loop — call when the session
+/// is expected to already exist (e.g. after the agent child has exited).
+pub fn opencode_find_session_since(db_path: &Path, directory: &str, since_ts: i64) -> Option<String> {
     use rusqlite::Connection;
-    let conn = Connection::open(db_path)
-        .map_err(|e| anyhow::anyhow!("failed to open opencode DB: {e}"))?;
-    conn.execute(
-        "UPDATE session SET directory = ?1 WHERE id = ?2",
-        [directory, session_id],
-    )?;
-    Ok(())
+    let conn = Connection::open(db_path).ok()?;
+    let mut stmt = conn
+        .prepare("SELECT id FROM session WHERE directory = ?1 AND time_created > ?2 ORDER BY time_created DESC LIMIT 1")
+        .ok()?;
+    stmt.query_map([directory, &since_ts.to_string()], |row| row.get(0))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .next()
 }
 
 /// Get the most recent session ID for a directory (non-polling, single check).
@@ -653,22 +654,21 @@ mod tests {
     }
 
     #[test]
-    fn test_opencode_update_directory() {
+    fn test_opencode_get_title() {
         use rusqlite::Connection;
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("opencode.db");
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);\
-             INSERT INTO session (id, title, directory, time_created) VALUES ('ses_test123', 'Test', '/tmp/old', 1000);",
+             INSERT INTO session (id, title, directory, time_created) VALUES ('ses_test123', 'Original Title', '/tmp', 1000);",
         )
         .unwrap();
 
-        opencode_update_directory(&db_path, "ses_test123", "/tmp/new").unwrap();
+        let title = opencode_get_title(&db_path, "ses_test123").expect("should find title");
+        assert_eq!(title, "Original Title");
 
-        let directory: String = conn
-            .query_row("SELECT directory FROM session WHERE id = 'ses_test123'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(directory, "/tmp/new");
+        let missing = opencode_get_title(&db_path, "ses_nonexistent");
+        assert!(missing.is_none());
     }
 }

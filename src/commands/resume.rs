@@ -348,13 +348,13 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         reg.save()?;
     }
 
-    // ── Phase 5: Harvest session_id (consumer-specific) ─────────────
+    // ── Phase 5: Harvest session_id (Claude eager, OpenCode deferred) ──
     let harvest_before = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     if consumer.is_claude() {
-        // Claude: poll for PID-based session file
+        // Claude creates a PID-based session file eagerly — poll for it now.
         let session_file = consumer.live_session_file(home, child_pid)
             .ok_or_else(|| anyhow::anyhow!("consumer does not support PID-based session files"))?;
         let mut found = false;
@@ -435,72 +435,68 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
         // Sync detail file status line with harvested started time
         crate::registry::sync_status_line(name);
-    } else if consumer.is_opencode() && sid.is_none() {
-        // OpenCode fresh session: poll SQLite DB for new session
+    } else if consumer.is_pi() {
+        eprintln!("  (session tracking will populate on next `ccsm attach` call)");
+    }
+    // OpenCode: session is created lazily (on first user message), so harvesting
+    // happens after the child exits (see Phase 6b).
+
+    // ── Phase 6: Wait for child ─────────────────────────────────────
+    let status = child_guard.wait()?;
+
+    // ── Phase 6b: OpenCode harvest (deferred — session exists after user interaction) ──
+    if consumer.is_opencode() {
         let db_path = crate::consumer::opencode_db_path(home);
         let run_dir = worktree_dir.as_ref()
             .map(|d| d.to_string_lossy().to_string())
             .unwrap_or_else(|| workspace.to_string_lossy().to_string());
-        // Try run_dir first, fall back to workspace path (for mismatched dirs)
-        let harvested_id = crate::consumer::opencode_harvest_session(
+        let new_sid = crate::consumer::opencode_find_session_since(
             &db_path, &run_dir, harvest_before,
         ).or_else(|| {
             if run_dir != workspace.to_string_lossy().as_ref() {
-                crate::consumer::opencode_harvest_session(
+                crate::consumer::opencode_find_session_since(
                     &db_path, &workspace.to_string_lossy(), harvest_before,
                 )
             } else { None }
         });
-        if let Some(harvested_id) = harvested_id {
-            // Harvest succeeded — store in registry
+
+        if let Some(harvested_id) = new_sid {
             let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
-                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 5",
+                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 6b",
                     name
                 ),
             };
             if entry.session_id.is_empty() {
                 entry.session_id.clone_from(&harvested_id);
             }
+            if entry.started.is_empty() {
+                entry.started = crate::registry::now_iso();
+            }
             reg.updated = crate::registry::now_iso();
             reg.save()?;
             crate::registry::sync_status_line(name);
-            // OpenCode's `-s <uuid>` doesn't support `-n <name>` at spawn time,
-            // unlike Claude (`--resume <uuid> -n <name>`) and Pi (`--session <uuid> -n <name>`).
-            // If OpenCode ever adds a -n flag, move this rename to spawn phase.
-            // Rename the OpenCode session title to match the ccsm session name
             if let Err(e) = crate::consumer::opencode_update_title(&db_path, &harvested_id, name) {
                 eprintln!("  warning: failed to rename opencode session: {e}");
             }
-            eprintln!("  (session tracked)");
-        } else {
-            eprintln!("  warning: could not detect new opencode session in DB within 5s");
-        }
-    } else if consumer.is_opencode() {
-        // OpenCode-resume: session_id already known — check if title drifted
-        if let Some(ref existing_sid) = sid {
-            let db_path = crate::consumer::opencode_db_path(home);
-            if db_path.exists() {
-                let current_title = crate::consumer::opencode_get_title(&db_path, existing_sid);
-                if current_title.as_deref() != Some(name) {
-                    if let Err(e) = crate::consumer::opencode_update_title(&db_path, existing_sid, name) {
-                        eprintln!("  warning: failed to sync opencode title: {e}");
-                    } else {
-                        eprintln!("  opencode DB  synced title → {name}");
-                    }
+            let src = if sid.is_none() { "fresh" } else { "fresh (resume ignored)" };
+            eprintln!("  opencode  {src} session tracked");
+        } else if let Some(ref existing_sid) = sid {
+            let current_title = crate::consumer::opencode_get_title(&db_path, existing_sid);
+            if current_title.as_deref() != Some(name) {
+                if let Err(e) = crate::consumer::opencode_update_title(&db_path, existing_sid, name) {
+                    eprintln!("  warning: failed to sync opencode title: {e}");
+                } else {
+                    eprintln!("  opencode DB  synced title → {name}");
                 }
             }
+            eprintln!("  (session resumed)");
+        } else {
+            eprintln!("  opencode  exited without creating a session");
         }
-        eprintln!("  (session tracking active)");
-    } else {
-        // Pi: session_id already set — no harvest needed
-        eprintln!("  (session tracking active)");
     }
-
-    // ── Phase 6: Wait for child ─────────────────────────────────────
-    let status = child_guard.wait()?;
 
     // ── Phase 7: Clear stale pids (locked) ──────────────────────────
     {
