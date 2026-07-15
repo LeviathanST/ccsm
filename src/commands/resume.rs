@@ -348,13 +348,13 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         reg.save()?;
     }
 
-    // ── Phase 5: Harvest session_id (consumer-specific) ─────────────
+    // ── Phase 5: Harvest session_id (Claude eager, OpenCode deferred) ──
     let harvest_before = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     if consumer.is_claude() {
-        // Claude: poll for PID-based session file
+        // Claude creates a PID-based session file eagerly — poll for it now.
         let session_file = consumer.live_session_file(home, child_pid)
             .ok_or_else(|| anyhow::anyhow!("consumer does not support PID-based session files"))?;
         let mut found = false;
@@ -435,14 +435,17 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
         // Sync detail file status line with harvested started time
         crate::registry::sync_status_line(name);
-    } else if consumer.is_opencode() {
-        // OpenCode: poll for sessions created after spawn.
-        // OpenCode's `-s <uuid>` doesn't support `-n <name>` at spawn time,
-        // unlike Claude (`--resume <uuid> -n <name>`) and Pi (`--session <uuid> -n <name>`).
-        // If OpenCode ever adds a -n flag, move this rename to spawn phase.
-        // Even on resume with an existing sid, OpenCode may start fresh and create
-        // a new session — so we always poll and only fall back to drift detection
-        // if no new session appeared.
+    } else if consumer.is_pi() {
+        eprintln!("  (session tracking will populate on next `ccsm attach` call)");
+    }
+    // OpenCode: session is created lazily (on first user message), so harvesting
+    // happens after the child exits (see Phase 6b).
+
+    // ── Phase 6: Wait for child ─────────────────────────────────────
+    let status = child_guard.wait()?;
+
+    // ── Phase 6b: OpenCode harvest (deferred — session exists after user interaction) ──
+    if consumer.is_opencode() {
         let db_path = crate::consumer::opencode_db_path(home);
         let run_dir = worktree_dir.as_ref()
             .map(|d| d.to_string_lossy().to_string())
@@ -458,12 +461,11 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         });
 
         if let Some(harvested_id) = new_sid {
-            // New session detected (fresh start, or --resume was ignored)
             let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
-                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 5",
+                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 6b",
                     name
                 ),
             };
@@ -474,14 +476,12 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             reg.updated = crate::registry::now_iso();
             reg.save()?;
             crate::registry::sync_status_line(name);
-            // Rename the OpenCode session title to match the ccsm session name
             if let Err(e) = crate::consumer::opencode_update_title(&db_path, &harvested_id, name) {
                 eprintln!("  warning: failed to rename opencode session: {e}");
             }
             let src = if sid.is_none() { "fresh" } else { "fresh (resume ignored)" };
             eprintln!("  opencode  {src} session tracked");
         } else if let Some(ref existing_sid) = sid {
-            // Existing session was resumed — check if title drifted
             let current_title = crate::consumer::opencode_get_title(&db_path, existing_sid);
             if current_title.as_deref() != Some(name) {
                 if let Err(e) = crate::consumer::opencode_update_title(&db_path, existing_sid, name) {
@@ -491,16 +491,12 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 }
             }
             eprintln!("  (session resumed)");
+        } else if sid.is_some() {
+            eprintln!("  warning: expected opencode session but none found");
         } else {
-            eprintln!("  warning: could not detect new opencode session in DB within 5s");
+            eprintln!("  opencode  exited without creating a session");
         }
-    } else {
-        // Pi: session_id already set — no harvest needed
-        eprintln!("  (session tracking active)");
     }
-
-    // ── Phase 6: Wait for child ─────────────────────────────────────
-    let status = child_guard.wait()?;
 
     // ── Phase 7: Clear stale pids (locked) ──────────────────────────
     {
