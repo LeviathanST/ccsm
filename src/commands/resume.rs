@@ -450,11 +450,11 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         let run_dir = worktree_dir.as_ref()
             .map(|d| d.to_string_lossy().to_string())
             .unwrap_or_else(|| workspace.to_string_lossy().to_string());
-        let new_sid = crate::consumer::opencode_harvest_session(
+        let new_sid = crate::consumer::opencode_find_session_since(
             &db_path, &run_dir, harvest_before,
         ).or_else(|| {
             if run_dir != workspace.to_string_lossy().as_ref() {
-                crate::consumer::opencode_harvest_session(
+                crate::consumer::opencode_find_session_since(
                     &db_path, &workspace.to_string_lossy(), harvest_before,
                 )
             } else { None }

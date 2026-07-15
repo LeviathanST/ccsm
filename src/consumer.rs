@@ -562,6 +562,21 @@ pub fn opencode_update_directory(db_path: &Path, session_id: &str, directory: &s
     Ok(())
 }
 
+/// Find a session for a directory created after a timestamp (single query, no polling).
+/// Unlike `opencode_harvest_session`, this does NOT loop — call when the session
+/// is expected to already exist (e.g. after the agent child has exited).
+pub fn opencode_find_session_since(db_path: &Path, directory: &str, since_ts: i64) -> Option<String> {
+    use rusqlite::Connection;
+    let conn = Connection::open(db_path).ok()?;
+    let mut stmt = conn
+        .prepare("SELECT id FROM session WHERE directory = ?1 AND time_created > ?2 ORDER BY time_created DESC LIMIT 1")
+        .ok()?;
+    stmt.query_map([directory, &since_ts.to_string()], |row| row.get(0))
+        .ok()?
+        .filter_map(|r| r.ok())
+        .next()
+}
+
 /// Get the most recent session ID for a directory (non-polling, single check).
 pub fn opencode_latest_session(db_path: &Path, directory: &str) -> Option<String> {
     use rusqlite::Connection;
