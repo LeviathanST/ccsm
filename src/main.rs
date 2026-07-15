@@ -3968,7 +3968,6 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
 /// with the active session's goal and scope.  Designed for the SystemMessage
 /// hook so the agent sees its current task constraints on every turn.
 fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
     let ctx = crate::registry::resolve_identity()?;
     let reg = crate::registry::WorkspaceRegistry::load()?;
 
@@ -4045,17 +4044,17 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
 
     let (open_tag, close_tag) = consumer.system_prompt_tags();
 
-    // ── Worktree check (used by both WORKTREE line and structural stability) ──
-    let wt_path = crate::commands::worktree::worktree_path_for(&workspace, &session.name);
-    let has_worktree = session.use_worktree || wt_path.is_dir();
-
     // ── Branch check ──────────────────────────────────────────────
+    // Run from workspace root (ctx.root), not agent CWD — the agent may
+    // be inside a worktree where `git branch --show-current` reports the
+    // worktree's branch, not the main repo's current branch we want to
+    // compare against.
     let branch_line = if session.branch.is_empty() {
         String::new()
     } else {
         match std::process::Command::new("git")
             .args(["branch", "--show-current"])
-            .current_dir(&workspace)
+            .current_dir(&ctx.root)
             .output()
         {
             Ok(output) => {
@@ -4077,6 +4076,20 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
         }
     };
 
+    // ── Worktree check ───────────────────────────────────────────
+    // Prefer CCSM_WORKTREE env var (authoritative — set by `ccsm resume`
+    // to the absolute worktree path). Fall back to deriving from the
+    // workspace root (ctx.root) so we don't double-nest when CWD is inside
+    // a worktree.
+    let ccs_worktree = std::env::var("CCSM_WORKTREE")
+        .ok()
+        .filter(|p| !p.is_empty());
+    let wt_path = match &ccs_worktree {
+        Some(p) => std::path::PathBuf::from(p),
+        None => crate::commands::worktree::worktree_path_for(&ctx.root, &session.name),
+    };
+    let has_worktree = session.use_worktree || wt_path.is_dir() || ccs_worktree.is_some();
+
     // ── Build inject-scope block (stable prefix first, dynamic last) ──
     //
     // DeepSeek prefix cache optimization: ORDER matters.
@@ -4084,9 +4097,6 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     // entire session). Session identity (name, goal, scope) rarely changes.
     // Branch and worktree are semi-stable. CHECKLIST changes most frequently
     // (on every `ccsm check`) — put it LAST so the shared prefix is maximized.
-    //
-    // All fields are included unconditionally (when available) so the output
-    // structure remains consistent across turns within the same session.
     //
     println!("{open_tag}");
     println!("{}", consumer.constraint_line());
@@ -4101,7 +4111,22 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
         println!("{branch_line}");
     }
     if has_worktree {
-        println!("WORKTREE: {} — work inside this directory", wt_path.display());
+        println!("── WORKTREE BOUNDARY ──────────────────────────────");
+        println!("You are in a git worktree. All work stays inside:");
+        println!("  {}", wt_path.display());
+        println!();
+        println!("DO:");
+        println!("  - Edit/create/read files inside the worktree");
+        println!("  - Run git commands inside the worktree directory");
+        println!("  - Use `ccsm` for session management");
+        println!();
+        println!("DON'T:");
+        println!("  - Read/edit/create files in the parent repo: {}", ctx.root.display());
+        println!("  - Access `.claude/` at the workspace root level");
+        println!("  - Run git commands in the parent repository");
+        println!("  - Write files outside the worktree directory");
+        println!();
+        println!("ASK FIRST before touching anything outside the worktree.");
     }
     if !checklist_line.is_empty() {
         println!("{checklist_line}");

@@ -82,10 +82,13 @@ impl TempWorkspace {
     }
 
     /// Run ccsm with args in this workspace. Returns (stdout, stderr, success).
+    /// Clears CCSM_SESSION and CCSM_WORKTREE to prevent parent env var leaks.
     pub fn run(&self, args: &[&str]) -> Output {
         Command::new(ccsm_binary())
             .args(args)
             .current_dir(self.path())
+            .env_remove("CCSM_SESSION")
+            .env_remove("CCSM_WORKTREE")
             .env_remove("CCSM_WORKSPACE")
             .env("HOME", &self.home)
             .output()
