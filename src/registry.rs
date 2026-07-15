@@ -201,8 +201,11 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
             eprintln!("ccsm: migrated .ccsm identity from v{} to v{} (stale worktree fields stripped)", identity.version, current);
         }
         _ => {
-            anyhow::bail!(
-                ".ccsm identity version \"{}\" doesn't match (expected {}). Run `ccsm migrate` to update.",
+            // Unknown version — warn, don't block. The hard safety guard
+            // (binary < project) is handled by check_version() in main.rs.
+            // Binary > project is safe — the chain runner handles upgrades.
+            eprintln!(
+                "ccsm: .ccsm identity version \"{}\" doesn't match (expected {}). Run `ccsm migrate` to update.",
                 identity.version, current,
             );
         }
