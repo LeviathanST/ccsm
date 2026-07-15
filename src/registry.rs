@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 // ── Workspace Identity ────────────────────────────────────────────
@@ -192,34 +191,10 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
             eprintln!("ccsm: migrated .ccsm identity from v{} to v{} (stale worktree fields stripped)", identity.version, current);
         }
         _ => {
-            // Prompt only if stdin is a terminal — otherwise auto-update.
-            // Blocking on stdin in non-interactive contexts (MCP, pipes) hangs forever.
-            let is_tty = unsafe { libc::isatty(libc::STDIN_FILENO) == 1 };
-            let mut ok = true;
-            if is_tty {
-                let mut input = String::new();
-                eprint!(
-                    "ccsm: .ccsm identity has unknown version \"{}\" (expected {}). Update? [Y/n] ",
-                    identity.version, current,
-                );
-                let _ = std::io::stdout().flush();
-                let bytes = std::io::stdin().read_line(&mut input).unwrap_or(0);
-                let input = input.trim().to_lowercase();
-                if bytes > 0 && !input.is_empty() && input != "y" && input != "yes" {
-                    ok = false;
-                }
-            }
-            if ok {
-                let content = format!("version = \"{current}\"\nid = \"{}\"\n", identity.id);
-                std::fs::write(root.join(".ccsm"), &content)
-                    .context("rewriting .ccsm identity with current version")?;
-                eprintln!("ccsm: updated .ccsm identity from v{} to v{}", identity.version, current);
-            } else {
-                eprintln!(
-                    "ccsm: warning: .ccsm identity has unknown version \"{}\" (expected {})",
-                    identity.version, current,
-                );
-            }
+            eprintln!(
+                "ccsm: .ccsm identity version \"{}\" doesn't match (expected {}). Run `ccsm migrate-ccsm` to update.",
+                identity.version, current,
+            );
         }
     }
     Ok(())
