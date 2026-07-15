@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── Workspace Identity ────────────────────────────────────────────
 
@@ -168,6 +169,8 @@ pub fn init_identity() -> Result<WorkspaceContext> {
 /// Run version-gated migrations when the `.ccsm` identity file is from an older version.
 /// Add new migration arms here as ccsm evolves.
 fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<()> {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+
     let current = env!("CARGO_PKG_VERSION");
     if identity.version == current {
         return Ok(());
@@ -191,10 +194,12 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
             eprintln!("ccsm: migrated .ccsm identity from v{} to v{} (stale worktree fields stripped)", identity.version, current);
         }
         _ => {
-            eprintln!(
-                "ccsm: .ccsm identity version \"{}\" doesn't match (expected {}). Run `ccsm migrate-ccsm` to update.",
-                identity.version, current,
-            );
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "ccsm: .ccsm identity version \"{}\" doesn't match (expected {}). Run `ccsm migrate-ccsm` to update.",
+                    identity.version, current,
+                );
+            }
         }
     }
     Ok(())
