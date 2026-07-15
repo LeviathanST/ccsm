@@ -172,6 +172,8 @@ ccsm resolves the workspace root in this priority order:
 8. **Batch with `sequence`.** The `sequence` subcommand runs multiple mutations in a single process, holding one lock and saving once — faster than chaining with `&&` and inherently race-free.
 9. **Keyword-rich goals.** Session goals must be self-contained and searchable. Bad: `"Fix bugs"`. Good: `"Fix PTY spawn race condition in ccsm resume command"`. Never use the session name as the goal. `ccsm doctor` flags vague goals (< 20 chars), name-as-goal, and CLI-artifact goals (`-g ` prefix).
 
+10. **DeepSeek prefix cache: static first, dynamic last.** All prompt construction — system prompts, inject-scope blocks, subagent definitions, skill content — MUST order content from most stable to most frequently changing. The constraint line goes first; checklist summaries go last. Never interleave static and dynamic content. This maximizes KV cache reuse across conversation turns.
+
 ---
 
 ## Data Sources
