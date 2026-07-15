@@ -4043,24 +4043,15 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     };
 
     let (open_tag, close_tag) = consumer.system_prompt_tags();
-    println!("{open_tag}");
-    println!("ACTIVE SESSION: {}", session.name);
-    if !session.goal.is_empty() {
-        println!("GOAL: {}", session.goal);
-    }
-    if !session.scope.is_empty() && !session.scope.contains("(fill in") {
-        println!("SCOPE: {}", session.scope);
-    }
-    if !checklist_line.is_empty() {
-        println!("{}", checklist_line);
-    }
 
     // ── Branch check ──────────────────────────────────────────────
     // Run from workspace root (ctx.root), not agent CWD — the agent may
     // be inside a worktree where `git branch --show-current` reports the
     // worktree's branch, not the main repo's current branch we want to
     // compare against.
-    if !session.branch.is_empty() {
+    let branch_line = if session.branch.is_empty() {
+        String::new()
+    } else {
         match std::process::Command::new("git")
             .args(["branch", "--show-current"])
             .current_dir(&ctx.root)
@@ -4069,22 +4060,21 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
             Ok(output) => {
                 let current = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if current.is_empty() {
-                    // Detached HEAD or not a git repo
-                    println!("BRANCH: {} (detached HEAD — no active branch)", session.branch);
+                    format!("BRANCH: {} (detached HEAD — no active branch)", session.branch)
                 } else if current == session.branch {
-                    println!("BRANCH: {} ✓", session.branch);
+                    format!("BRANCH: {} ✓", session.branch)
                 } else {
-                    println!(
+                    format!(
                         "BRANCH: {} (current: {}) ⚠️ MISMATCH — this session targets '{}'",
                         session.branch, current, session.branch
-                    );
+                    )
                 }
             }
             Err(_) => {
-                // git binary not available — skip branch check silently
+                String::new()
             }
         }
-    }
+    };
 
     // ── Worktree check ───────────────────────────────────────────
     // Prefer CCSM_WORKTREE env var (authoritative — set by `ccsm resume`
@@ -4099,6 +4089,27 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
         None => crate::commands::worktree::worktree_path_for(&ctx.root, &session.name),
     };
     let has_worktree = session.use_worktree || wt_path.is_dir() || ccs_worktree.is_some();
+
+    // ── Build inject-scope block (stable prefix first, dynamic last) ──
+    //
+    // DeepSeek prefix cache optimization: ORDER matters.
+    // The constraint line is the most stable element (same value for the
+    // entire session). Session identity (name, goal, scope) rarely changes.
+    // Branch and worktree are semi-stable. CHECKLIST changes most frequently
+    // (on every `ccsm check`) — put it LAST so the shared prefix is maximized.
+    //
+    println!("{open_tag}");
+    println!("{}", consumer.constraint_line());
+    println!("ACTIVE SESSION: {}", session.name);
+    if !session.goal.is_empty() {
+        println!("GOAL: {}", session.goal);
+    }
+    if !session.scope.is_empty() && !session.scope.contains("(fill in") {
+        println!("SCOPE: {}", session.scope);
+    }
+    if !branch_line.is_empty() {
+        println!("{branch_line}");
+    }
     if has_worktree {
         println!("── WORKTREE BOUNDARY ──────────────────────────────");
         println!("You are in a git worktree. All work stays inside:");
@@ -4116,8 +4127,9 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
         println!("  - Write files outside the worktree directory");
         println!();
         println!("ASK FIRST before touching anything outside the worktree.");
-    } else {
-        println!("{}", consumer.constraint_line());
+    }
+    if !checklist_line.is_empty() {
+        println!("{checklist_line}");
     }
     println!("{close_tag}");
     Ok(())
