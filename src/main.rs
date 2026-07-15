@@ -3968,7 +3968,6 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
 /// with the active session's goal and scope.  Designed for the SystemMessage
 /// hook so the agent sees its current task constraints on every turn.
 fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()> {
-    let workspace = std::env::current_dir()?;
     let ctx = crate::registry::resolve_identity()?;
     let reg = crate::registry::WorkspaceRegistry::load()?;
 
@@ -4057,10 +4056,14 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     }
 
     // ── Branch check ──────────────────────────────────────────────
+    // Run from workspace root (ctx.root), not agent CWD — the agent may
+    // be inside a worktree where `git branch --show-current` reports the
+    // worktree's branch, not the main repo's current branch we want to
+    // compare against.
     if !session.branch.is_empty() {
         match std::process::Command::new("git")
             .args(["branch", "--show-current"])
-            .current_dir(&workspace)
+            .current_dir(&ctx.root)
             .output()
         {
             Ok(output) => {
@@ -4084,19 +4087,38 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     }
 
     // ── Worktree check ───────────────────────────────────────────
-    let wt_path = crate::commands::worktree::worktree_path_for(&workspace, &session.name);
-    if session.use_worktree || wt_path.is_dir() {
-        println!("WORKTREE: {} — work inside this directory", wt_path.display());
-    }
-
-    // Extend constraint line if worktree is active
-    let has_worktree = session.use_worktree || wt_path.is_dir();
-    let constraint = if has_worktree {
-        "CONSTRAINT: Work within this scope and worktree. If you need to do something outside it, ask first."
-    } else {
-        consumer.constraint_line()
+    // Prefer CCSM_WORKTREE env var (authoritative — set by `ccsm resume`
+    // to the absolute worktree path). Fall back to deriving from the
+    // workspace root (ctx.root) so we don't double-nest when CWD is inside
+    // a worktree.
+    let ccs_worktree = std::env::var("CCSM_WORKTREE")
+        .ok()
+        .filter(|p| !p.is_empty());
+    let wt_path = match &ccs_worktree {
+        Some(p) => std::path::PathBuf::from(p),
+        None => crate::commands::worktree::worktree_path_for(&ctx.root, &session.name),
     };
-    println!("{constraint}");
+    let has_worktree = session.use_worktree || wt_path.is_dir() || ccs_worktree.is_some();
+    if has_worktree {
+        println!("── WORKTREE BOUNDARY ──────────────────────────────");
+        println!("You are in a git worktree. All work stays inside:");
+        println!("  {}", wt_path.display());
+        println!();
+        println!("DO:");
+        println!("  - Edit/create/read files inside the worktree");
+        println!("  - Run git commands inside the worktree directory");
+        println!("  - Use `ccsm` for session management");
+        println!();
+        println!("DON'T:");
+        println!("  - Read/edit/create files in the parent repo: {}", ctx.root.display());
+        println!("  - Access `.claude/` at the workspace root level");
+        println!("  - Run git commands in the parent repository");
+        println!("  - Write files outside the worktree directory");
+        println!();
+        println!("ASK FIRST before touching anything outside the worktree.");
+    } else {
+        println!("{}", consumer.constraint_line());
+    }
     println!("{close_tag}");
     Ok(())
 }
