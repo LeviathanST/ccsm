@@ -90,26 +90,9 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                         name, entry.consumer, current
                     );
                     eprintln!("   Session file is {location}.");
-                    eprint!("Start a fresh {current} session instead? [y/N] ");
-                    use std::io::{self, Write};
-                    let _ = io::stdout().flush();
-                    let mut input = String::new();
-                    let ok = io::stdin().read_line(&mut input)
-                        .map(|_| matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
-                        .unwrap_or(false);
-                    if !ok {
-                        eprintln!();
-                        eprintln!("   Aborted. To resume anyway without fresh:");
-                        eprintln!("     ccsm {}  (use the original agent)", entry.consumer);
-                        eprintln!("   To start fresh:");
-                        eprintln!("     ccsm pending {}  (clears session identity)", name);
-                        anyhow::bail!("resume aborted by user");
-                    }
-                    eprintln!();
-                    // Clear session_id — starts fresh with current consumer
-                    entry.session_id.clear();
-                    entry.consumer = current;
-                    (None, false)
+                    eprintln!("   To resume: ccsm {}  (use the original agent)", entry.consumer);
+                    eprintln!("   To start fresh: ccsm pending {}  (clears session_id)", name);
+                    anyhow::bail!("switch to {} to resume this session, or `ccsm pending` to start fresh", entry.consumer);
                 } else if !entry.consumer.is_empty() && entry.consumer != current {
                     // No session_id yet but consumer mismatch — warn and continue
                     eprintln!(

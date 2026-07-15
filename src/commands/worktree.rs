@@ -151,26 +151,10 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                         .unwrap_or(false);
 
                     let stashed = if is_dirty {
-                        eprint!("  branch has uncommitted changes. Move them to the worktree? [y/N] ");
-                        use std::io::{self, Write};
-                        let _ = io::stdout().flush();
-                        let mut input = String::new();
-                        let ok = io::stdin().read_line(&mut input)
-                            .map(|_| matches!(input.trim().to_lowercase().as_str(), "y" | "yes"))
-                            .unwrap_or(false);
-                        if !ok {
-                            anyhow::bail!("aborted. Commit or stash changes first, then run `ccsm start {}` again.", name);
-                        }
-                        let stash_result = Command::new("git")
-                            .args(["stash", "push", "-m", "ccsm-auto-stash"])
-                            .current_dir(workspace)
-                            .output()
-                            .context("failed to run `git stash`")?;
-                        if !stash_result.status.success() {
-                            anyhow::bail!("failed to stash changes:\n{}", String::from_utf8_lossy(&stash_result.stderr).trim());
-                        }
-                        eprintln!("  changes stashed — rebasing...");
-                        true
+                        anyhow::bail!(
+                            "branch '{}' has uncommitted changes. Commit or stash first, then run `ccsm start {}` again.",
+                            branch, name,
+                        );
                     } else {
                         false
                     };
