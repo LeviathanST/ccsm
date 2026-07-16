@@ -59,6 +59,6 @@ Print: name, goal, scope, tags. Remind the user: "Pending — `ccsm start <name>
 ## Rules
 
 - **Never start the session.** This is a stub for later.
-- **Synthesize scope even if the user was vague.** Fill gaps from project context.
+- **If the user is vague, use the Intent-Boundary protocol** (`protocols/intent-boundary.md`) instead of guessing. Ask targeted clarifying questions, capture CONSTRAINTS in scope field, mark unknowns.
 - **If the name is bad** (not kebab-case, too vague), fix it and note the change.
 - **If the user already has a session with this name**, warn and suggest an alternative.

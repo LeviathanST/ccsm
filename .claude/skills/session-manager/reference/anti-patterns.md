@@ -2,6 +2,7 @@
 
 - ❌ **Touch `session_id` or `pids`** — ccsm manages these
 - ❌ **Leave name/goal/scope empty** — blank labels help no one
+- ❌ **Fill in vague goals/scopes with guesses from project context** — the Intent-Boundary protocol requires asking targeted clarifying questions first. See `protocols/intent-boundary.md`.
 - ❌ **Skip the progress log** — `ccsm note` after every change. Never miss it.
 - ❌ **Complete without END-GATE** — the three questions are mandatory.
 - ❌ **Change goal/scope without documenting why** — the 5 Laws require rationale.

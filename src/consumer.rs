@@ -313,7 +313,7 @@ impl Consumer {
 
     /// Constraint line appended to injected scope.
     pub fn constraint_line(self) -> &'static str {
-        "CONSTRAINT: Work within this scope. If you need to do something outside it, ask first."
+        "CONSTRAINT:\n  - Work within this scope. If you need to do something outside it, ask first.\n  - If the goal or scope is ambiguous, do NOT guess — ask targeted clarifying questions.\n  - Do NOT start work until you can answer WHAT is being built and WHY."
     }
 }
 

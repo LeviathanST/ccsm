@@ -4093,23 +4093,12 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     // ── Build inject-scope block (stable prefix first, dynamic last) ──
     //
     // DeepSeek prefix cache optimization: ORDER matters.
-    // The constraint line is the most stable element (same value for the
-    // entire session). Session identity (name, goal, scope) rarely changes.
-    // Branch and worktree are semi-stable. CHECKLIST changes most frequently
-    // (on every `ccsm check`) — put it LAST so the shared prefix is maximized.
+    // CONSTRAINT block (always same) → WORKTREE (stable per session) →
+    // ACTIVE SESSION/GOAL/SCOPE (rarely change) → BRANCH (semi-stable) →
+    // CHECKLIST (changes most frequently — on every `ccsm check`).
     //
     println!("{open_tag}");
     println!("{}", consumer.constraint_line());
-    println!("ACTIVE SESSION: {}", session.name);
-    if !session.goal.is_empty() {
-        println!("GOAL: {}", session.goal);
-    }
-    if !session.scope.is_empty() && !session.scope.contains("(fill in") {
-        println!("SCOPE: {}", session.scope);
-    }
-    if !branch_line.is_empty() {
-        println!("{branch_line}");
-    }
     if has_worktree {
         println!("── WORKTREE BOUNDARY ──────────────────────────────");
         println!("You are in a git worktree. All work stays inside:");
@@ -4127,6 +4116,16 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
         println!("  - Write files outside the worktree directory");
         println!();
         println!("ASK FIRST before touching anything outside the worktree.");
+    }
+    println!("ACTIVE SESSION: {}", session.name);
+    if !session.goal.is_empty() {
+        println!("GOAL: {}", session.goal);
+    }
+    if !session.scope.is_empty() && !session.scope.contains("(fill in") {
+        println!("SCOPE: {}", session.scope);
+    }
+    if !branch_line.is_empty() {
+        println!("{branch_line}");
     }
     if !checklist_line.is_empty() {
         println!("{checklist_line}");

@@ -9,6 +9,7 @@ Every field change has rules. Follow them.
 | Human redirects you | "I found a more interesting problem" |
 | Initial goal was too vague | You're bored and want to pivot |
 | Scope shift forces goal change | Without human approval |
+| Agent refines goal via Intent-Boundary protocol before starting work | Agent rewrites goal to match their own interpretation without human confirmation |
 
 **Must document:** `ccsm note <name> "GOAL: <old> → <new>. Reason: <why>"`
 
