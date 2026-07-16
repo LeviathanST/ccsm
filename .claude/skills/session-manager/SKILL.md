@@ -92,6 +92,7 @@ ccsm show <name>         # registry fields + detail file section headlines
 | 2 | **Scope-Gate** | Human asks for work outside current session's scope | `protocols/scope-gate.md` |
 | 3 | **Proactive Ideation** | You notice friction, gaps, tech debt, or architecture smells | `protocols/proactive-ideation.md` |
 | 4 | **Cross-Session Teammate** | Your work touches another session's domain or creates a dependency | `protocols/cross-session-teammate.md` |
+| 5 | **Intent-Boundary** | Goal or scope is ambiguous — new session, vague resume, scope change, or seed-session with a vague description | `protocols/intent-boundary.md` |
 
 ## Reference Index
 
