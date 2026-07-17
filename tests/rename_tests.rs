@@ -118,10 +118,10 @@ fn rename_opencode_updates_title() {
     let ws = TempWorkspace::new();
     let home = ws.home();
 
-    // Create a fake OpenCode DB with a session row
+    // Create a fake OpenCode DB with a session row at V2 path
     let opencode_dir = home.join(".local").join("share").join("opencode");
     std::fs::create_dir_all(&opencode_dir).expect("create opencode dir");
-    let db_path = opencode_dir.join("opencode.db");
+    let db_path = opencode_dir.join("opencode-next.db");
     let conn = rusqlite::Connection::open(&db_path).expect("open opencode DB");
     conn.execute_batch(
         "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);\
