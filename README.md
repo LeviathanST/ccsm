@@ -101,7 +101,7 @@ ccsm supports multiple AI coding agents via the `--consumer` flag:
 
 | Consumer | Flag | Binary | Sessions |
 |----------|------|--------|----------|
-| OpenCode (default) | `--consumer opencode` | `opencode` | SQLite at `~/.local/share/opencode/opencode.db` |
+| OpenCode (default) | `--consumer opencode` | `opencode2` (V2 beta) | SQLite at `~/.local/share/opencode/opencode-next.db` |
 | Claude Code | `--consumer claude` | `claude` | `~/.claude/sessions/<pid>.json` |
 | Pi | `--consumer pi` | `pi` | `~/.pi/agent/sessions/<slug>/` |
 
