@@ -262,12 +262,12 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             }
             crate::consumer::Consumer::OpenCode => {
                 let (flag, label) = if let Some(ref id) = sid {
-                    (format!("-s {}", id), format!("resuming    {}  ← opencode -s {}", name, &id[..id.len().min(8)]))
+                    (format!("-s {}", id), format!("resuming    {}  ← {bin} -s {}", name, &id[..id.len().min(8)]))
                 } else {
-                    (String::new(), format!("starting    {}  ← opencode (fresh)", name))
+                    (String::new(), format!("starting    {}  ← {bin} (fresh)", name))
                 };
                 println!("{}", label);
-                format!("cd '{}' && exec opencode {}", wt_str, flag)
+                format!("cd '{}' && exec {bin} {}", wt_str, flag)
             }
         };
         let mut s = std::process::Command::new("sh");
@@ -300,9 +300,9 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
             crate::consumer::Consumer::OpenCode => {
                 if let Some(ref id) = sid {
                     c.arg("-s").arg(id);
-                    println!("resuming    {}  ← opencode -s {}", name, &id[..id.len().min(8)]);
+                    println!("resuming    {}  ← {bin} -s {}", name, &id[..id.len().min(8)]);
                 } else {
-                    println!("starting    {}  ← opencode (fresh)", name);
+                    println!("starting    {}  ← {bin} (fresh)", name);
                 }
                 // OpenCode TUI has no name/title flag at top level
             }
@@ -310,6 +310,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         c
     };
     cmd.env("CCSM_SESSION", name);
+    cmd.env("CCSM_WORKSPACE", workspace);
     if let Some(ref wt) = worktree_dir {
         cmd.env("CCSM_WORKTREE", wt);
     }

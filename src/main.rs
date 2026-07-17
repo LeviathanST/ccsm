@@ -1860,6 +1860,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
     let mut cmd = std::process::Command::new(consumer.binary());
     cmd.current_dir(workspace);
     cmd.env("CCSM_SESSION", name);
+    cmd.env("CCSM_WORKSPACE", workspace);
     match consumer {
         Consumer::Claude => {
             cmd.arg("-n").arg(name);
