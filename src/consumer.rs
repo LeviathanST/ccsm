@@ -22,9 +22,9 @@ pub enum Consumer {
     /// Pi — binary `pi`, config at `~/.pi/agent/`.
     /// Sessions: `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl`.
     Pi,
-    /// OpenCode — binary `opencode`, config at `~/.config/opencode/`.
-    /// Sessions in SQLite at `~/.local/share/opencode/opencode.db`.
-    /// No PID-based session files.
+    /// OpenCode — binary `opencode2` (V2 beta), config at `~/.config/opencode/`.
+    /// Sessions in SQLite at `~/.local/share/opencode/opencode-next.db`.
+    /// Override with `OPENCODE_DB` env var. No PID-based session files.
     OpenCode,
 }
 
@@ -52,8 +52,14 @@ impl Consumer {
     fn auto_detect(home: &Path) -> Self {
         let pi_dir = home.join(".pi").join("agent");
         let claude_dir = home.join(".claude");
-        // OpenCode check: look for the SQLite DB
-        let opencode_db = home.join(".local").join("share").join("opencode").join("opencode.db");
+        // OpenCode check: look for the SQLite DB (prefer V2 over V1)
+        // NOTE: When V2 ships as stable, `opencode-next.db` → `opencode.db`
+        let opencode_base = home.join(".local").join("share").join("opencode");
+        let opencode_db = {
+            let v2 = opencode_base.join("opencode-next.db");
+            let v1 = opencode_base.join("opencode.db");
+            if v2.exists() { v2 } else { v1 }
+        };
 
         let candidates: [(Self, &Path); 3] = [(Self::OpenCode, &opencode_db), (Self::Pi, &pi_dir), (Self::Claude, &claude_dir)];
 
@@ -145,11 +151,12 @@ impl Consumer {
     // ── Binary ────────────────────────────────────────────────────
 
     /// The CLI binary to spawn for `resume`.
+    /// NOTE: V2 ships as `opencode2` during beta; revert to `opencode` on stable.
     pub fn binary(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Pi => "pi",
-            Self::OpenCode => "opencode",
+            Self::OpenCode => "opencode2",
         }
     }
 
@@ -466,7 +473,13 @@ fn extract_session_name(text: &str) -> Option<String> {
 
 /// Path to opencode's SQLite session database.
 pub fn opencode_db_path(home: &Path) -> PathBuf {
-    home.join(".local").join("share").join("opencode").join("opencode.db")
+    if let Ok(env_path) = std::env::var("OPENCODE_DB") {
+        return PathBuf::from(env_path);
+    }
+    home.join(".local")
+        .join("share")
+        .join("opencode")
+        .join("opencode-next.db")
 }
 
 /// Check if a session exists in opencode's database.
@@ -596,7 +609,7 @@ mod tests {
     fn test_binary_names() {
         assert_eq!(Consumer::Claude.binary(), "claude");
         assert_eq!(Consumer::Pi.binary(), "pi");
-        assert_eq!(Consumer::OpenCode.binary(), "opencode");
+        assert_eq!(Consumer::OpenCode.binary(), "opencode2");
     }
 
     #[test]
@@ -623,7 +636,7 @@ mod tests {
     fn test_opencode_update_title() {
         use rusqlite::Connection;
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("opencode.db");
+        let db_path = dir.path().join("opencode-next.db");
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);\
@@ -642,7 +655,7 @@ mod tests {
     #[test]
     fn test_opencode_update_title_nonexistent_id_is_noop() {
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("opencode.db");
+        let db_path = dir.path().join("opencode-next.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);",
@@ -657,7 +670,7 @@ mod tests {
     fn test_opencode_get_title() {
         use rusqlite::Connection;
         let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("opencode.db");
+        let db_path = dir.path().join("opencode-next.db");
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);\
@@ -670,5 +683,24 @@ mod tests {
 
         let missing = opencode_get_title(&db_path, "ses_nonexistent");
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_opencode_db_path_env_var_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom_db = dir.path().join("custom.db");
+        // SAFETY: tests run single-threaded; env var is set/cleared within this scope
+        unsafe { std::env::set_var("OPENCODE_DB", &custom_db) };
+        let result = opencode_db_path(dir.path());
+        assert_eq!(result, custom_db);
+        unsafe { std::env::remove_var("OPENCODE_DB") };
+    }
+
+    #[test]
+    fn test_opencode_db_path_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = opencode_db_path(dir.path());
+        let expected = dir.path().join(".local").join("share").join("opencode").join("opencode-next.db");
+        assert_eq!(result, expected);
     }
 }

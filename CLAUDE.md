@@ -102,7 +102,7 @@ ccsm supports three agents (consumers), auto-detected or explicitly set:
 
 | Consumer | Binary | Config Dir | Session Files |
 |----------|--------|------------|---------------|
-| `opencode` (default) | `opencode` | `~/.config/opencode/` | SQLite at `~/.local/share/opencode/opencode.db` |
+| `opencode` (default) | `opencode2` (V2 beta) | `~/.config/opencode/` | SQLite at `~/.local/share/opencode/opencode-next.db` |
 | `claude` | `claude` | `~/.claude/` | `~/.claude/sessions/<pid>.json` + `~/.claude/projects/<slug>/<uuid>.jsonl` |
 | `pi` | `pi` | `~/.pi/agent/` | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` |
 
@@ -184,7 +184,7 @@ ccsm resolves the workspace root in this priority order:
 |------|----------|---------|
 | `~/.ccsm/<id>/sessions.json` | Registry entries: name, goal, scope, status, session_id, pids, tags, timestamps | All CLI operations |
 | `~/.ccsm/<id>/sessions/<name>.md` | Session detail files | Notes, checklists, dependencies |
-| `~/.local/share/opencode/opencode.db` | OpenCode SQLite DB (all session data) | Session attach, harvest, rename |
+| `~/.local/share/opencode/opencode-next.db` | OpenCode V2 beta SQLite DB (all session data) | Session attach, harvest, rename |
 | `~/.claude/sessions/<pid>.json` | Live Claude session: sessionId, cwd, status, name | `resume` harvesting |
 | `~/.claude/projects/<slug>/<session_id>.jsonl` | Claude transcript | Resume check (exists → --resume) |
 | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` | Pi session files | `resume` (--session), `attach` auto-discover |
