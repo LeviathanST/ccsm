@@ -332,75 +332,10 @@ pub fn run_kill(home: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn run_wait(home: &Path, run_id: Option<&str>, timeout_secs: u64) -> Result<()> {
-    let identity = crate::registry::resolve_identity().ok();
-    let workspace_id = identity.as_ref().map(|i| i.id.as_str()).unwrap_or("default");
-
-    let run_dir = match run_id {
-        Some(id) => {
-            let dir = swarm_dir(home, workspace_id).join(id);
-            if !dir.is_dir() {
-                anyhow::bail!("run not found: {id}");
-            }
-            dir
-        }
-        None => current_run_dir(home, workspace_id)
-            .context("no active swarm run found")?,
-    };
-
-    std::fs::read_to_string(run_dir.join("meta.json"))?;
-
-    let start = Instant::now();
-    let timeout = Duration::from_secs(timeout_secs);
-
-    loop {
-        let run: SwarmRun = serde_json::from_str(&std::fs::read_to_string(run_dir.join("meta.json"))?)?;
-
-        let all_done = run.workers.iter().all(|w|
-            w.status == "done" || w.status == "failed" || w.status == "killed"
-        );
-
-        if all_done {
-            let total_in: u64 = run.workers.iter().map(|w| w.input_tokens).sum();
-            let total_out: u64 = run.workers.iter().map(|w| w.output_tokens).sum();
-            let done = run.workers.iter().filter(|w| w.status == "done").count();
-            let failed = run.workers.iter().filter(|w| w.status == "failed").count();
-
-            println!("
-=== Swarm Complete ===");
-            println!("Workers: {}/{} done, {} failed", done, run.workers.len(), failed);
-            println!("Tokens:  {} → {}", total_in, total_out);
-
-            for w in &run.workers {
-                let icon = match w.status.as_str() {
-                    "done" => "✓",
-                    "failed" => "✗",
-                    "killed" => "⊘",
-                    _ => "?",
-                };
-                println!("  {} {} ({} → {} tokens)", icon, w.name, w.input_tokens, w.output_tokens);
-            }
-            return Ok(());
-        }
-
-        if start.elapsed() > timeout {
-            let running = run.workers.iter().filter(|w| w.status == "running").count();
-            anyhow::bail!("timeout after {timeout_secs}s — {running} workers still running");
-        }
-
-        // Show progress
-        let running = run.workers.iter().filter(|w| w.status == "running").count();
-        let pending = run.workers.iter().filter(|w| w.status == "pending").count();
-        eprint!("\r  waiting... ({running} running, {pending} pending)");
-        std::thread::sleep(Duration::from_secs(2));
-    }
-}
-
-/// Orchestrate existing pending sessions.
 pub fn run_orchestrate(
     sessions: &[String],
     goal: &str,
-    workspace: &Path,
+    _workspace: &Path,
     _branch: Option<&str>,
 ) -> Result<()> {
     let mut reg = crate::registry::WorkspaceRegistry::load()?;

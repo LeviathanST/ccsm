@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct ServeClient {
     base: String,
     agent: ureq::Agent,
+    auth_header: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,145 +19,166 @@ pub struct TokenInfo {
     pub input: u64,
     #[serde(default)]
     pub output: u64,
+    #[serde(default)]
+    pub reasoning: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct MessageInfo {
-    #[serde(default)]
-    pub cost: f64,
+pub struct SessionData {
+    pub data: SessionDetail,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionDetail {
+    pub id: String,
+    pub title: String,
     #[serde(default)]
     pub tokens: TokenInfo,
+    #[serde(default)]
+    pub cost: f64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct MessageResponse {
-    pub info: Option<MessageInfo>,
-}
-
-#[derive(Debug, Serialize)]
-struct TextPart {
-    #[serde(rename = "type")]
-    part_type: String,
-    text: String,
-}
-
-#[derive(Debug, Serialize)]
-struct SendMessage {
-    parts: Vec<TextPart>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    agent: Option<String>,
-}
-
-impl ServeClient {
-    pub fn new(port: u16) -> Self {
-        let config = ureq::config::Config::builder()
-            .timeout_global(Some(Duration::from_secs(600)))
-            .build();
-        Self {
-            base: format!("http://127.0.0.1:{}", port),
-            agent: ureq::Agent::new_with_config(config),
-        }
-    }
-
-    pub fn health(&self) -> anyhow::Result<bool> {
-        let resp = self.agent.get(format!("{}/health", self.base)).call();
-        match resp {
-            Ok(r) => Ok(r.status() == 200),
-            Err(_) => Ok(false),
-        }
-    }
-
-    pub fn create_session(&self, title: &str) -> anyhow::Result<Session> {
-        let body = serde_json::json!({"title": title});
-        let mut resp = self.agent
-            .post(format!("{}/session", self.base))
-            .header("Content-Type", "application/json")
-            .send_json(&body)?;
-        let text = resp.body_mut().read_to_string()?;
-        Ok(serde_json::from_str(&text)?)
-    }
-
-    pub fn send_message(&self, session_id: &str, prompt: &str) -> anyhow::Result<MessageInfo> {
-        self.send_message_as(session_id, prompt, None)
-    }
-
-    pub fn send_message_as(&self, session_id: &str, prompt: &str, agent: Option<&str>) -> anyhow::Result<MessageInfo> {
-        let body = SendMessage {
-            parts: vec![TextPart {
-                part_type: "text".to_string(),
-                text: prompt.to_string(),
-            }],
-            agent: agent.map(|a| a.to_string()),
-        };
-        let mut resp = self.agent
-            .post(format!("{}/session/{}/message", self.base, session_id))
-            .header("Content-Type", "application/json")
-            .send_json(&body)?;
-        let text = resp.body_mut().read_to_string()?;
-        let _msg: MessageResponse = serde_json::from_str(&text)?;
-        Ok(MessageInfo {
-            cost: 0.0,
-            tokens: TokenInfo { input: 0, output: 0 },
-        })
-    }
-
-    pub fn wait_for_session(&self, session_id: &str, timeout_secs: u64) -> anyhow::Result<MessageInfo> {
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(timeout_secs);
-        loop {
-            if start.elapsed() > timeout {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_secs(2));
-
-            if let Ok(mut status_resp) = self.agent
-                .get(format!("{}/session/status", self.base))
-                .call() {
-                let status_text = status_resp.body_mut().read_to_string().unwrap_or_default();
-                if let Ok(status_map) = serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&status_text) {
-                    if let Some(entry) = status_map.get(session_id) {
-                        if let Some(typ) = entry.get("type").and_then(|v| v.as_str()) {
-                            if typ != "busy" {
-                                return self.session_tokens(session_id);
-                            }
+fn load_auth() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let config_dir = std::path::PathBuf::from(&home).join(".config").join("opencode");
+    let entries = std::fs::read_dir(&config_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with("service-") && name.ends_with(".json") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(pw) = val.get("password").and_then(|v| v.as_str()) {
+                            let encoded = b64_encode(&format!("opencode:{pw}"));
+                            return Some(format!("Basic {encoded}"));
                         }
-                    } else {
-                        return self.session_tokens(session_id);
                     }
                 }
             }
         }
-        self.session_tokens(session_id)
     }
+    None
+}
 
-    fn session_tokens(&self, session_id: &str) -> anyhow::Result<MessageInfo> {
-        let mut resp = self.agent
-            .get(format!("{}/session/{}", self.base, session_id))
-            .call()?;
-        let text = resp.body_mut().read_to_string()?;
-        let session: serde_json::Value = serde_json::from_str(&text)?;
-        let tokens = session.get("tokens").cloned().unwrap_or(serde_json::json!({"input": 0, "output": 0}));
-        Ok(MessageInfo {
-            cost: session.get("cost").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            tokens: TokenInfo {
-                input: tokens.get("input").and_then(|v| v.as_u64()).unwrap_or(0),
-                output: tokens.get("output").and_then(|v| v.as_u64()).unwrap_or(0),
-            },
-        })
+fn b64_encode(input: &str) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i] as u32;
+        let b1 = bytes.get(i + 1).copied().unwrap_or(0) as u32;
+        let b2 = bytes.get(i + 2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if i + 1 < bytes.len() {
+            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if i + 2 < bytes.len() {
+            out.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        i += 3;
     }
+    out
+}
 
-    pub fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
-        self.agent
-            .delete(format!("{}/session/{}", self.base, session_id))
-            .call()?;
-        Ok(())
+fn apply_auth<B>(req: ureq::RequestBuilder<B>, auth: Option<&str>) -> ureq::RequestBuilder<B> {
+    match auth {
+        Some(val) => req.header("Authorization", val),
+        None => req,
     }
 }
 
-pub fn find_available_port() -> anyhow::Result<u16> {
-    use std::net::TcpListener;
-    let l = TcpListener::bind("127.0.0.1:0")?;
-    let port = l.local_addr()?.port();
-    drop(l);
-    Ok(port)
+impl ServeClient {
+    pub fn connect() -> anyhow::Result<Self> {
+        let port: u16 = std::env::var("CCSM_SERVE_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4096);
+
+        let config = ureq::config::Config::builder()
+            .timeout_global(Some(Duration::from_secs(30)))
+            .build();
+        let agent = ureq::Agent::new_with_config(config);
+        let auth_header = load_auth();
+        let base = format!("http://127.0.0.1:{port}");
+
+        let mut req = agent.get(format!("{base}/api/health"));
+        if let Some(ref auth) = auth_header {
+            req = req.header("Authorization", auth.as_str());
+        }
+        match req.call() {
+            Ok(r) if r.status() == 200 => {}
+            Ok(r) => anyhow::bail!("opencode2 serve returned {status} on /api/health", status = r.status()),
+            Err(e) => {
+                let msg = format!("{e}");
+                if msg.contains("Connection refused") || msg.contains("connection refused") {
+                    anyhow::bail!("opencode2 daemon not running (port {port})");
+                }
+                anyhow::bail!("opencode2 serve health check failed: {e}");
+            }
+        }
+
+        Ok(Self { base, agent, auth_header })
+    }
+
+    fn auth(&self) -> Option<&str> {
+        self.auth_header.as_deref()
+    }
+
+    pub fn health(&self) -> bool {
+        let req = apply_auth(self.agent.get(format!("{}/api/health", self.base)), self.auth());
+        req.call().is_ok_and(|r| r.status() == 200)
+    }
+
+    pub fn create_session(&self, title: &str) -> anyhow::Result<Session> {
+        let body = serde_json::json!({"title": title});
+        let mut resp = apply_auth(
+            self.agent.post(format!("{}/api/session", self.base))
+                .header("Content-Type", "application/json"),
+            self.auth(),
+        ).send_json(&body)?;
+        let text = resp.body_mut().read_to_string()?;
+        let data: SessionData = serde_json::from_str(&text)?;
+        Ok(Session { id: data.data.id, title: data.data.title })
+    }
+
+    pub fn get_session(&self, id: &str) -> anyhow::Result<SessionDetail> {
+        let mut resp = apply_auth(
+            self.agent.get(format!("{}/api/session/{id}", self.base)),
+            self.auth(),
+        ).call()?;
+        let text = resp.body_mut().read_to_string()?;
+        let data: SessionData = serde_json::from_str(&text)?;
+        Ok(data.data)
+    }
+
+    pub fn send_prompt(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
+        let body = serde_json::json!({"text": text});
+        let mut req = self.agent
+            .post(format!("{}/api/session/{session_id}/prompt", self.base))
+            .header("Content-Type", "application/json");
+        if let Some(auth) = self.auth() {
+            req = req.header("Authorization", auth);
+        }
+        req.send_json(&body)?;
+        Ok(())
+    }
+
+    pub fn delete_session(&self, id: &str) -> anyhow::Result<()> {
+        let resp = apply_auth(
+            self.agent.delete(format!("{}/api/session/{id}", self.base)),
+            self.auth(),
+        ).call()?;
+        let status = resp.status();
+        if status != 200 {
+            anyhow::bail!("DELETE /api/session/{id} returned {status}");
+        }
+        Ok(())
+    }
 }

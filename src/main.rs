@@ -449,14 +449,6 @@ enum SwarmCommand {
     List,
     /// Kill active workers
     Kill,
-    /// Wait for all workers to complete (blocks until done or timeout)
-    Wait {
-        /// Run ID to wait for (defaults to latest)
-        run_id: Option<String>,
-        /// Timeout in seconds (default: 600)
-        #[arg(short = 't', long, default_value_t = 600)]
-        timeout: u64,
-    },
     /// Orchestrate existing pending sessions.
     ///
     /// Creates an orchestrator session that plans work, delegates to workers,
@@ -519,9 +511,6 @@ fn main() -> anyhow::Result<()> {
             SwarmCommand::Status => commands::swarm::run_status(&home),
             SwarmCommand::List => commands::swarm::run_list(&home),
             SwarmCommand::Kill => commands::swarm::run_kill(&home),
-            SwarmCommand::Wait { run_id, timeout } => {
-                commands::swarm::run_wait(&home, run_id.as_deref(), timeout)
-            }
             SwarmCommand::Orchestrate { sessions, goal, branch } => {
                 let goal_str = goal.join(" ");
                 let names: Vec<String> = sessions.split(',').map(|s| s.trim().to_string()).collect();

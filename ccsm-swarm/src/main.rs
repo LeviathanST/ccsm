@@ -14,30 +14,29 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 
 mod state;
+mod serve;
+mod db;
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct SpawnParam {
-    goals: Vec<String>,
-    #[serde(default = "default_600")]
-    timeout_secs: u64,
+    session_names: Vec<String>,
+    prompt: Option<String>,
 }
-
-fn default_600() -> u64 { 600 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct StatusParam {
-    run_id: Option<String>,
+    orchestrator_name: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct KillParam {
-    run_id: Option<String>,
+    orchestrator_name: Option<String>,
+    worker_name: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct WaitParam {
     run_id: Option<String>,
-    #[serde(default = "default_600")]
     timeout_secs: u64,
 }
 
@@ -58,91 +57,269 @@ impl SwarmServer {
 
 #[tool_router]
 impl SwarmServer {
-    #[tool(name = "swarm-spawn", description = "Spawn worker sessions via opencode2 run")]
+    #[tool(name = "swarm-spawn", description = "Spawn worker ccsm sessions via opencode2 serve API. Pre-flight validates all sessions, then spawns each in parallel (non-blocking).")]
     async fn swarm_spawn(
         &self,
-        Parameters(SpawnParam { goals, timeout_secs }): Parameters<SpawnParam>,
+        Parameters(SpawnParam { session_names, prompt }): Parameters<SpawnParam>,
     ) -> Result<String, McpError> {
-        if goals.is_empty() {
-            return Err(McpError::invalid_params("at least one goal required", None));
+        if session_names.is_empty() {
+            return Err(McpError::invalid_params("at least one session name required", None));
         }
 
-        let mut state = self.state.lock().await;
-        let run_id = state.create_run(&goals, timeout_secs);
+        // ── Phase 0: Pre-flight ──────────────────────────────────
+        let client = serve::ServeClient::connect()
+            .map_err(|e| Self::mcp_err(format!("serve: {e}")))?;
+
+        let ws = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let ws_str = ws.to_string_lossy().to_string();
+
+        // Load ccsm registry to validate sessions
+        let id = std::env::var("CCSM_DATA_DIR")
+            .ok()
+            .or_else(|| {
+                let home = std::env::var("HOME").ok()?;
+                let dir = std::path::PathBuf::from(&home).join(".ccsm");
+                // find workspace id by looking for sessions.json
+                std::fs::read_dir(&dir).ok()?.filter_map(|e| {
+                    let path = e.ok()?.path();
+                    if path.join("sessions.json").exists() {
+                        path.file_name()?.to_str().map(String::from)
+                    } else {
+                        None
+                    }
+                }).next()
+            })
+            .unwrap_or_else(|| "default".to_string());
+
+        let sessions_path = std::path::PathBuf::from(
+            &std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
+        ).join(".ccsm").join(&id).join("sessions.json");
+
+        let sessions_json: serde_json::Value = std::fs::read_to_string(&sessions_path)
+            .map_err(|e| Self::mcp_err(format!("read sessions.json: {e}")))
+            .and_then(|s| serde_json::from_str(&s).map_err(|e| Self::mcp_err(format!("parse sessions.json: {e}"))))?;
+
+        let sessions = sessions_json["sessions"].as_array()
+            .ok_or_else(|| Self::mcp_err("no sessions array in registry"))?;
+
+        // Validate each session: exists, pending, consumer is opencode
+        let mut preflight_errors = Vec::new();
+        let mut valid_sessions = Vec::new();
+        for name in &session_names {
+            let entry = sessions.iter().find(|s| s["name"].as_str() == Some(name));
+            match entry {
+                None => preflight_errors.push(format!("session '{}' not found", name)),
+                Some(s) => {
+                    let status = s["status"].as_str().unwrap_or("");
+                    if status != "pending" {
+                        preflight_errors.push(format!("session '{}' is {} (must be pending)", name, status));
+                        continue;
+                    }
+                    let consumer = s["consumer"].as_str().unwrap_or("");
+                    if !consumer.is_empty() && consumer != "opencode" {
+                        preflight_errors.push(format!(
+                            "session '{}' was created for {}. swarm only supports opencode2.",
+                            name, consumer
+                        ));
+                        continue;
+                    }
+                    let branch = s["branch"].as_str().unwrap_or("").to_string();
+                    let goal = s["goal"].as_str().unwrap_or("").to_string();
+                    valid_sessions.push((name.clone(), branch, goal));
+                }
+            }
+        }
+
+        if !preflight_errors.is_empty() {
+            return Err(Self::mcp_err(format!("pre-flight failed: {}", preflight_errors.join("; "))));
+        }
+
+        // ── Phase 1: Spawn workers ───────────────────────────────
+        let run_id = format!("run-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs());
+
+        let db = db::SwarmDb::open()
+            .map_err(|e| Self::mcp_err(format!("db: {e}")))?;
+
+        // Get orchestrator info from env or default
+        let orch_name = std::env::var("CCSM_SESSION").unwrap_or_else(|_| "unknown".into());
+        let orch_sid = std::env::var("CCSM_SESSION_ID").unwrap_or_else(|_| "unknown".into());
+        let created = Self::now_iso();
 
         let mut results = Vec::new();
-        for (i, goal) in goals.iter().enumerate() {
-            let name = format!("worker-{}", i + 1);
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            let out_path = std::path::PathBuf::from(&home)
-                .join(".ccsm").join("swarm").join(&run_id)
-                .join(format!("{}.jsonl", name));
+        let prompt_text = prompt.unwrap_or_else(|| "Work on this session.".to_string());
 
-            // Create output directory
-            if let Some(parent) = out_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+        for (name, branch, _goal) in &valid_sessions {
+            // ccsm start <name>
+            let start_ok = std::process::Command::new("ccsm")
+                .args(["start", name])
+                .current_dir(&ws)
+                .output()
+                .is_ok_and(|o| o.status.success());
+
+            if !start_ok {
+                results.push(serde_json::json!({"name": name, "status": "failed", "error": "ccsm start failed"}));
+                continue;
             }
 
-            let out_file = match std::fs::File::create(&out_path) {
-                Ok(f) => f,
+            // Check worktree directory
+            let worktree_dir = ws.join(".claude").join("worktrees").join(name);
+            let _session_dir = if worktree_dir.is_dir() {
+                worktree_dir.to_string_lossy().to_string()
+            } else {
+                ws_str.clone()
+            };
+
+            // Create opencode2 session
+            let sid = match client.create_session(name) {
+                Ok(s) => s.id,
                 Err(e) => {
-                    results.push(serde_json::json!({"name": name, "goal": goal, "status": "error", "error": format!("create output: {e}")}));
+                    results.push(serde_json::json!({"name": name, "status": "failed", "error": format!("create session: {e}")}));
                     continue;
                 }
             };
 
-            let mut cmd = std::process::Command::new("opencode2");
-            cmd.args(["run", "--format", "json", "--auto", "--agent", "build", "--title", &name, goal]);
-            cmd.current_dir(workspace_path());
-            cmd.stdout(out_file);
-            cmd.stderr(std::process::Stdio::null());
-
-            match cmd.spawn() {
-                Ok(child) => {
-                    let pid = child.id();
-                    std::mem::forget(child); // Detach
-                    state.add_worker(&run_id, &name, pid, goal.clone());
-                    results.push(serde_json::json!({"name": name, "pid": pid, "goal": goal, "status": "spawned"}));
-                }
-                Err(e) => {
-                    results.push(serde_json::json!({"name": name, "goal": goal, "status": "error", "error": e.to_string()}));
-                }
+            // Send prompt
+            if let Err(e) = client.send_prompt(&sid, &prompt_text) {
+                results.push(serde_json::json!({"name": name, "sid": sid, "status": "failed", "error": format!("send prompt: {e}")}));
+                continue;
             }
+
+            // Insert into swarm.db
+            if let Err(e) = db.insert_worker(&run_id, &orch_name, name, Some(&sid), &created) {
+                results.push(serde_json::json!({"name": name, "sid": sid, "status": "warning", "error": format!("db insert: {e}")}));
+            }
+
+            // ccsm note <name>
+            let _ = std::process::Command::new("ccsm")
+                .args(["note", name, &format!("Spawned by orchestrator {} (session {})", orch_name, sid)])
+                .current_dir(&ws)
+                .output();
+
+            results.push(serde_json::json!({"name": name, "session_id": sid, "status": "running"}));
         }
 
-        state.save_meta(&run_id);
-        let summary = state.run_summary(&run_id);
-        Ok(serde_json::to_string(&summary).unwrap_or_default())
+        let resp = serde_json::json!({"run_id": run_id, "workers": results});
+        Ok(serde_json::to_string(&resp).unwrap_or_default())
+    }
+
+    fn now_iso() -> String {
+        use std::fmt::Write;
+        let total = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        let secs = total % 86400;
+        let days = total / 86400;
+        let h = secs / 3600;
+        let m = (secs % 3600) / 60;
+        let s = secs % 60;
+        format!("day{days}T{h:02}:{m:02}:{s:02}Z")
     }
 
     #[tool(name = "swarm-status", description = "Check status of swarm workers")]
     async fn swarm_status(
         &self,
-        Parameters(StatusParam { run_id }): Parameters<StatusParam>,
+        Parameters(StatusParam { orchestrator_name }): Parameters<StatusParam>,
     ) -> Result<String, McpError> {
-        let state = self.state.lock().await;
-        let summary = match run_id {
-            Some(id) => state.run_summary(&id),
-            None => state.latest_run_summary(),
-        };
-        match summary {
-            Some(s) => Ok(serde_json::to_string(&s).unwrap_or_default()),
-            None => Err(McpError::internal_error("no swarm run found", None)),
+        let db = db::SwarmDb::open()
+            .map_err(|e| Self::mcp_err(format!("db: {e}")))?;
+
+        let orch_s = orchestrator_name.clone()
+            .or_else(|| std::env::var("CCSM_SESSION").ok())
+            .unwrap_or_else(|| "unknown".to_string());
+        let orch = orch_s.as_str();
+
+        let workers = db.get_workers(Some(orch), None)
+            .map_err(|e| Self::mcp_err(format!("query: {e}")))?;
+
+        if workers.is_empty() {
+            return Ok("[]".to_string());
         }
+
+        let client = match serve::ServeClient::connect() {
+            Ok(c) => Some(c),
+            Err(_) => None,
+        };
+
+        let mut results = Vec::new();
+        for w in &workers {
+            let (tokens_in, tokens_out, cost) = if let (Some(c), Some(sid)) = (&client, &w.worker_sid) {
+                if sid.is_empty() {
+                    (0u64, 0u64, 0f64)
+                } else {
+                    match c.get_session(sid) {
+                        Ok(detail) => (detail.tokens.input, detail.tokens.output, detail.cost),
+                        Err(_) => (0, 0, 0f64),
+                    }
+                }
+            } else {
+                (0u64, 0u64, 0f64)
+            };
+
+            results.push(serde_json::json!({
+                "name": w.worker_name,
+                "session_id": w.worker_sid,
+                "status": w.status,
+                "tokens": { "input": tokens_in, "output": tokens_out },
+                "cost": cost
+            }));
+        }
+
+        Ok(serde_json::to_string(&results).unwrap_or_default())
     }
 
-    #[tool(name = "swarm-kill", description = "Kill active swarm run")]
+    fn mcp_err(msg: impl std::fmt::Display) -> McpError {
+        McpError::internal_error(msg.to_string(), None)
+    }
+
+    #[tool(name = "swarm-kill", description = "Kill active swarm workers via opencode2 serve API")]
     async fn swarm_kill(
         &self,
-        Parameters(KillParam { run_id }): Parameters<KillParam>,
+        Parameters(KillParam { orchestrator_name, worker_name }): Parameters<KillParam>,
     ) -> Result<String, McpError> {
-        let mut state = self.state.lock().await;
-        let killed = state.kill_run(run_id.as_deref());
-        if killed {
-            Ok(serde_json::json!({"ok": true}).to_string())
-        } else {
-            Err(McpError::internal_error("no active swarm run to kill", None))
+        let db = db::SwarmDb::open().map_err(|e| Self::mcp_err(e))?;
+
+        let workers = db.get_workers(orchestrator_name.as_deref(), worker_name.as_deref())
+            .map_err(|e| Self::mcp_err(e))?;
+
+        if workers.is_empty() {
+            return Err(Self::mcp_err("no swarm workers found to kill"));
         }
+
+        let client = serve::ServeClient::connect()
+            .map_err(|e| Self::mcp_err(e))?;
+
+        let mut killed = Vec::new();
+        let mut errors = Vec::new();
+
+        for w in &workers {
+            if let Some(ref sid) = w.worker_sid {
+                if sid.is_empty() {
+                    killed.push(serde_json::json!({"worker": w.worker_name, "status": "no_session"}));
+                    continue;
+                }
+                match client.delete_session(sid) {
+                    Ok(()) => {
+                        if let Err(e) = db.update_status(&w.run_id, &w.worker_name, "killed") {
+                            errors.push(serde_json::json!({"worker": w.worker_name, "error": format!("db update: {e}")}));
+                        }
+                        killed.push(serde_json::json!({"worker": w.worker_name, "status": "killed"}));
+                    }
+                    Err(e) => {
+                        let msg = format!("{e}");
+                        errors.push(serde_json::json!({"worker": w.worker_name, "error": msg}));
+                    }
+                }
+            } else {
+                if let Err(e) = db.update_status(&w.run_id, &w.worker_name, "killed") {
+                    errors.push(serde_json::json!({"worker": w.worker_name, "error": format!("db update: {e}")}));
+                }
+                killed.push(serde_json::json!({"worker": w.worker_name, "status": "killed (no session)"}));
+            }
+        }
+
+        let result = serde_json::json!({"killed": killed, "errors": errors});
+        Ok(serde_json::to_string(&result).unwrap_or_default())
     }
 }
 
@@ -156,7 +333,7 @@ impl rmcp::handler::server::ServerHandler for SwarmServer {
                 .build(),
             server_info: rmcp::model::Implementation {
                 name: "ccsm-swarm".into(),
-                version: "0.3.0".into(),
+                version: "0.4.0".into(),
                 ..Default::default()
             },
             instructions: None,
