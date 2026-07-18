@@ -1,8 +1,8 @@
 [package]
 name = "ccsm-swarm"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
-description = "Tmux MCP server for multi-agent orchestration — part of the ccsm tool suite"
+description = "Multi-agent orchestration via opencode2 run — part of the ccsm tool suite"
 license = "MIT"
 repository = "https://github.com/LeviathanST/ccsm"
 
@@ -13,3 +13,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
+libc = "0.2"

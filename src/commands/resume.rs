@@ -182,10 +182,21 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
     // ── Phase 1b: Create worktree if --worktree flag or config required ─
     let config = crate::config::Config::load();
-    let should_create_worktree = match config.worktrees {
-        crate::config::WorktreePolicy::Required => true,
-        crate::config::WorktreePolicy::Optional => flag_worktree,
-        crate::config::WorktreePolicy::Disabled => false,
+    let is_orchestrate = {
+        let reg = crate::registry::WorkspaceRegistry::load()?;
+        reg.sessions.iter().rev().find(|s| s.name == name)
+            .map(|s| s.is_orchestrator)
+            .unwrap_or(false)
+    };
+
+    let should_create_worktree = if is_orchestrate {
+        false
+    } else {
+        match config.worktrees {
+            crate::config::WorktreePolicy::Required => true,
+            crate::config::WorktreePolicy::Optional => flag_worktree,
+            crate::config::WorktreePolicy::Disabled => false,
+        }
     };
 
     if should_create_worktree {

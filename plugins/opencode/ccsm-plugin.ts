@@ -1,105 +1,72 @@
-import { Plugin } from "@opencode-ai/plugin/v2"
-import { execFileSync } from "child_process";
-import { readFileSync, existsSync, readdirSync } from "fs";
+import type { Plugin } from "@opencode-ai/plugin";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync } from "fs";
 import { join } from "path";
 
-function workspaceIdFromDir(dir: string): string | null {
-  let cur = dir;
-  for (let i = 0; i < 10; i++) {
-    try {
-      const raw = readFileSync(join(cur, ".ccsm"), "utf-8");
-      const match = raw.match(/id\s*=\s*"([^"]+)"/);
-      if (match) return match[1];
-    } catch {}
-    const parent = join(cur, "..");
-    if (parent === cur) break;
-    cur = parent;
-  }
-  return null;
+function sidecarDir() {
+  return join(process.env.HOME || "/tmp", ".ccsm", "swarm-context");
 }
 
-function findInRegistry(
-  workspaceId: string,
-  matcher: (s: any) => boolean
-): { name: string } | null {
-  const regPath = join(process.env.HOME || "/tmp", ".ccsm", workspaceId, "sessions.json");
-  if (!existsSync(regPath)) return null;
-  try {
-    const reg = JSON.parse(readFileSync(regPath, "utf-8"));
-    for (const s of reg.sessions || []) {
-      if (matcher(s)) return { name: s.name };
-    }
-  } catch {}
-  return null;
+function sidecarPath(sessionID: string) {
+  return join(sidecarDir(), `${sessionID}.json`);
 }
 
-export default Plugin.define({
-  id: "ccsm",
-  setup: async (ctx) => {
-    (async () => {
-      for await (const event of ctx.event.subscribe()) {
-        if (event.type === "session.created") {
-          const dir = event.data.info.directory;
-          const sessionId = event.data.sessionID;
-          const wsId = workspaceIdFromDir(dir);
-          if (!wsId) continue;
-          const sessionName = dir.split("/").pop() || "";
-          const found = findInRegistry(wsId, (s) =>
-            s.status === "in_progress" && !s.session_id && s.name === sessionName
-          );
-          if (found) {
-            try {
-              execFileSync("ccsm", ["attach", found.name, sessionId], {
-                timeout: 5000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-                cwd: dir,
-              });
-            } catch {}
-          }
-        }
-      }
-    })();
+function readSidecar(sessionID: string) {
+  const path = sidecarPath(sessionID);
+  if (!existsSync(path)) return null;
+  return JSON.parse(readFileSync(path, "utf-8"));
+}
 
-    await ctx.session.hook("context", async (ctx2) => {
-      let sessionDir: string | null = null;
+export const CcsmPlugin: Plugin = async ({ $ }) => {
+  const sessionName = process.env.CCSM_SESSION;
+
+  return {
+    event: async ({ event }) => {
+      if (event.type === "session.created") {
+        const dir = sidecarDir();
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, `${event.properties.info.id}.json`), JSON.stringify({
+          session_id: event.properties.info.id,
+          ccsm_name: event.properties.info.title,
+          title: event.properties.info.title,
+          directory: event.properties.info.directory,
+          timestamp: Date.now(),
+        }));
+      }
+      if (event.type === "session.deleted") {
+        const path = sidecarPath(event.properties.info.id);
+        if (existsSync(path)) unlinkSync(path);
+      }
+    },
+
+    "experimental.chat.system.transform": async (input, output) => {
+      if (!input.sessionID) return;
+      const data = readSidecar(input.sessionID);
+      const name = data?.ccsm_name || sessionName;
+      if (!name) return;
       try {
-        const info = await ctx.session.get({ sessionID: ctx2.sessionID });
-        sessionDir = info.location?.directory || null;
-      } catch {}
-
-      const ccsmDir = join(process.env.HOME || "/tmp", ".ccsm");
-      let found: { name: string } | null = null;
-      let wsId: string | null = null;
-
-      if (sessionDir) {
-        wsId = workspaceIdFromDir(sessionDir);
-      }
-      if (wsId) {
-        found = findInRegistry(wsId, (s) => s.session_id === ctx2.sessionID);
-      }
-      if (!found && existsSync(ccsmDir)) {
-        for (const entry of readdirSync(ccsmDir)) {
-          found = findInRegistry(entry, (s) => s.session_id === ctx2.sessionID);
-          if (found) { wsId = entry; break; }
-        }
-      }
-      if (!found && sessionDir) {
-        const sessionName = sessionDir.split("/").pop() || "";
-        if (wsId) {
-          found = findInRegistry(wsId, (s) => s.name === sessionName);
-        }
-      }
-      if (!found || !wsId) return;
-
-      const cwd = sessionDir || join(ccsmDir, wsId);
-      try {
-        const stdout = execFileSync("ccsm", ["inject-scope", found.name], {
-          timeout: 5000, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-          cwd,
-        });
+        const { stdout } = await $`ccsm inject-scope ${name}`.quiet();
         if (stdout) {
-          ctx2.system.push({ type: "text", text: stdout });
+          output.system.push(stdout.toString());
         }
-      } catch {}
-    });
-  },
-});
+      } catch {
+        // inject-scope failed — session may not exist in ccsm yet
+      }
+    },
+
+    "experimental.session.compacting": async (input, output) => {
+      const data = readSidecar(input.sessionID);
+      if (!data) return;
+      const name = data?.ccsm_name || sessionName;
+      if (!name) return;
+      output.context.push(`This session is managed by ccsm: ${data.title}`);
+      try {
+        const { stdout } = await $`ccsm inject-scope ${name}`.quiet();
+        if (stdout) {
+          output.context.push(stdout.toString());
+        }
+      } catch {
+        // inject-scope failed — session may not exist in ccsm yet
+      }
+    },
+  };
+};

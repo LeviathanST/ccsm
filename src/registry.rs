@@ -434,6 +434,10 @@ pub struct WorkspaceSession {
     /// Set with `ccsm new --worktree`; governed by config.worktrees policy.
     #[serde(default)]
     pub use_worktree: bool,
+    /// Whether this session is an orchestrator (coordinates worker sessions).
+    /// Orchestrators bypass branch tracking and worktree requirements.
+    #[serde(default)]
+    pub is_orchestrator: bool,
     /// Retired Claude session_ids — one ccsm session may chain through
     /// multiple Claude sessions as the context window fills up.
     #[serde(default)]
@@ -750,6 +754,7 @@ impl WorkspaceRegistry {
                 use_worktree: false,
                 retired_session_ids: vec![],
                 consumer: String::new(),
+                is_orchestrator: false,
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -767,6 +772,7 @@ impl WorkspaceRegistry {
                 use_worktree: false,
                 retired_session_ids: vec![],
                 consumer: String::new(),
+                is_orchestrator: false,
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -784,6 +790,7 @@ impl WorkspaceRegistry {
                 use_worktree: false,
                 retired_session_ids: vec![],
                 consumer: String::new(),
+                is_orchestrator: false,
             },
             WorkspaceSession {
                 session_id: String::new(),
@@ -801,6 +808,7 @@ impl WorkspaceRegistry {
                 use_worktree: false,
                 retired_session_ids: vec![],
                 consumer: String::new(),
+                is_orchestrator: false,
             },
         ]
     }
@@ -1297,6 +1305,7 @@ mod tests {
                 use_worktree: false,
                 retired_session_ids: vec![],
                 consumer: String::new(),
+                is_orchestrator: false,
             }],
         };
         std::fs::write(&data_dir.join("sessions.json"), serde_json::to_string_pretty(&reg).unwrap()).unwrap();
@@ -1341,6 +1350,7 @@ mod tests {
             use_worktree: false,
             retired_session_ids: vec![],
             consumer: String::new(),
+            is_orchestrator: false,
         });
         reg.save_to(&data_dir).unwrap();
 
@@ -1384,6 +1394,7 @@ mod tests {
                     use_worktree: false,
                     retired_session_ids: vec![],
                     consumer: String::new(),
+                    is_orchestrator: false,
                 });
                 reg.save_to(&d).unwrap();
                 // _lock dropped here
@@ -1439,6 +1450,7 @@ mod tests {
                     use_worktree: false,
                     retired_session_ids: vec![],
                     consumer: String::new(),
+                    is_orchestrator: false,
                 });
                 let _ = reg.save_to(&d);
             }));

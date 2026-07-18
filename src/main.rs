@@ -10,6 +10,8 @@ mod sequence;
 mod session;
 #[allow(dead_code)]
 pub(crate) mod commands;
+#[allow(dead_code)]
+mod serve;
 mod migrate;
 
 use std::path::PathBuf;
@@ -411,6 +413,64 @@ enum Commands {
         #[arg(num_args = 1..)]
         branch: Vec<String>,
     },
+    /// Multi-agent orchestration via opencode serve.
+    ///
+    /// Spawns opencode serve and creates sessions to work on a goal in parallel.
+    Swarm {
+        #[command(subcommand)]
+        command: SwarmCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SwarmCommand {
+    /// Start an orchestrator session (opencode TUI with swarm context)
+    ///
+    /// The orchestrator session gets a system reminder that enables it
+    /// to spawn worker sessions via `ccsm swarm spawn`.
+    Run {
+        /// Goal for the orchestrator
+        goal: Vec<String>,
+    },
+    /// Spawn worker sessions via opencode serve
+    ///
+    /// Each goal becomes a separate session running in parallel.
+    /// Use from the orchestrator session or standalone.
+    Spawn {
+        /// Worker goals (one session per goal)
+        goals: Vec<String>,
+        /// Timeout in seconds per worker (default: 600)
+        #[arg(short = 't', long, default_value_t = 600)]
+        timeout: u64,
+    },
+    /// Show status of active workers
+    Status,
+    /// List all swarm runs
+    List,
+    /// Kill active workers
+    Kill,
+    /// Wait for all workers to complete (blocks until done or timeout)
+    Wait {
+        /// Run ID to wait for (defaults to latest)
+        run_id: Option<String>,
+        /// Timeout in seconds (default: 600)
+        #[arg(short = 't', long, default_value_t = 600)]
+        timeout: u64,
+    },
+    /// Orchestrate existing pending sessions.
+    ///
+    /// Creates an orchestrator session that plans work, delegates to workers,
+    /// and receives auto-notifications when workers complete their turns.
+    Orchestrate {
+        /// Comma-separated list of existing pending session names
+        #[arg(short = 's', long)]
+        sessions: String,
+        /// Goal for the orchestration
+        goal: Vec<String>,
+        /// Target git branch for the orchestrator session
+        #[arg(short = 'b', long)]
+        branch: Option<String>,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -448,6 +508,26 @@ fn main() -> anyhow::Result<()> {
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
         Commands::Branch { name, clear, branch } => run_branch(&name, clear, branch.as_slice()),
+        Commands::Swarm { command } => match command {
+            SwarmCommand::Run { goal } => {
+                let goal_str = goal.join(" ");
+                commands::swarm::run_orchestrator(&goal_str, &workspace_path(), &home)
+            }
+            SwarmCommand::Spawn { goals, timeout } => {
+                commands::swarm::run_spawn(&goals, timeout, &workspace_path(), &home)
+            }
+            SwarmCommand::Status => commands::swarm::run_status(&home),
+            SwarmCommand::List => commands::swarm::run_list(&home),
+            SwarmCommand::Kill => commands::swarm::run_kill(&home),
+            SwarmCommand::Wait { run_id, timeout } => {
+                commands::swarm::run_wait(&home, run_id.as_deref(), timeout)
+            }
+            SwarmCommand::Orchestrate { sessions, goal, branch } => {
+                let goal_str = goal.join(" ");
+                let names: Vec<String> = sessions.split(',').map(|s| s.trim().to_string()).collect();
+                commands::swarm::run_orchestrate(&names, &goal_str, &workspace_path(), branch.as_deref())
+            }
+        },
         Commands::Group { name, list, group, rank, clear, goal, roadmap } => run_group(name.as_deref(), list, group.as_deref(), rank.as_deref(), clear, goal.as_deref(), roadmap),
         Commands::Next { group } => run_next(&group),
         Commands::GroupDeps { group } => run_group_deps(&group),
@@ -1528,6 +1608,7 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
         depends_on: vec![],
         branch: branch.to_string(),
         use_worktree: worktree,
+        is_orchestrator: false,
         retired_session_ids: vec![],
         consumer: consumer.to_string(),
     });
