@@ -210,19 +210,6 @@ pids: none
     assert!(out.contains("archived"), "archive output: {}", out);
 }
 
-#[test]
-fn misc_doctor_healthy() {
-    ensure_built();
-    let ws = TempWorkspace::new();
-
-    ws.run_ok(&["new", "healthy-session", "-g", "test"]);
-    let out = ws.run_ok(&["doctor"]);
-    assert!(
-        out.contains("ccsm"),
-        "doctor should produce output: {}",
-        out
-    );
-}
 
 #[test]
 fn misc_depend_clear() {
@@ -275,4 +262,56 @@ fn misc_clean_all_clears_trashed() {
         .filter(|s| s["status"] == "trashed")
         .collect();
     assert!(all.is_empty(), "all trashed sessions should be removed");
+}
+
+#[test]
+fn misc_doctor_healthy() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "healthy-session", "-g", "test"]);
+    let out = ws.run_ok(&["doctor"]);
+    assert!(out.contains("ccsm"), "doctor output: {out}");
+}
+
+#[test]
+fn misc_branch_set_and_show() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "branch-test", "-g", "test"]);
+    ws.run_ok(&["branch", "branch-test", "feature-x"]);
+    let out = ws.run_ok(&["show", "branch-test"]);
+    assert!(out.contains("feature-x"), "branch show: {out}");
+}
+
+#[test]
+fn misc_branch_clear() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "branch-clr", "-g", "test"]);
+    ws.run_ok(&["branch", "branch-clr", "feature-y"]);
+    ws.run_ok(&["branch", "branch-clr", "--clear"]);
+    let out = ws.run_ok(&["show", "branch-clr"]);
+    assert!(!out.contains("feature-y"), "branch cleared: {out}");
+}
+
+#[test]
+fn misc_next_shows_session() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "next-session", "-g", "test goal"]);
+    ws.run_ok(&["group", "next-session", "-g", "my-group"]);
+    let out = ws.run_ok(&["next", "my-group"]);
+    assert!(out.contains("next-session"), "next should show: {out}");
+}
+
+#[test]
+fn misc_note_check_succeeds() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "nc-session", "-g", "test"]);
+    ws.run_ok(&["start", "nc-session"]);
+    ws.run_ok(&["note", "nc-session", "test note"]);
+    let out = ws.run(&["note-check"]);
+    assert!(out.status.success(), "note-check should pass: {}",
+        String::from_utf8_lossy(&out.stderr));
 }
