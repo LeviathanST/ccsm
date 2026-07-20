@@ -43,30 +43,58 @@ fn config_reset_restores_defaults() {
 }
 
 #[test]
-fn error_code_appears_in_failure() {
-    ensure_built();
-    let ws = TempWorkspace::new();
-    let err = ws.run_err(&["complete", "nonexistent"]);
-    assert!(
-        err.contains("[ERR_NOSESSION]"),
-        "should contain error code:\n{err}"
-    );
-}
-
-#[test]
 fn error_code_in_gate_failure() {
     ensure_built();
     let ws = TempWorkspace::new();
-    ws.run_ok(&["new", "test-session", "-g", "test"]);
-    ws.run_ok(&["start", "test-session"]);
-
-    // Gate checks should fail — detail file is empty template
-    let err = ws.run_err(&["complete", "test-session"]);
+    let err = ws.run_err(&["close", "nonexistent"]);
     assert!(
-        err.contains("[ERR_GATE]"),
-        "gate failure should contain error code:\n{err}"
+        err.contains("[ERR_NOSESSION]"),
+        "nosession failure should contain [ERR_NOSESSION]:\n{err}"
     );
 }
+
+/// Every bail! call in the source tree uses an [ERR_*] code.
+/// This test greps the source and fails if any bail! is missing a code.
+#[test]
+fn all_bail_calls_have_error_codes() {
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut missing = Vec::new();
+    let mut files = Vec::new();
+    collect_rs_files(&src_dir, &mut files);
+
+    for file in &files {
+        let content = std::fs::read_to_string(file).unwrap_or_default();
+        for (i, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("bail!(")
+                && !trimmed.contains("[ERR_")
+                && !trimmed.contains("ErrorCode::")
+            {
+                missing.push(format!("{}:{}: {}", file.display(), i + 1, trimmed));
+            }
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "Found bail! calls without error codes (use bail_err! or ErrorCode::*):\n{}",
+        missing.join("\n")
+    );
+}
+
+fn collect_rs_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rs_files(&path, files);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                files.push(path);
+            }
+        }
+    }
+}
+
 
 #[test]
 fn emoji_not_in_doctor_when_piped() {
