@@ -236,7 +236,9 @@ pub fn run_resume(
                 .sessions
                 .iter()
                 .find(|s| s.name == name)
-                .ok_or_else(|| anyhow::anyhow!("{} session '{}' not found", ErrorCode::NoSession, name))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("{} session '{}' not found", ErrorCode::NoSession, name)
+                })?;
             let branch = session.branch.clone();
             anyhow::ensure!(
                 !branch.is_empty(),
@@ -445,9 +447,12 @@ pub fn run_resume(
         .unwrap_or(0);
     if consumer.is_claude() {
         // Claude creates a PID-based session file eagerly — poll for it now.
-        let session_file = consumer
-            .live_session_file(home, child_pid)
-            .ok_or_else(|| anyhow::anyhow!("{} consumer does not support PID-based session files", ErrorCode::Invalid))?;
+        let session_file = consumer.live_session_file(home, child_pid).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} consumer does not support PID-based session files",
+                ErrorCode::Invalid
+            )
+        })?;
         let mut found = false;
         let mut spinner = crate::style::Spinner::new("waiting for agent session file...");
         for _ in 0..50 {
@@ -633,6 +638,18 @@ pub fn run_resume(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Global lock to serialize tests that modify PATH, CCSM_DATA_DIR, HOME, or CWD.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    use crate::consumer::Consumer;
+    use crate::registry::{SessionStatus, WorkspaceRegistry, WorkspaceSession};
+    use std::path::PathBuf;
+
+    // ── ChildGuard tests ───────────────────────────────────────────────
 
     #[test]
     fn test_new_stores_child_and_id_returns_pid() {
@@ -652,6 +669,15 @@ mod tests {
     }
 
     #[test]
+    fn test_wait_returns_non_success_status() {
+        let child = std::process::Command::new("false").spawn().unwrap();
+        let mut guard = ChildGuard::new(child);
+        let status = guard.wait().unwrap();
+        assert!(!status.success());
+        assert!(guard.child.is_none(), "guard should be disarmed after wait");
+    }
+
+    #[test]
     fn test_drop_kills_child_if_not_waited() {
         let child = std::process::Command::new("sleep")
             .arg("10")
@@ -663,5 +689,650 @@ mod tests {
         }
         let rc = unsafe { libc::kill(pid as i32, 0) };
         assert_eq!(rc, -1, "child should be dead after guard drops");
+    }
+
+    #[test]
+    fn test_drop_short_lived_child() {
+        let child = std::process::Command::new("sleep")
+            .arg("0.01")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        {
+            let _guard = ChildGuard::new(child);
+        }
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        assert_eq!(rc, -1, "short-lived child should be dead when guard drops");
+    }
+
+    #[test]
+    fn test_drop_already_waited_child() {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let mut guard = ChildGuard::new(child);
+        guard.wait().unwrap();
+        drop(guard);
+    }
+
+    #[test]
+    fn test_drop_exiting_child_sigterm_path() {
+        let child = std::process::Command::new("sleep")
+            .arg("0.1")
+            .spawn()
+            .unwrap();
+        {
+            let _guard = ChildGuard::new(child);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "ChildGuard consumed")]
+    fn test_double_id_panics() {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let mut guard = ChildGuard::new(child);
+        let _ = guard.wait().unwrap();
+        guard.id();
+    }
+
+    #[test]
+    #[should_panic(expected = "ChildGuard consumed")]
+    fn test_double_wait_panics() {
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let mut guard = ChildGuard::new(child);
+        let _ = guard.wait().unwrap();
+        let _ = guard.wait().unwrap();
+    }
+
+    #[test]
+    fn test_drop_sends_sigkill_if_sigterm_ignored() {
+        // Process that ignores SIGTERM — forces the drop loop to timeout
+        // and send SIGKILL instead.
+        let child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; sleep 10")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        {
+            let _guard = ChildGuard::new(child);
+        }
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        assert_eq!(rc, -1, "child should be dead after guard drops (SIGKILL)");
+    }
+
+    #[test]
+    fn test_drop_try_wait_error_does_not_panic() {
+        // Spawn a process that becomes a zombie immediately and is reaped.
+        // After reaping, try_wait returns an error on some systems.
+        // We just verify the drop doesn't panic.
+        let child = std::process::Command::new("true").spawn().unwrap();
+        drop(ChildGuard::new(child));
+    }
+
+    // ── ErrorCode Display tests (used heavily in run_resume) ───────────
+
+    #[test]
+    fn test_error_code_display_nosession() {
+        assert_eq!(format!("{}", ErrorCode::NoSession), "[ERR_NOSESSION]");
+    }
+
+    #[test]
+    fn test_error_code_display_invalid() {
+        assert_eq!(format!("{}", ErrorCode::Invalid), "[ERR_INVALID]");
+    }
+
+    #[test]
+    fn test_error_code_display_gate() {
+        assert_eq!(format!("{}", ErrorCode::Gate), "[ERR_GATE]");
+    }
+
+    // ── Consumer format helpers used in command construction ───────────
+
+    #[test]
+    fn test_consumer_to_string_is_used_in_labels() {
+        assert_eq!(Consumer::Claude.to_string(), "claude");
+        assert_eq!(Consumer::Pi.to_string(), "pi");
+        assert_eq!(Consumer::OpenCode.to_string(), "opencode");
+    }
+
+    #[test]
+    fn test_consumer_binary_is_used_in_spawn() {
+        assert_eq!(Consumer::Claude.binary(), "claude");
+        assert_eq!(Consumer::Pi.binary(), "pi");
+        assert_eq!(Consumer::OpenCode.binary(), "opencode");
+    }
+
+    #[test]
+    fn test_consumer_is_methods() {
+        assert!(Consumer::Claude.is_claude());
+        assert!(!Consumer::Claude.is_pi());
+        assert!(!Consumer::Claude.is_opencode());
+        assert!(Consumer::Pi.is_pi());
+        assert!(!Consumer::Pi.is_claude());
+        assert!(Consumer::OpenCode.is_opencode());
+        assert!(!Consumer::OpenCode.is_claude());
+        assert!(!Consumer::OpenCode.is_pi());
+    }
+
+    // ── Integration-style tests for run_resume error paths ─────────────
+    //
+    // These set up a minimal workspace with .ccsm identity + registry,
+    // then call run_resume and verify it bails with the expected error.
+
+    fn test_workspace_setup() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let id = "test-wsid-resume".to_string();
+
+        std::fs::write(
+            workspace.join(".ccsm"),
+            format!(
+                "version = \"{}\"\nid = \"{id}\"\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        (dir, workspace, home)
+    }
+
+    fn write_registry(data_dir: &Path, sessions: Vec<WorkspaceSession>) {
+        let data_id_dir = data_dir.join("test-wsid-resume");
+        std::fs::create_dir_all(&data_id_dir).unwrap();
+        let reg = WorkspaceRegistry {
+            updated: "2025-01-01T00:00:00Z".into(),
+            sessions,
+        };
+        std::fs::write(
+            data_id_dir.join("sessions.json"),
+            serde_json::to_string_pretty(&reg).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn run_resume_in_env(
+        workspace: &Path,
+        home: &Path,
+        data_dir: &Path,
+        name: &str,
+        consumer: Consumer,
+    ) -> anyhow::Result<()> {
+        let orig_data_dir = std::env::var("CCSM_DATA_DIR").ok();
+        let orig_home = std::env::var("HOME").ok();
+        let orig_cwd = std::env::current_dir().ok();
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir);
+            std::env::set_var("HOME", home);
+        }
+        unsafe { std::env::set_current_dir(workspace).unwrap() };
+        let result = run_resume(name, workspace, home, consumer, false);
+        // Restore env for test isolation
+        if let Some(cwd) = orig_cwd {
+            let _ = unsafe { std::env::set_current_dir(&cwd) };
+        }
+        match orig_data_dir {
+            Some(v) => unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            },
+            None => unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            },
+        }
+        match orig_home {
+            Some(v) => unsafe {
+                std::env::set_var("HOME", v);
+            },
+            None => unsafe {
+                std::env::remove_var("HOME");
+            },
+        }
+        result
+    }
+
+    fn make_session(
+        name: &str,
+        consumer: &str,
+        session_id: &str,
+        status: SessionStatus,
+    ) -> WorkspaceSession {
+        WorkspaceSession {
+            session_id: session_id.into(),
+            name: name.into(),
+            goal: "test goal".into(),
+            scope: String::new(),
+            status,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            consumer: consumer.into(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn test_run_resume_no_session_found() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(&data_dir, vec![]);
+
+        let err = run_resume_in_env(
+            &workspace,
+            &home,
+            &data_dir,
+            "nonexistent-session",
+            Consumer::Claude,
+        )
+        .unwrap_err();
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("[ERR_NOSESSION]"),
+            "expected NOSESSION error, got: {msg}"
+        );
+        assert!(
+            msg.contains("nonexistent-session"),
+            "expected session name in error, got: {msg}"
+        );
+        assert!(
+            msg.contains("ccsm new"),
+            "expected suggestion in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_run_resume_cross_consumer_with_session_id() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session(
+                "my-session",
+                "pi",
+                "sid-pi-123",
+                SessionStatus::InProgress,
+            )],
+        );
+
+        let err = run_resume_in_env(&workspace, &home, &data_dir, "my-session", Consumer::Claude)
+            .unwrap_err();
+
+        let msg = format!("{err:#}");
+        // cross-consumer with session_id should bail with ErrorCode::Invalid
+        assert!(
+            msg.contains("[ERR_INVALID]"),
+            "expected INVALID error, got: {msg}"
+        );
+        assert!(
+            msg.contains("pi"),
+            "expected original consumer in message, got: {msg}"
+        );
+        assert!(
+            msg.contains("switch to pi"),
+            "expected 'switch to' suggestion, got: {msg}"
+        );
+    }
+
+    /// A mock binary that restores PATH on drop.
+    struct MockBin {
+        _dir: tempfile::TempDir,
+        orig_path: String,
+    }
+
+    /// Create a mock binary in a temp dir and prepend it to PATH.
+    /// Returns a `MockBin` that restores PATH when dropped.
+    fn setup_mock_binary(bin_name: &str, exit_code: i32) -> MockBin {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bin_path = bin_dir.join(bin_name);
+        std::fs::write(&bin_path, format!("#!/bin/sh\nexit {exit_code}\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let orig_path = std::env::var("PATH").unwrap_or_default();
+        unsafe {
+            std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
+        }
+        MockBin {
+            _dir: dir,
+            orig_path,
+        }
+    }
+
+    impl Drop for MockBin {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::set_var("PATH", &self.orig_path);
+            }
+        }
+    }
+
+    #[test]
+    fn test_run_resume_cross_consumer_no_session_id_warns_continues() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session("my-session", "pi", "", SessionStatus::Pending)],
+        );
+
+        // Use OpenCode — reaches Phase 7 (Claude/Pi have session file requirements)
+        let _mock = setup_mock_binary("opencode", 0);
+
+        let result = run_resume_in_env(
+            &workspace,
+            &home,
+            &data_dir,
+            "my-session",
+            Consumer::OpenCode,
+        );
+
+        assert!(result.is_ok(), "expected Ok: {:?}", result);
+    }
+
+    #[test]
+    fn test_run_resume_fresh_session_spawns_binary() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session(
+                "fresh-session",
+                "opencode",
+                "",
+                SessionStatus::Pending,
+            )],
+        );
+
+        // Create detail file to exercise the nudge code path
+        let detail_dir = data_dir.join("test-wsid-resume").join("sessions");
+        std::fs::create_dir_all(&detail_dir).unwrap();
+        std::fs::write(
+            detail_dir.join("fresh-session.md"),
+            "# fresh-session\n\nno checklist here\n",
+        )
+        .unwrap();
+
+        let _mock = setup_mock_binary("opencode", 0);
+
+        let result = run_resume_in_env(
+            &workspace,
+            &home,
+            &data_dir,
+            "fresh-session",
+            Consumer::OpenCode,
+        );
+
+        assert!(result.is_ok(), "expected Ok: {:?}", result);
+    }
+
+    #[test]
+    fn test_run_resume_with_checklist_present_skips_nudge() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session(
+                "checklist-session",
+                "opencode",
+                "",
+                SessionStatus::Pending,
+            )],
+        );
+
+        // Create detail file WITH a checklist section so nudge is skipped
+        let detail_dir = data_dir.join("test-wsid-resume").join("sessions");
+        std::fs::create_dir_all(&detail_dir).unwrap();
+        std::fs::write(
+            detail_dir.join("checklist-session.md"),
+            "# checklist-session\n\n## checklist\n- [ ] item 1\n",
+        )
+        .unwrap();
+
+        let _mock = setup_mock_binary("opencode", 0);
+
+        let result = run_resume_in_env(
+            &workspace,
+            &home,
+            &data_dir,
+            "checklist-session",
+            Consumer::OpenCode,
+        );
+
+        assert!(result.is_ok(), "expected Ok: {:?}", result);
+    }
+
+    #[test]
+    fn test_run_resume_with_exit_failure_triggers_gate() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session(
+                "failing-session",
+                "opencode",
+                "",
+                SessionStatus::Pending,
+            )],
+        );
+
+        let _mock = setup_mock_binary("opencode", 1);
+
+        let result = run_resume_in_env(
+            &workspace,
+            &home,
+            &data_dir,
+            "failing-session",
+            Consumer::OpenCode,
+        );
+
+        assert!(result.is_err(), "expected Err for non-zero exit");
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("[ERR_GATE]"), "expected GATE error: {msg}");
+    }
+
+    #[test]
+    fn test_run_resume_pi_fresh_session() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session("pi-session", "pi", "", SessionStatus::Pending)],
+        );
+
+        let _mock = setup_mock_binary("pi", 0);
+
+        let result = run_resume_in_env(&workspace, &home, &data_dir, "pi-session", Consumer::Pi);
+
+        assert!(result.is_ok(), "expected Ok for Pi: {:?}", result);
+    }
+
+    #[test]
+    fn test_run_resume_with_session_id_skipped_db_lookup() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session(
+                "sid-session",
+                "opencode",
+                "known-sid",
+                SessionStatus::Pending,
+            )],
+        );
+
+        // For OpenCode, find_session_file_for checks the SQLite DB.
+        // Without a DB, it returns None → Phase 1 bails with NoSession.
+        let _mock = setup_mock_binary("opencode", 0);
+
+        let result = run_resume_in_env(
+            &workspace,
+            &home,
+            &data_dir,
+            "sid-session",
+            Consumer::OpenCode,
+        );
+
+        assert!(
+            result.is_err(),
+            "expected Err because no opencode DB session: {:?}",
+            result
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("[ERR_NOSESSION]"),
+            "expected NOSESSION error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_run_resume_opencode_with_existing_sid_and_db() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session(
+                "oc-session",
+                "opencode",
+                "ses-existing",
+                SessionStatus::InProgress,
+            )],
+        );
+
+        // Create OpenCode SQLite DB so find_session_file_for succeeds
+        let db_dir = home.join(".local").join("share").join("opencode");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db_path = db_dir.join("opencode.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, directory TEXT, time_created INTEGER);\
+             INSERT INTO session (id, title, directory, time_created) VALUES ('ses-existing', 'OC Session', '/tmp', 100);",
+        ).unwrap();
+
+        let _mock = setup_mock_binary("opencode", 0);
+
+        let result = run_resume_in_env(
+            &workspace,
+            &home,
+            &data_dir,
+            "oc-session",
+            Consumer::OpenCode,
+        );
+
+        // With existing sid in DB, Phase 6b enters the sid sync path.
+        // The mock exits 0, no new session created, so it resumes existing.
+        assert!(result.is_ok(), "expected Ok: {:?}", result);
+    }
+
+    #[test]
+    fn test_run_resume_session_id_not_found() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session(
+                "my-session",
+                "claude",
+                "sid-nonexistent-file",
+                SessionStatus::InProgress,
+            )],
+        );
+
+        let err = run_resume_in_env(&workspace, &home, &data_dir, "my-session", Consumer::Claude)
+            .unwrap_err();
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("[ERR_NOSESSION]"),
+            "expected NOSESSION error, got: {msg}"
+        );
+        assert!(
+            msg.contains("session_id"),
+            "expected session_id mention, got: {msg}"
+        );
+        assert!(
+            msg.contains("ccsm pending"),
+            "expected ccsm pending suggestion, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_run_resume_no_similar_sessions() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![
+                make_session("alpha", "claude", "", SessionStatus::Pending),
+                make_session("beta", "claude", "", SessionStatus::Pending),
+            ],
+        );
+
+        let err =
+            run_resume_in_env(&workspace, &home, &data_dir, "gamma", Consumer::Claude).unwrap_err();
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("[ERR_NOSESSION]"),
+            "expected NOSESSION error, got: {msg}"
+        );
+        assert!(
+            !msg.contains("Did you mean"),
+            "should not suggest when no similar: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_run_resume_with_similar_session_suggestions() {
+        let _lock = lock_env();
+        let (_dir, workspace, home) = test_workspace_setup();
+        let data_dir = _dir.path().join("data");
+        write_registry(
+            &data_dir,
+            vec![make_session(
+                "my-feature-xyz",
+                "claude",
+                "",
+                SessionStatus::Pending,
+            )],
+        );
+
+        let err = run_resume_in_env(&workspace, &home, &data_dir, "my-feature", Consumer::Claude)
+            .unwrap_err();
+
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("[ERR_NOSESSION]"),
+            "expected NOSESSION error, got: {msg}"
+        );
+        assert!(
+            msg.contains("Did you mean"),
+            "expected similar session suggestions, got: {msg}"
+        );
+        assert!(
+            msg.contains("my-feature-xyz"),
+            "expected similar session name in error, got: {msg}"
+        );
     }
 }

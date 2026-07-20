@@ -1,6 +1,6 @@
+use crate::ErrorCode;
 use crate::registry::{SessionStatus, WorkspaceRegistry, WorkspaceSession};
 use anyhow::Result;
-use crate::ErrorCode;
 
 // ── SeqOp: a single batched mutation ────────────────────────────────
 
@@ -171,7 +171,11 @@ impl SeqOp {
                             }
                         }
                         "--clear" => clear = true,
-                        other => anyhow::bail!("{} unknown flag '{}' in group", ErrorCode::Invalid, other),
+                        other => anyhow::bail!(
+                            "{} unknown flag '{}' in group",
+                            ErrorCode::Invalid,
+                            other
+                        ),
                     }
                     i += 1;
                 }
@@ -204,7 +208,13 @@ impl SeqOp {
 
 fn ensure_at_least(args: &[String], min: usize, cmd: &str, usage: &str) -> Result<()> {
     if args.len() < min {
-        anyhow::bail!("{} '{}' requires {} {}", ErrorCode::Invalid, cmd, usage_quantifier(min), usage);
+        anyhow::bail!(
+            "{} '{}' requires {} {}",
+            ErrorCode::Invalid,
+            cmd,
+            usage_quantifier(min),
+            usage
+        );
     }
     Ok(())
 }
@@ -354,7 +364,12 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
         SeqOp::Recover { name } => {
             let s = get_mut(&mut reg.sessions, name)?;
             if !SessionStatus::transition_allowed(s.status, SessionStatus::InProgress) {
-                anyhow::bail!("{} cannot recover session '{}' from {}", ErrorCode::BadStatus, name, s.status);
+                anyhow::bail!(
+                    "{} cannot recover session '{}' from {}",
+                    ErrorCode::BadStatus,
+                    name,
+                    s.status
+                );
             }
             s.status = SessionStatus::InProgress;
             Ok(vec![format!("recovered   {}  ← in_progress", name)])
@@ -388,7 +403,11 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
                     Some("free") => GroupRank::Free,
                     Some(n) => {
                         let num: u32 = n.parse().map_err(|_| {
-                            anyhow::anyhow!("{} rank must be 'free' or a number, got '{}'", ErrorCode::Invalid, n)
+                            anyhow::anyhow!(
+                                "{} rank must be 'free' or a number, got '{}'",
+                                ErrorCode::Invalid,
+                                n
+                            )
                         })?;
                         GroupRank::Number(num)
                     }
@@ -953,5 +972,527 @@ mod tests {
         apply_op(&mut reg, &op, now).unwrap();
         assert_eq!(reg.sessions[1].status, SessionStatus::Completed);
         assert_eq!(reg.sessions[1].completed, now);
+    }
+
+    // ── Remaining parse variants ────────────────────────────────
+
+    #[test]
+    fn parse_group_all_flags() {
+        let op = SeqOp::parse(&tokens("group foo --group mygroup --rank 3 --clear")).unwrap();
+        assert_eq!(
+            op,
+            SeqOp::Group {
+                name: "foo".into(),
+                group: Some("mygroup".into()),
+                rank: Some("3".into()),
+                clear: true,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_group_short_flags() {
+        let op = SeqOp::parse(&tokens("group foo -g mygroup -r free")).unwrap();
+        assert_eq!(
+            op,
+            SeqOp::Group {
+                name: "foo".into(),
+                group: Some("mygroup".into()),
+                rank: Some("free".into()),
+                clear: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_group_unknown_flag() {
+        let err = SeqOp::parse(&tokens("group foo --bogus"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown flag"), "got: {}", err);
+    }
+
+    #[test]
+    fn parse_group_just_name() {
+        let op = SeqOp::parse(&tokens("group foo")).unwrap();
+        assert_eq!(
+            op,
+            SeqOp::Group {
+                name: "foo".into(),
+                group: None,
+                rank: None,
+                clear: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_next() {
+        let op = SeqOp::parse(&tokens("next my-group")).unwrap();
+        assert_eq!(
+            op,
+            SeqOp::Next {
+                group: "my-group".into()
+            }
+        );
+    }
+
+    // ── apply_op: Block, Abandon, Attach ────────────────────────
+
+    #[test]
+    fn apply_block_transitions_in_progress_to_blocked() {
+        let mut reg = make_reg();
+        reg.sessions[0].status = SessionStatus::InProgress;
+        let op = SeqOp::Block {
+            name: "test-session".into(),
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(reg.sessions[0].status, SessionStatus::Blocked);
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn apply_abandon_transitions_blocked_to_abandoned() {
+        let mut reg = make_reg();
+        reg.sessions[0].status = SessionStatus::Blocked;
+        let op = SeqOp::Abandon {
+            name: "test-session".into(),
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(reg.sessions[0].status, SessionStatus::Abandoned);
+        assert_eq!(reg.sessions[0].completed, "now");
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn apply_abandon_in_progress_to_abandoned() {
+        let mut reg = make_reg();
+        reg.sessions[0].status = SessionStatus::InProgress;
+        let op = SeqOp::Abandon {
+            name: "test-session".into(),
+        };
+        apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(reg.sessions[0].status, SessionStatus::Abandoned);
+        assert_eq!(reg.sessions[0].completed, "now");
+    }
+
+    #[test]
+    fn apply_abandon_preserves_existing_completed() {
+        let mut reg = make_reg();
+        reg.sessions[0].status = SessionStatus::InProgress;
+        reg.sessions[0].completed = "earlier".into();
+        let op = SeqOp::Abandon {
+            name: "test-session".into(),
+        };
+        apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(reg.sessions[0].completed, "earlier");
+    }
+
+    #[test]
+    fn apply_attach_sets_session_id() {
+        let mut reg = make_reg();
+        let op = SeqOp::Attach {
+            name: "test-session".into(),
+            session_id: "f493397b-456a-426d-92e1-4d5f15da0311".into(),
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(
+            reg.sessions[0].session_id,
+            "f493397b-456a-426d-92e1-4d5f15da0311"
+        );
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn apply_attach_ses_format() {
+        let mut reg = make_reg();
+        let op = SeqOp::Attach {
+            name: "test-session".into(),
+            session_id: "ses_a1b2c3d4e5f6".into(),
+        };
+        apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(reg.sessions[0].session_id, "ses_a1b2c3d4e5f6");
+    }
+
+    // ── apply_op: Group ─────────────────────────────────────────
+
+    fn reg_with_group_members() -> WorkspaceRegistry {
+        use crate::registry::{Group, GroupRank};
+        let mut reg = WorkspaceRegistry::empty();
+        reg.sessions.push(WorkspaceSession {
+            session_id: String::new(),
+            name: "session-a".into(),
+            goal: "".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: "2000-01-01".into(),
+            completed: String::new(),
+            group: Some(Group {
+                name: "my-group".into(),
+                rank: GroupRank::Free,
+            }),
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+        reg.sessions.push(WorkspaceSession {
+            session_id: String::new(),
+            name: "session-b".into(),
+            goal: "".into(),
+            scope: String::new(),
+            status: SessionStatus::Completed,
+            pids: vec![],
+            tags: vec![],
+            started: "2000-01-02".into(),
+            completed: "2000-01-03".into(),
+            group: Some(Group {
+                name: "my-group".into(),
+                rank: GroupRank::Number(2),
+            }),
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+        reg
+    }
+
+    #[test]
+    fn apply_group_set_rank_number() {
+        let mut reg = make_reg();
+        let op = SeqOp::Group {
+            name: "test-session".into(),
+            group: Some("my-group".into()),
+            rank: Some("5".into()),
+            clear: false,
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        let g = reg.sessions[0].group.as_ref().unwrap();
+        assert_eq!(g.name, "my-group");
+        assert_eq!(g.rank.to_string(), "5");
+        assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn apply_group_set_rank_free() {
+        let mut reg = make_reg();
+        let op = SeqOp::Group {
+            name: "test-session".into(),
+            group: Some("my-group".into()),
+            rank: Some("free".into()),
+            clear: false,
+        };
+        apply_op(&mut reg, &op, "now").unwrap();
+        let g = reg.sessions[0].group.as_ref().unwrap();
+        assert_eq!(g.rank.to_string(), "free");
+    }
+
+    #[test]
+    fn apply_group_set_rank_none() {
+        let mut reg = make_reg();
+        let op = SeqOp::Group {
+            name: "test-session".into(),
+            group: Some("my-group".into()),
+            rank: None,
+            clear: false,
+        };
+        apply_op(&mut reg, &op, "now").unwrap();
+        let g = reg.sessions[0].group.as_ref().unwrap();
+        assert_eq!(g.rank.to_string(), "free");
+    }
+
+    #[test]
+    fn apply_group_set_invalid_rank() {
+        let mut reg = make_reg();
+        let op = SeqOp::Group {
+            name: "test-session".into(),
+            group: Some("g".into()),
+            rank: Some("not-a-number".into()),
+            clear: false,
+        };
+        let err = apply_op(&mut reg, &op, "now").unwrap_err().to_string();
+        assert!(err.contains("rank must be"), "got: {}", err);
+    }
+
+    #[test]
+    fn apply_group_clear_removes_group() {
+        use crate::registry::{Group, GroupRank};
+        let mut reg = make_reg();
+        reg.sessions[0].group = Some(Group {
+            name: "old-group".into(),
+            rank: GroupRank::Free,
+        });
+        let op = SeqOp::Group {
+            name: "test-session".into(),
+            group: None,
+            rank: None,
+            clear: true,
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert!(reg.sessions[0].group.is_none());
+        assert!(lines[0].contains("removed from group"));
+    }
+
+    #[test]
+    fn apply_group_clear_not_in_group() {
+        let mut reg = make_reg();
+        let op = SeqOp::Group {
+            name: "test-session".into(),
+            group: None,
+            rank: None,
+            clear: true,
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert!(lines[0].contains("not in a group"));
+    }
+
+    #[test]
+    fn apply_group_overview() {
+        // get_mut(name) is called before overview logic, so a session
+        // whose name matches the group name must exist in the registry.
+        let mut reg = reg_with_group_members();
+        reg.sessions.push(WorkspaceSession {
+            session_id: String::new(),
+            name: "my-group".into(),
+            goal: "".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+        let op = SeqOp::Group {
+            name: "my-group".into(),
+            group: None,
+            rank: None,
+            clear: false,
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(lines.len(), 4); // header + 2 members + "2 members"
+        assert!(lines[0].contains("group 'my-group'"));
+        assert!(lines.last().unwrap().contains("2 members"));
+    }
+
+    #[test]
+    fn apply_group_overview_single_member() {
+        use crate::registry::{Group, GroupRank};
+        // A session named "solo" must exist for get_mut to succeed.
+        let mut reg = reg_with_group_members();
+        reg.sessions.push(WorkspaceSession {
+            session_id: String::new(),
+            name: "solo".into(),
+            goal: "".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+        reg.sessions[0].group = Some(Group {
+            name: "solo".into(),
+            rank: GroupRank::Free,
+        });
+        reg.sessions[1].group = None;
+        let op = SeqOp::Group {
+            name: "solo".into(),
+            group: None,
+            rank: None,
+            clear: false,
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(lines.len(), 3); // header + 1 member + "1 member"
+        assert!(lines.last().unwrap().contains("1 member"));
+    }
+
+    // ── apply_op: Next ──────────────────────────────────────────
+
+    #[test]
+    fn apply_next_empty_group() {
+        let mut reg = make_reg();
+        let op = SeqOp::Next {
+            group: "nonexistent".into(),
+        };
+        let err = apply_op(&mut reg, &op, "now").unwrap_err().to_string();
+        assert!(err.contains("no sessions in group"), "got: {}", err);
+    }
+
+    #[test]
+    fn apply_next_picks_single_in_progress() {
+        let mut reg = reg_with_group_members();
+        reg.sessions[0].status = SessionStatus::InProgress;
+        let op = SeqOp::Next {
+            group: "my-group".into(),
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(lines, vec!["session-a"]);
+    }
+
+    #[test]
+    fn apply_next_picks_latest_started() {
+        let mut reg = reg_with_group_members();
+        reg.sessions[0].status = SessionStatus::InProgress;
+        reg.sessions[0].started = "2000-01-01".into();
+        reg.sessions[1].status = SessionStatus::InProgress;
+        reg.sessions[1].started = "2000-01-02".into();
+        let op = SeqOp::Next {
+            group: "my-group".into(),
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(lines, vec!["session-b"]);
+    }
+
+    #[test]
+    fn apply_next_picks_first_pending_when_no_in_progress() {
+        let mut reg = reg_with_group_members();
+        reg.sessions[0].status = SessionStatus::Pending;
+        reg.sessions[1].status = SessionStatus::Completed;
+        let op = SeqOp::Next {
+            group: "my-group".into(),
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert_eq!(lines, vec!["session-a"]);
+    }
+
+    #[test]
+    fn apply_next_all_done_returns_empty() {
+        let mut reg = reg_with_group_members();
+        reg.sessions[0].status = SessionStatus::Completed;
+        reg.sessions[1].status = SessionStatus::Completed;
+        let op = SeqOp::Next {
+            group: "my-group".into(),
+        };
+        let lines = apply_op(&mut reg, &op, "now").unwrap();
+        assert!(lines.is_empty());
+    }
+
+    // ── Invalid transitions ─────────────────────────────────────
+
+    #[test]
+    fn apply_start_fails_from_completed() {
+        let mut reg = make_reg();
+        reg.sessions[0].status = SessionStatus::Completed;
+        let op = SeqOp::Start {
+            name: "test-session".into(),
+        };
+        let err = apply_op(&mut reg, &op, "now").unwrap_err().to_string();
+        assert!(err.contains("cannot transition"), "got: {}", err);
+    }
+
+    #[test]
+    fn apply_complete_fails_from_pending() {
+        let mut reg = make_reg();
+        let op = SeqOp::Complete {
+            name: "test-session".into(),
+        };
+        let err = apply_op(&mut reg, &op, "now").unwrap_err().to_string();
+        assert!(err.contains("cannot transition"), "got: {}", err);
+    }
+
+    #[test]
+    fn apply_block_fails_from_pending() {
+        let mut reg = make_reg();
+        let op = SeqOp::Block {
+            name: "test-session".into(),
+        };
+        let err = apply_op(&mut reg, &op, "now").unwrap_err().to_string();
+        assert!(err.contains("cannot transition"), "got: {}", err);
+    }
+
+    #[test]
+    fn apply_abandon_fails_from_pending() {
+        let mut reg = make_reg();
+        let op = SeqOp::Abandon {
+            name: "test-session".into(),
+        };
+        let err = apply_op(&mut reg, &op, "now").unwrap_err().to_string();
+        assert!(err.contains("cannot transition"), "got: {}", err);
+    }
+
+    #[test]
+    fn apply_recover_fails_from_completed() {
+        let mut reg = make_reg();
+        reg.sessions[0].status = SessionStatus::Completed;
+        let op = SeqOp::Recover {
+            name: "test-session".into(),
+        };
+        let err = apply_op(&mut reg, &op, "now").unwrap_err().to_string();
+        assert!(err.contains("cannot recover"), "got: {}", err);
+    }
+
+    // ── apply_new invalid kebab ──────────────────────────────────
+
+    #[test]
+    fn apply_new_invalid_kebab_case() {
+        let mut reg = make_reg();
+        let op = SeqOp::New {
+            name: "BAD NAME".into(),
+            goal: "".into(),
+        };
+        let err = apply_op(&mut reg, &op, "now").unwrap_err().to_string();
+        assert!(err.contains("kebab-case"), "got: {}", err);
+    }
+
+    // ── validate_uuid ───────────────────────────────────────────
+
+    #[test]
+    fn validate_uuid_accepts_standard() {
+        validate_uuid("f493397b-456a-426d-92e1-4d5f15da0311").unwrap();
+    }
+
+    #[test]
+    fn validate_uuid_accepts_ses_format() {
+        validate_uuid("ses_a1b2c3d4e5f6").unwrap();
+    }
+
+    #[test]
+    fn validate_uuid_accepts_ses_with_dashes() {
+        validate_uuid("ses_abc-def-123").unwrap();
+    }
+
+    #[test]
+    fn validate_uuid_rejects_invalid() {
+        let err = validate_uuid("not-a-uuid").unwrap_err().to_string();
+        assert!(
+            err.contains("does not look like a session UUID"),
+            "got: {}",
+            err
+        );
+    }
+
+    // ── Helper functions ────────────────────────────────────────
+
+    #[test]
+    fn usage_quantifier_one() {
+        assert_eq!(usage_quantifier(1), "a");
+    }
+
+    #[test]
+    fn usage_quantifier_many() {
+        assert_eq!(usage_quantifier(2), "at least");
+    }
+
+    #[test]
+    fn status_line_formats_correctly() {
+        let line = status_line(SessionStatus::InProgress, "my-session", "start");
+        assert_eq!(line, "in_progress  my-session  ← start");
     }
 }

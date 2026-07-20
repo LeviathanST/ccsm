@@ -201,7 +201,7 @@ fn set_config(ws: &TempWorkspace, content: &str) {
         .lines()
         .find_map(|l| l.strip_prefix("id = \"").and_then(|s| s.strip_suffix('"')))
         .expect("parse identity id");
-    let config_dir = ws.home().join(".ccsm").join(&id);
+    let config_dir = ws.home().join(".ccsm").join(id);
     std::fs::create_dir_all(&config_dir).ok();
     std::fs::write(config_dir.join("config.toml"), content).expect("write config.toml");
 }

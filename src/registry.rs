@@ -1,9 +1,9 @@
+use crate::ErrorCode;
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::ErrorCode;
 
 // ── Workspace Identity ────────────────────────────────────────────
 
@@ -1179,7 +1179,11 @@ pub(crate) fn harvest_from_pid(home: &std::path::Path, pid: u32) -> anyhow::Resu
     let s: crate::session::Session =
         serde_json::from_str(&contents).context("parsing session file")?;
     if s.session_id.is_empty() {
-        anyhow::bail!("{} session file for PID {} has no sessionId yet", ErrorCode::NoSession, pid);
+        anyhow::bail!(
+            "{} session file for PID {} has no sessionId yet",
+            ErrorCode::NoSession,
+            pid
+        );
     }
     Ok(s.session_id)
 }
@@ -1250,11 +1254,17 @@ mod tests {
     use std::sync::Mutex;
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Acquire the ENV_LOCK, recovering from poison so a single panicked test
+    /// doesn't cascade-fail all subsequent env-dependent tests.
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Run a test with CCSM_DATA_DIR set to a unique temp dir.
     /// Env var is restored after the closure runs.
     /// Uses a global mutex so parallel tests don't clobber each other's env vars.
     fn with_data_dir<F: FnOnce()>(f: F) {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = lock_env();
         let dir = tempfile::tempdir().unwrap();
         let data_dir = dir.path().join("data");
         let prev = std::env::var("CCSM_DATA_DIR").ok();
@@ -1570,40 +1580,39 @@ mod tests {
 
     #[test]
     fn global_data_dir_defaults_to_home_ccsm() {
+        let _guard = lock_env();
         let prev = std::env::var("CCSM_DATA_DIR").ok();
-        unsafe {
-            std::env::remove_var("CCSM_DATA_DIR");
-        }
+        unsafe { std::env::remove_var("CCSM_DATA_DIR") };
         let dir = global_data_dir("test-id");
-        assert!(dir.to_string_lossy().contains("/.ccsm/test-id"));
-        if let Some(v) = prev {
-            unsafe {
-                std::env::set_var("CCSM_DATA_DIR", v);
-            }
+        let s = dir.to_string_lossy();
+        assert!(
+            s.contains("/.ccsm/test-id") || s.contains("\\.ccsm\\test-id"),
+            "expected /.ccsm/test-id in path, got: {s}"
+        );
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CCSM_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("CCSM_DATA_DIR") },
         }
     }
 
     #[test]
     fn global_data_dir_respects_env_override() {
+        let _guard = lock_env();
         let prev = std::env::var("CCSM_DATA_DIR").ok();
         unsafe {
             std::env::set_var("CCSM_DATA_DIR", "/tmp/ccsm-data");
         }
         let dir = global_data_dir("test-id");
         assert_eq!(dir, std::path::PathBuf::from("/tmp/ccsm-data/test-id"));
-        if let Some(v) = prev {
-            unsafe {
-                std::env::set_var("CCSM_DATA_DIR", v);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("CCSM_DATA_DIR");
-            }
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CCSM_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("CCSM_DATA_DIR") },
         }
     }
 
     #[test]
     fn strip_stale_worktree_removes_field() {
+        let _guard = lock_env();
         let dir = tempfile::tempdir().unwrap();
         let data_dir = dir.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -1664,14 +1673,9 @@ mod tests {
             "worktree field should be stripped"
         );
 
-        if let Some(v) = prev {
-            unsafe {
-                std::env::set_var("CCSM_DATA_DIR", v);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("CCSM_DATA_DIR");
-            }
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CCSM_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("CCSM_DATA_DIR") },
         }
     }
 
@@ -1722,9 +1726,16 @@ mod tests {
 
     #[test]
     fn global_detail_path_under_sessions_subdir() {
+        let _guard = lock_env();
+        let prev = std::env::var("CCSM_DATA_DIR").ok();
+        unsafe { std::env::remove_var("CCSM_DATA_DIR") };
         let path = global_detail_path("wid", "my-session");
         let expected_parent = global_data_dir("wid").join("sessions");
         assert_eq!(path.parent().unwrap(), expected_parent);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CCSM_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("CCSM_DATA_DIR") },
+        }
     }
 
     #[test]
@@ -1746,6 +1757,7 @@ mod tests {
 
     #[test]
     fn global_worktree_path_is_deterministic() {
+        let _guard = lock_env();
         let a = global_worktree_path("wid", "session-a");
         let b = global_worktree_path("wid", "session-a");
         assert_eq!(a, b);
@@ -1753,6 +1765,7 @@ mod tests {
 
     #[test]
     fn global_worktree_path_under_worktrees_subdir() {
+        let _guard = lock_env();
         let path = global_worktree_path("wid", "session-a");
         let expected_parent = global_data_dir("wid").join("worktrees");
         assert_eq!(path.parent().unwrap(), expected_parent);
@@ -1760,6 +1773,7 @@ mod tests {
 
     #[test]
     fn global_worktree_path_diff_ids_differ() {
+        let _guard = lock_env();
         let a = global_worktree_path("workspace-a", "my-session");
         let b = global_worktree_path("workspace-b", "my-session");
         assert_ne!(a, b);
@@ -1805,5 +1819,1153 @@ mod tests {
             assert!(detail.starts_with(global_data_dir("int-test")));
             assert!(detail.to_string_lossy().contains("/sessions/"));
         });
+    }
+
+    // ── edit_distance tests ────────────────────────────────────────
+
+    #[test]
+    fn edit_distance_identical() {
+        assert_eq!(edit_distance("hello", "hello"), 0);
+    }
+
+    #[test]
+    fn edit_distance_empty_vs_string() {
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("abc", ""), 3);
+    }
+
+    #[test]
+    fn edit_distance_insert_delete() {
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn edit_distance_substitution() {
+        assert_eq!(edit_distance("rust", "dust"), 1);
+    }
+
+    #[test]
+    fn edit_distance_unicode() {
+        assert_eq!(edit_distance("café", "cafe"), 1);
+    }
+
+    #[test]
+    fn edit_distance_completely_different() {
+        assert_eq!(edit_distance("abc", "xyz"), 3);
+    }
+
+    // ── format_ts tests ────────────────────────────────────────────
+
+    #[test]
+    fn format_ts_zero() {
+        assert_eq!(format_ts(0), "day0T00:00Z");
+    }
+
+    #[test]
+    fn format_ts_one_second() {
+        assert_eq!(format_ts(1000), "day0T00:00Z");
+    }
+
+    #[test]
+    fn format_ts_one_minute() {
+        assert_eq!(format_ts(60_000), "day0T00:01Z");
+    }
+
+    #[test]
+    fn format_ts_one_hour() {
+        assert_eq!(format_ts(3_600_000), "day0T01:00Z");
+    }
+
+    #[test]
+    fn format_ts_one_day() {
+        assert_eq!(format_ts(86_400_000), "day1T00:00Z");
+    }
+
+    #[test]
+    fn format_ts_multi_day() {
+        assert_eq!(
+            format_ts(3 * 86_400_000 + 7_200_000 + 180_000),
+            "day3T02:03Z"
+        );
+    }
+
+    #[test]
+    fn format_ts_truncates_seconds() {
+        let result = format_ts(3661_000);
+        assert_eq!(result, "day0T01:01Z");
+        assert!(!result.contains("01Z:"), "no seconds field");
+    }
+
+    // ── parse_sections tests ───────────────────────────────────────
+
+    #[test]
+    fn parse_sections_empty_string() {
+        let sections = parse_sections("");
+        assert!(sections.is_empty());
+    }
+
+    #[test]
+    fn parse_sections_no_headers() {
+        let sections = parse_sections("some text\nwithout headers");
+        assert!(sections.is_empty());
+    }
+
+    #[test]
+    fn parse_sections_single_section() {
+        let sections = parse_sections("## Goal\ndo the thing\nmore lines");
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].0, "Goal");
+        assert!(sections[0].1.contains("do the thing"));
+    }
+
+    #[test]
+    fn parse_sections_multiple_sections() {
+        let md = "\
+## Goal
+first goal
+## Scope
+narrow scope
+## Status
+done";
+        let sections = parse_sections(md);
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[0].0, "Goal");
+        assert_eq!(sections[1].0, "Scope");
+        assert_eq!(sections[2].0, "Status");
+    }
+
+    #[test]
+    fn parse_sections_trailing_section_with_only_blank_body() {
+        let md = "\
+## Goal
+stuff
+## Empty";
+        let sections = parse_sections(md);
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[1].0, "Empty");
+        assert_eq!(sections[1].1, "");
+    }
+
+    #[test]
+    fn parse_sections_trimmes_header_spaces() {
+        let sections = parse_sections("##   My Header  \nbody");
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].0, "My Header");
+    }
+
+    // ── session_age_days tests ─────────────────────────────────────
+
+    #[test]
+    fn session_age_days_empty() {
+        assert_eq!(session_age_days(""), 0);
+    }
+
+    #[test]
+    fn session_age_days_garbage() {
+        assert_eq!(session_age_days("not-a-timestamp"), 0);
+    }
+
+    #[test]
+    fn session_age_days_today() {
+        let now_days = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            / 86400;
+        let ts = format!("day{}T12:00:00Z", now_days);
+        assert_eq!(session_age_days(&ts), 0);
+    }
+
+    #[test]
+    fn session_age_days_yesterday() {
+        let now_days = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            / 86400;
+        let ts = format!("day{}T00:00:00Z", now_days - 1);
+        assert_eq!(session_age_days(&ts), 1);
+    }
+
+    #[test]
+    fn session_age_days_old() {
+        let ts = "day0T00:00:00Z";
+        let age = session_age_days(ts);
+        assert!(age > 19000, "epoch was >19000 days ago, got {age}");
+    }
+
+    // ── home_dir tests ─────────────────────────────────────────────
+
+    #[test]
+    fn home_dir_uses_home_env() {
+        let _guard = lock_env();
+        unsafe { std::env::set_var("HOME", "/custom/home") };
+        let h = home_dir();
+        assert_eq!(h, std::path::PathBuf::from("/custom/home"));
+        unsafe { std::env::remove_var("HOME") };
+    }
+
+    #[test]
+    fn home_dir_fallback_to_tmp() {
+        let _guard = lock_env();
+        let prev = std::env::var("HOME").ok();
+        unsafe { std::env::remove_var("HOME") };
+        let h = home_dir();
+        assert_eq!(h, std::path::PathBuf::from("/tmp"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
+
+    // ── uuid_v4 tests ──────────────────────────────────────────────
+
+    #[test]
+    fn uuid_v4_format() {
+        let uuid = uuid_v4();
+        assert_eq!(uuid.len(), 36);
+        let parts: Vec<&str> = uuid.split('-').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+        assert!(uuid.chars().all(|c| c.is_ascii_hexdigit() || c == '-'));
+    }
+
+    #[test]
+    fn uuid_v4_version_bits() {
+        let uuid = uuid_v4();
+        let parts: Vec<&str> = uuid.split('-').collect();
+        assert_eq!(&parts[2][..1], "4", "version nibble should be 4");
+    }
+
+    #[test]
+    fn uuid_v4_variant_bits() {
+        let uuid = uuid_v4();
+        let parts: Vec<&str> = uuid.split('-').collect();
+        let first = parts[3].chars().next().unwrap();
+        assert!(
+            first == '8' || first == '9' || first == 'a' || first == 'b',
+            "variant bits should be 10xx, got {first}"
+        );
+    }
+
+    #[test]
+    fn uuid_v4_unique_across_calls() {
+        let a = uuid_v4();
+        let b = uuid_v4();
+        assert_ne!(a, b);
+    }
+
+    // ── now_iso tests ──────────────────────────────────────────────
+
+    #[test]
+    fn now_iso_format() {
+        let ts = now_iso();
+        assert!(ts.starts_with("day"), "should start with day, got {ts}");
+        assert!(
+            ts.contains('T') && ts.contains('Z'),
+            "should contain T...Z, got {ts}"
+        );
+        let parts: Vec<&str> = ts.split('T').collect();
+        assert_eq!(parts.len(), 2, "expected dayN<T>HH:MM:SSZ, got {ts}");
+        assert_eq!(&parts[1][parts[1].len() - 1..], "Z", "should end with Z");
+    }
+
+    #[test]
+    fn now_iso_non_empty() {
+        assert!(!now_iso().is_empty());
+    }
+
+    // ── is_kebab_case tests ────────────────────────────────────────
+
+    #[test]
+    fn is_kebab_case_valid() {
+        assert!(is_kebab_case("my-session"));
+        assert!(is_kebab_case("phase-1"));
+        assert!(is_kebab_case("abc123"));
+        assert!(is_kebab_case("a"));
+    }
+
+    #[test]
+    fn is_kebab_case_invalid_uppercase() {
+        assert!(!is_kebab_case("My-Session"));
+    }
+
+    #[test]
+    fn is_kebab_case_invalid_underscore() {
+        assert!(!is_kebab_case("my_session"));
+    }
+
+    #[test]
+    fn is_kebab_case_invalid_spaces() {
+        assert!(!is_kebab_case("my session"));
+    }
+
+    #[test]
+    fn is_kebab_case_empty() {
+        assert!(!is_kebab_case(""));
+    }
+
+    // ── insert_note tests ──────────────────────────────────────────
+
+    #[test]
+    fn insert_note_into_existing_section() {
+        let md = "\
+# Title
+
+## Progress Log
+
+- old entry
+";
+        let result = insert_note(md, "- new entry");
+        assert!(result.contains("- old entry"));
+        assert!(result.contains("- new entry"));
+        // new entry should come before old
+        let pos_new = result.find("- new entry").unwrap();
+        let pos_old = result.find("- old entry").unwrap();
+        assert!(pos_new < pos_old, "new entry should be prepended");
+    }
+
+    #[test]
+    fn insert_note_adds_section_when_missing() {
+        let md = "# Title\n\nsome body";
+        let result = insert_note(md, "- first note");
+        assert!(result.contains("## Progress Log"));
+        assert!(result.contains("- first note"));
+    }
+
+    #[test]
+    fn insert_note_skips_html_comments() {
+        let md = "\
+## Progress Log
+<!-- comment -->
+- old entry
+";
+        let result = insert_note(md, "- new entry");
+        assert!(result.contains("<!-- comment -->"));
+        assert!(result.contains("- new entry"));
+        let pos_new = result.find("- new entry").unwrap();
+        let pos_com = result.find("<!--").unwrap();
+        assert!(pos_new > pos_com, "new entry should be after comment");
+    }
+
+    // ── replace_detail_section tests ───────────────────────────────
+
+    #[test]
+    fn replace_existing_section() {
+        let md = "\
+# Title
+
+## Goal
+old body
+
+## Status
+done
+";
+        let result = replace_detail_section(md, "## Goal", "new body");
+        assert!(!result.contains("old body"));
+        assert!(result.contains("new body"));
+        assert!(result.contains("## Status"));
+    }
+
+    #[test]
+    fn replace_nonexistent_section_appends() {
+        let md = "# Title\nsome text\n";
+        let result = replace_detail_section(md, "## Goal", "new body");
+        assert!(result.contains("## Goal"));
+        assert!(result.contains("new body"));
+        assert!(result.contains("some text"));
+    }
+
+    // ── days_to_date / is_leap tests ───────────────────────────────
+
+    #[test]
+    fn days_to_date_epoch() {
+        assert_eq!(days_to_date(0), (1970, 1, 1));
+    }
+
+    #[test]
+    fn days_to_date_known_date() {
+        // 365 days after 1970-01-01 = 1971-01-01 (1970 is not leap)
+        assert_eq!(days_to_date(365), (1971, 1, 1));
+    }
+
+    #[test]
+    fn days_to_date_leap_feb29() {
+        // 1970-01-01 to 2020-02-29: 50 years through 2019 end + 31 (jan) + 28 (feb 1-28)
+        let mut d: u64 = 0;
+        for y in 1970..2020 {
+            d += if is_leap(y) { 366 } else { 365 };
+        }
+        d += 31; // Jan
+        d += 28; // Feb 1-28
+        assert_eq!(days_to_date(d), (2020, 2, 29));
+    }
+
+    #[test]
+    fn is_leap_known() {
+        assert!(is_leap(2000));
+        assert!(!is_leap(1900));
+        assert!(is_leap(2024));
+        assert!(!is_leap(2023));
+    }
+
+    // ── validate_session_id tests ──────────────────────────────────
+
+    #[test]
+    fn validate_standard_uuid() {
+        assert!(validate_session_id("f493397b-1234-4a5b-8901-4d5f15da0311").is_ok());
+    }
+
+    #[test]
+    fn validate_ses_format() {
+        assert!(validate_session_id("ses_abc123DEF").is_ok());
+        assert!(validate_session_id("ses_").is_err());
+    }
+
+    #[test]
+    fn validate_invalid_short() {
+        assert!(validate_session_id("abc").is_err());
+    }
+
+    #[test]
+    fn validate_invalid_wrong_dashes() {
+        assert!(validate_session_id("1234-5678-9012-3456").is_err());
+    }
+
+    #[test]
+    fn validate_empty_string() {
+        assert!(validate_session_id("").is_err());
+    }
+
+    // ── find_nearest_git_root tests ────────────────────────────────
+
+    #[test]
+    fn find_nearest_git_root_finds_git_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::File::create(dir.path().join(".git")).unwrap();
+        let found = find_nearest_git_root(&sub);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), dir.path());
+    }
+
+    #[test]
+    fn find_nearest_git_root_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let found = find_nearest_git_root(dir.path());
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn find_nearest_git_root_returns_none_for_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("does-not-exist");
+        let found = find_nearest_git_root(&sub);
+        assert!(found.is_none());
+    }
+
+    // ── GroupRank Display tests ────────────────────────────────────
+
+    #[test]
+    fn group_rank_display_free() {
+        assert_eq!(GroupRank::Free.to_string(), "free");
+    }
+
+    #[test]
+    fn group_rank_display_numbered() {
+        assert_eq!(GroupRank::Number(42).to_string(), "42");
+    }
+
+    // ── SessionStatus::transition_allowed tests ────────────────────
+
+    #[test]
+    fn transition_pending_to_in_progress() {
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Pending,
+            SessionStatus::InProgress
+        ));
+    }
+
+    #[test]
+    fn transition_in_progress_to_completed() {
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::InProgress,
+            SessionStatus::Completed
+        ));
+    }
+
+    #[test]
+    fn transition_in_progress_to_blocked() {
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::InProgress,
+            SessionStatus::Blocked
+        ));
+    }
+
+    #[test]
+    fn transition_blocked_to_abandoned() {
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Blocked,
+            SessionStatus::Abandoned
+        ));
+    }
+
+    #[test]
+    fn transition_trashed_to_in_progress() {
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Trashed,
+            SessionStatus::InProgress
+        ));
+    }
+
+    #[test]
+    fn transition_any_to_pending() {
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Abandoned,
+            SessionStatus::Pending
+        ));
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Blocked,
+            SessionStatus::Pending
+        ));
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Trashed,
+            SessionStatus::Pending
+        ));
+    }
+
+    #[test]
+    fn transition_any_to_trashed() {
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Pending,
+            SessionStatus::Trashed
+        ));
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Completed,
+            SessionStatus::Trashed
+        ));
+    }
+
+    #[test]
+    fn transition_identical_is_allowed() {
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::Pending,
+            SessionStatus::Pending
+        ));
+        assert!(SessionStatus::transition_allowed(
+            SessionStatus::InProgress,
+            SessionStatus::InProgress
+        ));
+    }
+
+    #[test]
+    fn transition_pending_to_completed_denied() {
+        assert!(!SessionStatus::transition_allowed(
+            SessionStatus::Pending,
+            SessionStatus::Completed
+        ));
+    }
+
+    #[test]
+    fn transition_completed_to_in_progress_denied() {
+        assert!(!SessionStatus::transition_allowed(
+            SessionStatus::Completed,
+            SessionStatus::InProgress
+        ));
+    }
+
+    #[test]
+    fn transition_abandoned_to_blocked_denied() {
+        assert!(!SessionStatus::transition_allowed(
+            SessionStatus::Abandoned,
+            SessionStatus::Blocked
+        ));
+    }
+
+    // ── note_timestamp tests ───────────────────────────────────────
+
+    #[test]
+    fn note_timestamp_format() {
+        let ts = note_timestamp();
+        assert_eq!(ts.len(), 17, "expected YYYY-MM-DD HH:MMZ format, got {ts}");
+        assert!(
+            !ts.contains('T'),
+            "note_timestamp uses space separator, got {ts}"
+        );
+        assert!(ts.contains(' '), "expected space separator in {ts}");
+        assert!(ts.ends_with('Z'), "expected timezone Z in {ts}");
+    }
+
+    #[test]
+    fn note_timestamp_not_empty() {
+        assert!(!note_timestamp().is_empty());
+    }
+
+    // ── find_project_root with git file case ───────────────────────
+
+    #[test]
+    fn find_project_root_with_git_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::File::create(dir.path().join(".git")).unwrap();
+        let ccsm = dir.path().join(".ccsm");
+        std::fs::write(&ccsm, "version = \"1\"\nid = \"test-id\"\n").unwrap();
+        let result = find_project_root(dir.path()).unwrap();
+        assert!(result.is_some());
+        let (root, identity) = result.unwrap();
+        assert_eq!(root, dir.path());
+        assert_eq!(identity.id, "test-id");
+    }
+
+    #[test]
+    fn find_project_root_returns_none_when_missing() {
+        // Walk up from `/` — `/.ccsm` doesn't exist and root has no parent
+        let result = find_project_root(std::path::Path::new("/")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_project_root_walks_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("a").join("b").join("c");
+        std::fs::create_dir_all(&sub).unwrap();
+        let ccsm = dir.path().join(".ccsm");
+        std::fs::write(&ccsm, "version = \"1\"\nid = \"walk-id\"\n").unwrap();
+        let result = find_project_root(&sub).unwrap();
+        assert!(result.is_some());
+        let (root, identity) = result.unwrap();
+        assert_eq!(root, dir.path());
+        assert_eq!(identity.id, "walk-id");
+    }
+
+    // ── WorkspaceSession / status Display tests ────────────────────
+
+    #[test]
+    fn session_status_display_pending() {
+        assert_eq!(SessionStatus::Pending.to_string(), "pending");
+    }
+
+    #[test]
+    fn session_status_display_in_progress() {
+        assert_eq!(SessionStatus::InProgress.to_string(), "in_progress");
+    }
+
+    #[test]
+    fn session_status_display_completed() {
+        assert_eq!(SessionStatus::Completed.to_string(), "completed");
+    }
+
+    #[test]
+    fn session_status_display_blocked() {
+        assert_eq!(SessionStatus::Blocked.to_string(), "blocked");
+    }
+
+    #[test]
+    fn session_status_display_abandoned() {
+        assert_eq!(SessionStatus::Abandoned.to_string(), "abandoned");
+    }
+
+    #[test]
+    fn session_status_display_trashed() {
+        assert_eq!(SessionStatus::Trashed.to_string(), "trashed");
+    }
+
+    // ── WorkspaceRegistry::trash / recover ─────────────────────────
+
+    #[test]
+    fn trash_moves_status_to_trashed() {
+        let (_dir, data_dir) = temp_workspace();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+        reg.sessions.push(WorkspaceSession {
+            session_id: "sid-1".into(),
+            name: "session-one".into(),
+            goal: "g".into(),
+            scope: String::new(),
+            status: SessionStatus::InProgress,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+        assert!(reg.trash("sid-1", "session-one"));
+        assert_eq!(reg.sessions[0].status, SessionStatus::Trashed);
+    }
+
+    #[test]
+    fn trash_nonexistent_returns_false() {
+        let (_dir, data_dir) = temp_workspace();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+        assert!(!reg.trash("nonexistent", "nonexistent"));
+    }
+
+    #[test]
+    fn recover_moves_status_to_in_progress() {
+        let (_dir, data_dir) = temp_workspace();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+        reg.sessions.push(WorkspaceSession {
+            session_id: "sid-2".into(),
+            name: "session-two".into(),
+            goal: "g".into(),
+            scope: String::new(),
+            status: SessionStatus::Trashed,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+        assert!(reg.recover("sid-2", "session-two"));
+        assert_eq!(reg.sessions[0].status, SessionStatus::InProgress);
+    }
+
+    #[test]
+    fn recover_nonexistent_returns_false() {
+        let (_dir, data_dir) = temp_workspace();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+        assert!(!reg.recover("nonexistent", "nonexistent"));
+    }
+
+    // ── Default impl for WorkspaceSession ──────────────────────────
+
+    #[test]
+    fn session_default_status_is_pending() {
+        assert_eq!(default_status(), SessionStatus::Pending);
+    }
+
+    // ── WorkspaceRegistry::seed tests ──────────────────────────────
+
+    #[test]
+    fn seed_populates_empty_registry() {
+        let mut reg = WorkspaceRegistry::empty();
+        let entry = WorkspaceSession {
+            session_id: String::new(),
+            name: "seed-session".into(),
+            goal: "test".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        };
+        reg.seed(vec![entry]);
+        assert_eq!(reg.sessions.len(), 1);
+        assert_eq!(reg.sessions[0].name, "seed-session");
+    }
+
+    #[test]
+    fn seed_does_not_overwrite_existing() {
+        let mut reg = WorkspaceRegistry::empty();
+        let existing = WorkspaceSession {
+            session_id: String::new(),
+            name: "existing".into(),
+            goal: "test".into(),
+            scope: String::new(),
+            status: SessionStatus::InProgress,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        };
+        reg.sessions.push(existing);
+        reg.seed(vec![WorkspaceSession {
+            session_id: String::new(),
+            name: "new-seed".into(),
+            goal: "should not appear".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        }]);
+        assert_eq!(reg.sessions.len(), 1);
+        assert_eq!(reg.sessions[0].name, "existing");
+    }
+
+    // ── WorkspaceRegistry::empty tests ─────────────────────────────
+
+    #[test]
+    fn empty_registry_has_no_sessions() {
+        let reg = WorkspaceRegistry::empty();
+        assert!(reg.sessions.is_empty());
+        assert_eq!(reg.updated, "");
+    }
+
+    // ── WorkspaceRegistry::save_to / load_from round-trip ──────────
+
+    #[test]
+    fn save_and_load_round_trip_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        let mut reg = WorkspaceRegistry::empty();
+        reg.sessions.push(WorkspaceSession {
+            session_id: "rt-id".into(),
+            name: "round-trip".into(),
+            goal: "test round trip".into(),
+            scope: "scope".into(),
+            status: SessionStatus::Completed,
+            pids: vec![100],
+            tags: vec!["test".into()],
+            started: "day0T00:00Z".into(),
+            completed: "day1T00:00Z".into(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: "claude".into(),
+        });
+
+        reg.save_to(&data_dir).unwrap();
+        let loaded = WorkspaceRegistry::load_from(&data_dir).unwrap();
+        assert_eq!(loaded.sessions.len(), 1);
+        assert_eq!(loaded.sessions[0].name, "round-trip");
+        assert_eq!(loaded.sessions[0].goal, "test round trip");
+        assert_eq!(loaded.sessions[0].consumer, "claude");
+        assert_eq!(loaded.sessions[0].status, SessionStatus::Completed);
+    }
+
+    // ── resolve_data_dir tests ─────────────────────────────────────
+
+    #[test]
+    fn resolve_data_dir_returns_path_when_identity_available() {
+        with_data_dir(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let ccsm_path = dir.path().join(".ccsm");
+            std::fs::write(
+                &ccsm_path,
+                format!(
+                    "version = \"{}\"\nid = \"test-id\"\n",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            )
+            .unwrap();
+            unsafe {
+                unsafe { std::env::set_current_dir(dir.path()).ok() };
+            }
+
+            let result = resolve_data_dir();
+            assert!(
+                result.is_ok(),
+                "resolve_data_dir should succeed: {:?}",
+                result.err()
+            );
+            let path = result.unwrap();
+            assert!(path.to_string_lossy().contains("test-id"));
+        });
+    }
+
+    // ── WorkspaceRegistry::clean tests (by name fallback) ──────────
+
+    #[test]
+    fn clean_removes_by_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+
+        reg.sessions.push(WorkspaceSession {
+            session_id: "test-clean-id".into(),
+            name: "clean-me".into(),
+            goal: "g".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).ok();
+        reg.clean(
+            "test-clean-id",
+            "clean-me",
+            &home,
+            dir.path(),
+            crate::consumer::Consumer::OpenCode,
+        );
+        assert_eq!(reg.sessions.len(), 0);
+    }
+
+    #[test]
+    fn clean_falls_back_to_name_when_session_id_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+
+        reg.sessions.push(WorkspaceSession {
+            session_id: String::new(),
+            name: "seed-entry".into(),
+            goal: "g".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+
+        reg.clean(
+            "",
+            "seed-entry",
+            &dir.path().join("home"),
+            dir.path(),
+            crate::consumer::Consumer::OpenCode,
+        );
+        assert_eq!(reg.sessions.len(), 0);
+    }
+
+    // ── clean_all_trashed tests ────────────────────────────────────
+
+    #[test]
+    fn clean_all_trashed_removes_all_trashed_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+
+        reg.sessions.push(WorkspaceSession {
+            session_id: "sid-keep".into(),
+            name: "keep".into(),
+            goal: "g".into(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+        reg.sessions.push(WorkspaceSession {
+            session_id: "sid-trash".into(),
+            name: "trash-me".into(),
+            goal: "g".into(),
+            scope: String::new(),
+            status: SessionStatus::Trashed,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+
+        reg.clean_all_trashed(
+            &dir.path().join("home"),
+            dir.path(),
+            crate::consumer::Consumer::OpenCode,
+        );
+        assert_eq!(reg.sessions.len(), 1);
+        assert_eq!(reg.sessions[0].name, "keep");
+    }
+
+    // ── GroupRank tests ────────────────────────────────────────────
+
+    #[test]
+    fn group_rank_free_is_default() {
+        assert_eq!(GroupRank::default(), GroupRank::Free);
+    }
+
+    #[test]
+    fn group_rank_number_ordering() {
+        assert!(GroupRank::Number(1) < GroupRank::Number(2));
+        assert!(GroupRank::Number(5) > GroupRank::Free);
+    }
+
+    // ── archive tests ──────────────────────────────────────────────
+
+    #[test]
+    fn archive_clears_session_id_and_pids() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+
+        reg.sessions.push(WorkspaceSession {
+            session_id: "archive-id".into(),
+            name: "archive-me".into(),
+            goal: "g".into(),
+            scope: String::new(),
+            status: SessionStatus::Completed,
+            pids: vec![42, 43],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+
+        let freed = reg.archive(
+            "archive-id",
+            "archive-me",
+            &dir.path().join("home"),
+            dir.path(),
+            crate::consumer::Consumer::OpenCode,
+        );
+        assert_eq!(freed, 0, "no transcript files to free");
+        assert!(reg.sessions[0].session_id.is_empty());
+        assert!(reg.sessions[0].pids.is_empty());
+    }
+
+    #[test]
+    fn archive_falls_back_to_name_when_session_id_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let (mut reg, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
+
+        reg.sessions.push(WorkspaceSession {
+            session_id: String::new(),
+            name: "seed-archive".into(),
+            goal: "g".into(),
+            scope: String::new(),
+            status: SessionStatus::Completed,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+            consumer: String::new(),
+        });
+
+        let freed = reg.archive(
+            "",
+            "seed-archive",
+            &dir.path().join("home"),
+            dir.path(),
+            crate::consumer::Consumer::OpenCode,
+        );
+        assert_eq!(freed, 0);
+        assert!(reg.sessions[0].session_id.is_empty());
+    }
+
+    // ── sync_status_line tests (no-op without detail file) ─────────
+
+    #[test]
+    fn sync_status_line_noop_without_detail_file() {
+        with_data_dir(|| {
+            sync_status_line("nonexistent-session");
+            // Should not panic
+        });
+    }
+
+    // ── harvest_from_pid tests ─────────────────────────────────────
+
+    #[test]
+    fn harvest_from_pid_errors_when_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = harvest_from_pid(dir.path(), 99999).unwrap_err();
+        assert!(err.to_string().contains("[ERR_NOSESSION]"));
+    }
+
+    #[test]
+    fn harvest_from_pid_parses_session_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join(".claude").join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let session_content = serde_json::json!({
+            "pid": 12345,
+            "sessionId": "abc-123-def",
+            "cwd": "/tmp",
+            "startedAt": 1000,
+            "updatedAt": 2000,
+        });
+        std::fs::write(sessions_dir.join("12345.json"), session_content.to_string()).unwrap();
+        let sid = harvest_from_pid(dir.path(), 12345).unwrap();
+        assert_eq!(sid, "abc-123-def");
+    }
+
+    #[test]
+    fn harvest_from_pid_errors_when_session_id_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions_dir = dir.path().join(".claude").join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let session_content = serde_json::json!({
+            "pid": 12345,
+            "sessionId": "",
+            "cwd": "/tmp",
+            "startedAt": 1000,
+            "updatedAt": 2000,
+        });
+        std::fs::write(sessions_dir.join("12345.json"), session_content.to_string()).unwrap();
+        let err = harvest_from_pid(dir.path(), 12345).unwrap_err();
+        assert!(err.to_string().contains("[ERR_NOSESSION]"));
+    }
+
+    // ── default_seed tests ─────────────────────────────────────────
+
+    #[test]
+    fn default_seed_contains_expected_sessions() {
+        let seed = WorkspaceRegistry::default_seed();
+        assert!(!seed.is_empty(), "default seed should have entries");
+        assert!(seed.iter().any(|s| s.name == "phase-1-pty-embedding"));
+        assert!(seed.iter().any(|s| s.name == "phase-2-sidebar"));
     }
 }

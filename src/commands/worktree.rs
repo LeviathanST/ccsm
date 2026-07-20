@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result};
 use crate::ErrorCode;
+use anyhow::{Context, Result};
 
 // ── Path derivation ────────────────────────────────────────────────────
 
@@ -230,7 +230,10 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                                 .args(["stash", "pop"])
                                 .current_dir(workspace)
                                 .output();
-                            anyhow::bail!("{} failed to create worktree after rebase.", ErrorCode::Gate);
+                            anyhow::bail!(
+                                "{} failed to create worktree after rebase.",
+                                ErrorCode::Gate
+                            );
                         }
                         eprintln!("  restoring stashed changes into worktree...");
                         let pop_ok = Command::new("git")
@@ -468,5 +471,329 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_repo_with_commit(dir.path());
         assert!(remove_worktree(dir.path(), "phantom", false).is_ok());
+    }
+
+    // ── Branch exists (remote path) ────────────────────────────────────
+
+    #[test]
+    fn branch_exists_remote_only() {
+        let bare = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(bare.path())
+            .output()
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+
+        // Configure repo and push main to bare
+        Command::new("git")
+            .args(["remote", "add", "origin", bare.path().to_str().unwrap()])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["push", "origin", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Push a branch that only exists on remote
+        Command::new("git")
+            .args(["push", "origin", "main:refs/heads/remote-only"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Verify it's NOT found locally
+        assert!(
+            !Command::new("git")
+                .args(["show-ref", "--verify", "--quiet", "refs/heads/remote-only"])
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        // But IS found via ls-remote
+        assert!(branch_exists(dir.path(), "remote-only"));
+    }
+
+    // ── Ensure gitignore (no-op) ───────────────────────────────────────
+
+    #[test]
+    fn ensure_worktree_gitignore_noop_when_pattern_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "/.claude/worktrees/\n").unwrap();
+        let before = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        ensure_worktree_gitignore(dir.path());
+        let after = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn ensure_worktree_gitignore_noop_variants() {
+        for pattern in ["/.claude/worktrees", ".claude/worktrees/"] {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(".gitignore"), format!("{pattern}\n")).unwrap();
+            let before = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+            ensure_worktree_gitignore(dir.path());
+            let after = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+            assert_eq!(before, after, "pattern={pattern}");
+        }
+    }
+
+    // ── Create worktree ────────────────────────────────────────────────
+
+    #[test]
+    fn create_worktree_fails_when_path_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let wt_path = dir.path().join(".claude").join("worktrees").join("exists");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        let e = create_worktree(dir.path(), "exists", "main")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("already exists"), "{e}");
+    }
+
+    #[test]
+    fn create_worktree_success_existing_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        // Create a second branch so we can check it out in a worktree
+        // (git won't check out 'main' in a second worktree since it's active)
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let result = create_worktree(dir.path(), "test-session", "feature");
+        assert!(
+            result.is_ok(),
+            "create_worktree failed: {:?}",
+            result.as_ref().unwrap_err()
+        );
+        let path = result.unwrap();
+        assert!(path.exists(), "worktree directory should exist");
+        assert!(
+            path.join("readme").exists(),
+            "worktree should contain repo files"
+        );
+        // Cleanup
+        remove_worktree(dir.path(), "test-session", true).unwrap();
+    }
+
+    #[test]
+    fn create_worktree_success_new_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let result = create_worktree(dir.path(), "new-branch-session", "new-feature");
+        assert!(
+            result.is_ok(),
+            "create_worktree with new branch failed: {:?}",
+            result.as_ref().unwrap_err()
+        );
+        let path = result.unwrap();
+        assert!(path.exists());
+        // Verify the branch was created locally
+        assert!(
+            Command::new("git")
+                .args(["show-ref", "--verify", "--quiet", "refs/heads/new-feature"])
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        remove_worktree(dir.path(), "new-branch-session", true).unwrap();
+    }
+
+    // ── Remove worktree ────────────────────────────────────────────────
+
+    #[test]
+    fn remove_worktree_removes_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let wt = create_worktree(dir.path(), "remove-me", "feature").unwrap();
+        assert!(wt.exists());
+        remove_worktree(dir.path(), "remove-me", false).unwrap();
+        assert!(!wt.exists());
+    }
+
+    #[test]
+    fn remove_worktree_force_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let wt = create_worktree(dir.path(), "force-rm", "feature").unwrap();
+        assert!(wt.exists());
+        remove_worktree(dir.path(), "force-rm", true).unwrap();
+        assert!(!wt.exists());
+    }
+
+    #[test]
+    fn remove_worktree_fails_not_a_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create the worktree path manually in a non-git directory
+        let wt_path = dir.path().join(".claude").join("worktrees").join("phantom");
+        std::fs::create_dir_all(&wt_path).unwrap();
+        let e = remove_worktree(dir.path(), "phantom", false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("failed to remove worktree"), "{e}");
+    }
+
+    // ── Worktree add failure path ─────────────────────────────────────
+
+    #[test]
+    fn create_worktree_fails_invalid_branch_name() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        // Branch name with space is rejected by git
+        let e = create_worktree(dir.path(), "bad-branch", "bad name")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("git worktree add failed"), "{e}");
+    }
+
+    // ── Remote rebase path helpers ────────────────────────────────────
+
+    /// Set up a scenario where `dir`'s `main` branch is 1 commit behind
+    /// `origin/main`. Also creates a local `feature` branch at the same
+    /// commit as `main`. Returns the working dir and the bare repo.
+    fn setup_behind_remote() -> (tempfile::TempDir, tempfile::TempDir) {
+        let bare = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args(["init", "--bare", "-b", "main"])
+            .current_dir(bare.path())
+            .output()
+            .unwrap();
+
+        // Repo A: init with commit
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        Command::new("git")
+            .args(["remote", "add", "origin", bare.path().to_str().unwrap()])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["push", "-u", "origin", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Create feature branch locally and push it
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["push", "-u", "origin", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Repo B: advance main on remote
+        let dir_b = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args([
+                "clone",
+                bare.path().to_str().unwrap(),
+                dir_b.path().to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        for cfg in [
+            ["config", "user.email", "t@t"],
+            ["config", "user.name", "t"],
+        ] {
+            Command::new("git")
+                .args(cfg)
+                .current_dir(dir_b.path())
+                .output()
+                .unwrap();
+        }
+        std::fs::write(dir_b.path().join("extra"), "x").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir_b.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "extra"])
+            .current_dir(dir_b.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["push", "origin", "main"])
+            .current_dir(dir_b.path())
+            .output()
+            .unwrap();
+
+        // Update A's remote tracking ref
+        Command::new("git")
+            .args(["fetch", "origin", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        (dir, bare)
+    }
+
+    #[test]
+    fn create_worktree_remote_rebase_success() {
+        let (dir, _bare) = setup_behind_remote();
+        let result = create_worktree(dir.path(), "remote-succ", "feature");
+        assert!(
+            result.is_ok(),
+            "rebase + success path failed: {:?}",
+            result.as_ref().unwrap_err()
+        );
+        let path = result.unwrap();
+        assert!(path.exists());
+        remove_worktree(dir.path(), "remote-succ", true).unwrap();
+    }
+
+    #[test]
+    fn create_worktree_remote_rebase_worktree_add_fails() {
+        let (dir, _bare) = setup_behind_remote();
+        // "main" is already checked out in the parent repo, so
+        // git worktree add fails after the rebase finishes
+        let e = create_worktree(dir.path(), "remote-err", "main")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("git worktree add failed"), "{e}");
     }
 }

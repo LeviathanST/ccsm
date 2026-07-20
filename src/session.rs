@@ -296,4 +296,36 @@ mod tests {
             panic!("failed to write {}: {e}", path.display());
         });
     }
+
+    #[test]
+    fn load_all_skips_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        fs_write(dir.path().join("bad.json"), "this is not valid json {{{{");
+        fs_write(
+            dir.path().join("good.json"),
+            &session_json(1, "s1", "/proj", "s1", 1000, Some(2000)),
+        );
+        let sessions = load_all(dir.path(), None).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "s1");
+    }
+
+    #[test]
+    fn load_all_skips_unreadable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a dangling symlink that can't be read
+        #[cfg(unix)]
+        {
+            let bad_path = dir.path().join("bad.json");
+            let nowhere = dir.path().join("nowhere");
+            std::os::unix::fs::symlink(&nowhere, &bad_path).ok();
+        }
+        fs_write(
+            dir.path().join("good.json"),
+            &session_json(1, "s1", "/proj", "s1", 1000, Some(2000)),
+        );
+        let sessions = load_all(dir.path(), None).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "s1");
+    }
 }

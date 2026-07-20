@@ -16,7 +16,7 @@ jobs:
         with:
           components: clippy, rustfmt
       - run: cargo build --all-targets
-      - run: cargo test
+      - run: cargo test -- --test-threads=1
       - run: cargo clippy --all-targets
       - run: cargo fmt -- --check
 
@@ -31,7 +31,7 @@ jobs:
         run: cargo install cargo-llvm-cov
       - name: Generate coverage
         run: |
-          cargo llvm-cov --all-features --no-report || echo "⚠ Some tests failed under coverage — generating report anyway"
+          cargo llvm-cov --all-features --no-report -- --test-threads=1
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov report --json > /tmp/coverage.json
       - name: Check coverage threshold

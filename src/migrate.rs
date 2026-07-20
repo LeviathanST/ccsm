@@ -364,7 +364,33 @@ pub fn run_migrate() -> Result<MigrationReport> {
 mod tests {
     use super::*;
     use crate::registry::WorkspaceIdentity;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn with_data_dir<F: FnOnce()>(f: F) {
+        let _guard = lock_env();
+        let tmp = tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let prev = std::env::var("CCSM_DATA_DIR").ok();
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref());
+        }
+        f();
+        match prev {
+            Some(v) => unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            },
+            None => unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            },
+        }
+    }
 
     // ── Chain Structure ─────────────────────────────────────────
 
@@ -633,5 +659,552 @@ id = "x"
         let dir = tempdir().unwrap();
         let result = migrate_claude_legacy(dir.path(), "test-id").unwrap();
         assert!(!result);
+    }
+
+    // ── Step Functions (extended) ───────────────────────────────
+
+    #[test]
+    fn step_ccsm_dir_to_global_migrates_legacy_data() {
+        with_data_dir(|| {
+            let dir = tempdir().unwrap();
+            let legacy = dir.path().join(".ccsm");
+            std::fs::create_dir_all(&legacy).unwrap();
+            let sessions = serde_json::json!({
+                "updated": "2024-06-01T00:00:00Z",
+                "sessions": []
+            });
+            std::fs::write(
+                legacy.join("sessions.json"),
+                serde_json::to_string_pretty(&sessions).unwrap(),
+            )
+            .unwrap();
+
+            let ctx = MigrationContext {
+                root: dir.path(),
+                id: "test-id",
+            };
+            step_ccsm_dir_to_global(&ctx).unwrap();
+
+            assert!(!legacy.exists(), "legacy .ccsm/ dir should be removed");
+            let global = crate::registry::global_registry_path("test-id");
+            assert!(global.exists(), "sessions.json should exist in global dir");
+        });
+    }
+
+    #[test]
+    fn step_ccsm_dir_to_global_noop_when_legacy_missing_sessions_json() {
+        with_data_dir(|| {
+            let dir = tempdir().unwrap();
+            let legacy = dir.path().join(".ccsm");
+            std::fs::create_dir_all(&legacy).unwrap();
+            // sessions.json is missing — early return, no migration
+
+            let ctx = MigrationContext {
+                root: dir.path(),
+                id: "test-id",
+            };
+            step_ccsm_dir_to_global(&ctx).unwrap();
+
+            assert!(legacy.exists(), "legacy dir should remain untouched");
+            let global = crate::registry::global_registry_path("test-id");
+            assert!(!global.exists(), "no data should be written to global dir");
+        });
+    }
+
+    #[test]
+    fn step_strip_worktree_removes_stale_worktree_field() {
+        with_data_dir(|| {
+            let sessions = serde_json::json!({
+                "updated": "2024-06-01T00:00:00Z",
+                "sessions": [{
+                    "session_id": "abc-123",
+                    "name": "old",
+                    "goal": "x",
+                    "scope": "y",
+                    "status": "completed",
+                    "worktree": "/some/old/worktree/path",
+                    "pids": [],
+                    "tags": [],
+                    "started": "",
+                    "completed": "",
+                    "consumer": "",
+                    "depends_on": [],
+                    "branch": "",
+                    "use_worktree": false,
+                    "retired_session_ids": []
+                }]
+            });
+            let reg_path = crate::registry::global_registry_path("test-id");
+            std::fs::create_dir_all(reg_path.parent().unwrap()).unwrap();
+            std::fs::write(&reg_path, serde_json::to_string_pretty(&sessions).unwrap()).unwrap();
+
+            let ctx = MigrationContext {
+                root: Path::new("/tmp"),
+                id: "test-id",
+            };
+            step_strip_worktree(&ctx).unwrap();
+
+            let content = std::fs::read_to_string(&reg_path).unwrap();
+            assert!(
+                !content.contains("\"worktree\":"),
+                "stale worktree field should be stripped"
+            );
+            assert!(
+                content.contains("\"use_worktree\":"),
+                "use_worktree field should be preserved"
+            );
+        });
+    }
+
+    #[test]
+    fn step_strip_worktree_handles_multiple_sessions() {
+        with_data_dir(|| {
+            let sessions = serde_json::json!({
+                "updated": "2024-06-01T00:00:00Z",
+                "sessions": [
+                    {
+                        "session_id": "a",
+                        "name": "first",
+                        "goal": "x",
+                        "scope": "y",
+                        "status": "in_progress",
+                        "worktree": "/path/a",
+                        "pids": [],
+                        "tags": [],
+                        "started": "",
+                        "completed": "",
+                        "consumer": "",
+                        "depends_on": [],
+                        "branch": "",
+                        "use_worktree": false,
+                        "retired_session_ids": []
+                    },
+                    {
+                        "session_id": "b",
+                        "name": "second",
+                        "goal": "x",
+                        "scope": "y",
+                        "status": "completed",
+                        "worktree": "/path/b",
+                        "pids": [],
+                        "tags": [],
+                        "started": "",
+                        "completed": "",
+                        "consumer": "",
+                        "depends_on": [],
+                        "branch": "",
+                        "use_worktree": false,
+                        "retired_session_ids": []
+                    }
+                ]
+            });
+            let reg_path = crate::registry::global_registry_path("multi-test");
+            std::fs::create_dir_all(reg_path.parent().unwrap()).unwrap();
+            std::fs::write(&reg_path, serde_json::to_string_pretty(&sessions).unwrap()).unwrap();
+
+            let ctx = MigrationContext {
+                root: Path::new("/tmp"),
+                id: "multi-test",
+            };
+            step_strip_worktree(&ctx).unwrap();
+
+            let content = std::fs::read_to_string(&reg_path).unwrap();
+            assert!(
+                !content.contains("\"worktree\":"),
+                "all worktree fields should be stripped"
+            );
+            assert!(
+                content.contains("\"use_worktree\":"),
+                "use_worktree fields should be preserved"
+            );
+            let reg: crate::registry::WorkspaceRegistry = serde_json::from_str(&content).unwrap();
+            assert_eq!(reg.sessions.len(), 2);
+        });
+    }
+
+    // ── find_root (extended) ───────────────────────────────────
+
+    #[test]
+    fn find_root_with_ccsm_directory_falls_through() {
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        // .ccsm is a directory (old format), not a file — find_project_root ignores it
+        std::fs::create_dir(dir.path().join(".ccsm")).unwrap();
+        let root = find_root(dir.path());
+        assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn find_root_with_broken_ccsm_falls_through() {
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        std::fs::write(dir.path().join(".ccsm"), "not valid toml at all").unwrap();
+        let root = find_root(dir.path());
+        assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn find_root_with_ccsm_directory_and_git_uses_git() {
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        std::fs::create_dir(dir.path().join(".ccsm")).unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let root = find_root(dir.path());
+        assert_eq!(root, dir.path());
+    }
+
+    // ── bootstrap_identity (extended) ──────────────────────────
+
+    #[test]
+    fn bootstrap_identity_overwrites_existing_file() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".ccsm"), "garbage data").unwrap();
+        let id = bootstrap_identity(dir.path()).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".ccsm")).unwrap();
+        assert!(content.contains(&id));
+        assert!(content.contains(r#"version = "1""#));
+    }
+
+    // ── run_migrate ────────────────────────────────────────────
+
+    #[test]
+    fn run_migrate_applies_pending_steps_from_v1() {
+        let _guard = lock_env();
+        let data_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().join("data");
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref());
+        }
+
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-migrate-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        std::fs::write(
+            dir.path().join(".ccsm"),
+            r#"version = "1"
+id = "migrate-test"
+"#,
+        )
+        .unwrap();
+
+        let prev_cwd = std::env::current_dir().unwrap();
+        unsafe { std::env::set_current_dir(dir.path()).unwrap() };
+
+        let report = run_migrate().unwrap();
+
+        assert!(
+            !report.steps_run.is_empty(),
+            "should have run migration steps"
+        );
+        let content = std::fs::read_to_string(dir.path().join(".ccsm")).unwrap();
+        assert!(
+            content.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))),
+            "identity should be at target version"
+        );
+
+        unsafe { std::env::set_current_dir(&prev_cwd).unwrap() };
+    }
+
+    #[test]
+    fn run_migrate_bootstraps_when_no_identity() {
+        let _guard = lock_env();
+        let data_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().join("data");
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref());
+        }
+
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-migrate-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+
+        let prev_cwd = std::env::current_dir().unwrap();
+        unsafe { std::env::set_current_dir(dir.path()).unwrap() };
+
+        let report = run_migrate().unwrap();
+
+        assert!(
+            !report.steps_run.is_empty(),
+            "bootstrap + chain should run steps"
+        );
+        let path = dir.path().join(".ccsm");
+        assert!(path.exists(), "identity should have been bootstrapped");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))),
+            "identity should be at target version"
+        );
+
+        unsafe { std::env::set_current_dir(&prev_cwd).unwrap() };
+    }
+
+    #[test]
+    fn run_migrate_already_at_target() {
+        let _guard = lock_env();
+        let data_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().join("data");
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref());
+        }
+
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-migrate-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        let target = env!("CARGO_PKG_VERSION");
+        std::fs::write(
+            dir.path().join(".ccsm"),
+            format!("version = \"{target}\"\nid = \"already-done\"\n"),
+        )
+        .unwrap();
+
+        let prev_cwd = std::env::current_dir().unwrap();
+        unsafe { std::env::set_current_dir(dir.path()).unwrap() };
+
+        let report = run_migrate().unwrap();
+
+        assert!(
+            report.steps_run.is_empty(),
+            "no steps should run when already at target"
+        );
+
+        unsafe { std::env::set_current_dir(&prev_cwd).unwrap() };
+    }
+
+    // ── migrate_claude_legacy (extended) ───────────────────────────
+
+    fn minimal_sessions_json() -> serde_json::Value {
+        serde_json::json!({
+            "updated": "2024-01-01T00:00:00Z",
+            "sessions": [{"session_id": "s1", "name": "base", "goal": "x", "scope": "y", "status": "completed", "pids": [], "tags": [], "started": "", "completed": "", "consumer": "", "depends_on": [], "branch": "", "use_worktree": false, "retired_session_ids": []}]
+        })
+    }
+
+    fn with_identity_and_cwd<F: FnOnce(&Path)>(f: F) {
+        let _guard = lock_env();
+        let data_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().join("data");
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref());
+        }
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".ccsm"),
+            "version = \"1\"\nid = \"legacy-test\"\n",
+        )
+        .unwrap();
+        let prev_cwd = std::env::current_dir().unwrap();
+        unsafe { std::env::set_current_dir(dir.path()).unwrap() };
+        f(dir.path());
+        unsafe { std::env::set_current_dir(&prev_cwd).unwrap() };
+    }
+
+    /// Create .claude/sessions.json so migrate_claude_legacy doesn't early-return.
+    fn seed_claude_base(root: &Path) {
+        let claude = root.join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("sessions.json"),
+            serde_json::to_string(&minimal_sessions_json()).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migrate_claude_legacy_copies_sessions_json() {
+        with_identity_and_cwd(|root| {
+            let sessions = serde_json::json!({
+                "updated": "2024-01-01T00:00:00Z",
+                "sessions": [{"session_id": "s1", "name": "test", "goal": "x", "scope": "y", "status": "completed", "pids": [], "tags": [], "started": "", "completed": "", "consumer": "", "depends_on": [], "branch": "", "use_worktree": false, "retired_session_ids": []}]
+            });
+            let claude = root.join(".claude");
+            std::fs::create_dir_all(&claude).unwrap();
+            std::fs::write(
+                claude.join("sessions.json"),
+                serde_json::to_string(&sessions).unwrap(),
+            )
+            .unwrap();
+
+            let result = migrate_claude_legacy(root, "legacy-test").unwrap();
+            assert!(result);
+
+            let global = crate::registry::global_registry_path("legacy-test");
+            assert!(global.exists());
+        });
+    }
+
+    #[test]
+    fn migrate_claude_legacy_fills_empty_consumer() {
+        with_identity_and_cwd(|root| {
+            let sessions = serde_json::json!({
+                "updated": "2024-01-01T00:00:00Z",
+                "sessions": [{"session_id": "s1", "name": "test", "goal": "x", "scope": "y", "status": "completed", "consumer": "", "pids": [], "tags": [], "started": "", "completed": "", "depends_on": [], "branch": "", "use_worktree": false, "retired_session_ids": []}]
+            });
+            let claude = root.join(".claude");
+            std::fs::create_dir_all(&claude).unwrap();
+            std::fs::write(
+                claude.join("sessions.json"),
+                serde_json::to_string(&sessions).unwrap(),
+            )
+            .unwrap();
+
+            migrate_claude_legacy(root, "legacy-test").unwrap();
+
+            let global = crate::registry::global_registry_path("legacy-test");
+            let content = std::fs::read_to_string(&global).unwrap();
+            let reg: crate::registry::WorkspaceRegistry = serde_json::from_str(&content).unwrap();
+            assert_eq!(reg.sessions[0].consumer, "claude");
+        });
+    }
+
+    #[test]
+    fn migrate_claude_legacy_copies_session_detail_files() {
+        with_identity_and_cwd(|root| {
+            seed_claude_base(root);
+            let sessions_dir = root.join(".claude").join("sessions");
+            std::fs::create_dir_all(&sessions_dir).unwrap();
+            std::fs::write(sessions_dir.join("detail1.md"), "# Detail 1").unwrap();
+            std::fs::write(sessions_dir.join("detail2.md"), "# Detail 2").unwrap();
+
+            let result = migrate_claude_legacy(root, "legacy-test").unwrap();
+            assert!(result);
+
+            let dst = crate::registry::global_data_dir("legacy-test").join("sessions");
+            assert!(dst.join("detail1.md").exists());
+            assert!(dst.join("detail2.md").exists());
+        });
+    }
+
+    #[test]
+    fn migrate_claude_legacy_copies_session_group_files() {
+        with_identity_and_cwd(|root| {
+            seed_claude_base(root);
+            let group_dir = root.join(".claude").join("session-group");
+            std::fs::create_dir_all(&group_dir).unwrap();
+            std::fs::write(group_dir.join("group1.md"), "# Group 1").unwrap();
+
+            let result = migrate_claude_legacy(root, "legacy-test").unwrap();
+            assert!(result);
+
+            let dst = crate::registry::global_data_dir("legacy-test").join("session-group");
+            assert!(dst.join("group1.md").exists());
+        });
+    }
+
+    #[test]
+    fn migrate_claude_legacy_copies_template() {
+        with_identity_and_cwd(|root| {
+            seed_claude_base(root);
+            std::fs::write(
+                root.join(".claude").join("session-detail-template.md"),
+                "# Template",
+            )
+            .unwrap();
+
+            let result = migrate_claude_legacy(root, "legacy-test").unwrap();
+            assert!(result);
+
+            let dst = crate::registry::global_template_path("legacy-test");
+            assert!(dst.exists());
+        });
+    }
+
+    // ── read_identity (extended) ───────────────────────────────
+
+    #[test]
+    fn read_identity_returns_none_when_ccsm_is_directory() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".ccsm")).unwrap();
+        assert!(read_identity(dir.path()).unwrap().is_none());
+    }
+
+    // ── step_seed_and_dir ─────────────────────────────────────
+
+    #[test]
+    fn step_seed_and_dir_creates_dirs_and_config() {
+        with_data_dir(|| {
+            let dir = tempdir().unwrap();
+            let ctx = MigrationContext {
+                root: dir.path(),
+                id: "seed-test",
+            };
+            step_seed_and_dir(&ctx).unwrap();
+
+            let data_dir = crate::registry::global_data_dir("seed-test");
+            assert!(data_dir.join("sessions").is_dir());
+            assert!(data_dir.join("session-group").is_dir());
+            assert!(data_dir.join("worktrees").is_dir());
+            assert!(crate::registry::global_config_path("seed-test").exists());
+        });
+    }
+
+    #[test]
+    fn step_seed_and_dir_idempotent() {
+        with_data_dir(|| {
+            let dir = tempdir().unwrap();
+            let ctx = MigrationContext {
+                root: dir.path(),
+                id: "seed-test",
+            };
+            // Run twice — should not fail
+            step_seed_and_dir(&ctx).unwrap();
+            step_seed_and_dir(&ctx).unwrap();
+
+            let data_dir = crate::registry::global_data_dir("seed-test");
+            assert!(data_dir.join("sessions").is_dir());
+        });
+    }
+
+    // ── run_migrate triggers claude legacy migration ──────────
+
+    #[test]
+    fn run_migrate_includes_claude_legacy_step() {
+        let _guard = lock_env();
+        let data_tmp = tempdir().unwrap();
+        let data_dir = data_tmp.path().join("data");
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref());
+        }
+
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-migrate-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        // Set up .claude/ legacy data
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("sessions.json"),
+            r#"{"updated":"2024-01-01","sessions":[]}"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            dir.path().join(".ccsm"),
+            r#"version = "1"
+id = "claude-legacy-test"
+"#,
+        )
+        .unwrap();
+
+        let prev_cwd = std::env::current_dir().unwrap();
+        unsafe { std::env::set_current_dir(dir.path()).unwrap() };
+
+        let report = run_migrate().unwrap();
+
+        assert!(
+            report.steps_run.iter().any(|s| s.contains(".claude")),
+            "should include claude legacy migration step"
+        );
+
+        unsafe { std::env::set_current_dir(&prev_cwd).unwrap() };
     }
 }
