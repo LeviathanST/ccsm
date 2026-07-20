@@ -562,33 +562,46 @@ pub fn run_resume(
                 });
 
         if let Some(harvested_id) = new_sid {
-            let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
-            let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
-                Some(e) => e,
-                None => anyhow::bail!(
-                    "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 6b",
-                    ErrorCode::NoSession,
-                    name
-                ),
+            // Find the session and update — warn if gone instead of hard error.
+            // The agent may have removed its own session entry via a ccsm command.
+            let harvested = {
+                let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
+                match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
+                    Some(entry) => {
+                        if entry.session_id.is_empty() {
+                            entry.session_id.clone_from(&harvested_id);
+                        }
+                        if entry.started.is_empty() {
+                            entry.started = crate::registry::now_iso();
+                        }
+                        reg.updated = crate::registry::now_iso();
+                        reg.save()?;
+                        crate::registry::sync_status_line(name);
+                        true
+                    }
+                    None => {
+                        eprintln!(
+                            "warning: session '{}' not found after agent exited — \
+                             may have been removed during the session",
+                            name,
+                        );
+                        false
+                    }
+                }
             };
-            if entry.session_id.is_empty() {
-                entry.session_id.clone_from(&harvested_id);
+            if harvested {
+                if let Err(e) =
+                    crate::consumer::opencode_update_title(&db_path, &harvested_id, name)
+                {
+                    eprintln!("  warning: failed to rename opencode session: {e}");
+                }
+                let src = if sid.is_none() {
+                    "fresh"
+                } else {
+                    "fresh (resume ignored)"
+                };
+                eprintln!("  opencode  {src} session tracked");
             }
-            if entry.started.is_empty() {
-                entry.started = crate::registry::now_iso();
-            }
-            reg.updated = crate::registry::now_iso();
-            reg.save()?;
-            crate::registry::sync_status_line(name);
-            if let Err(e) = crate::consumer::opencode_update_title(&db_path, &harvested_id, name) {
-                eprintln!("  warning: failed to rename opencode session: {e}");
-            }
-            let src = if sid.is_none() {
-                "fresh"
-            } else {
-                "fresh (resume ignored)"
-            };
-            eprintln!("  opencode  {src} session tracked");
         } else if let Some(ref existing_sid) = sid {
             let current_title = crate::consumer::opencode_get_title(&db_path, existing_sid);
             if current_title.as_deref() != Some(name) {
