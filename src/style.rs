@@ -304,4 +304,99 @@ mod tests {
         s.set_message("new");
         assert_eq!(s.message, "new");
     }
+
+    #[test]
+    fn status_icon_styled_abandoned() {
+        assert_eq!(status_icon_styled("✗", "abandoned"), "✗");
+    }
+
+    #[test]
+    fn status_icon_styled_pending() {
+        assert_eq!(status_icon_styled("○", "pending"), "○");
+    }
+
+    #[test]
+    fn status_icon_styled_trashed() {
+        assert_eq!(status_icon_styled("🗑", "trashed"), "🗑");
+    }
+
+    #[test]
+    fn status_icon_styled_unknown() {
+        assert_eq!(status_icon_styled("?", "unknown_status"), "?");
+    }
+
+    #[test]
+    fn error_returns_text_without_color_when_piped() {
+        assert_eq!(error("err"), "err");
+    }
+
+    #[test]
+    fn info_stderr_returns_text_without_color_when_piped() {
+        assert_eq!(info_stderr("info"), "info");
+    }
+
+    #[test]
+    fn color_functions_handle_empty_string() {
+        assert_eq!(primary(""), "");
+        assert_eq!(success(""), "");
+        assert_eq!(warning(""), "");
+        assert_eq!(error(""), "");
+        assert_eq!(dim(""), "");
+        assert_eq!(info(""), "");
+        assert_eq!(error_stderr(""), "");
+        assert_eq!(warning_stderr(""), "");
+    }
+
+    #[test]
+    fn status_icon_styled_empty_icon() {
+        assert_eq!(status_icon_styled("", "completed"), "");
+    }
+
+    #[test]
+    fn use_emoji_returns_false_when_stderr_is_not_terminal() {
+        assert!(!use_emoji());
+    }
+
+    #[test]
+    fn use_emoji_returns_false_with_no_color() {
+        unsafe {
+            std::env::set_var("NO_COLOR", "1");
+        }
+        assert!(!use_emoji());
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+        }
+    }
+
+    #[test]
+    fn spinner_enabled_when_stderr_is_terminal_and_no_color_not_set() {
+        // In test context stderr is typically not a terminal, so disabled
+        let s = Spinner::new("test");
+        assert!(!s.enabled);
+    }
+
+    #[test]
+    fn spinner_done_clears_when_disabled() {
+        let s = Spinner {
+            frame: 0,
+            message: "test".into(),
+            enabled: false,
+        };
+        s.done(); // should not panic
+    }
+
+    #[test]
+    fn status_label_trashed_returns_text_without_color_when_piped() {
+        assert_eq!(status_label("trashed"), "trashed");
+    }
+
+    #[test]
+    fn status_icon_styled_trashed_returns_icon_without_color_when_piped() {
+        assert_eq!(status_icon_styled("🗑", "trashed"), "🗑");
+    }
+
+    #[test]
+    fn status_icon_styled_pending_returns_icon_without_color_when_piped() {
+        assert_eq!(status_icon_styled("○", "pending"), "○");
+    }
 }

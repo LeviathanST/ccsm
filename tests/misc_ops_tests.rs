@@ -273,6 +273,196 @@ fn misc_doctor_healthy() {
 }
 
 #[test]
+fn misc_doctor_empty_goal() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "empty-goal-session", "-g", "placeholder"]);
+
+    let mut reg = ws.read_registry();
+    for s in reg["sessions"].as_array_mut().unwrap() {
+        if s["name"] == "empty-goal-session" {
+            s["goal"] = serde_json::Value::String(String::new());
+            s["status"] = serde_json::Value::String("in_progress".to_string());
+        }
+    }
+    ws.write_registry(&reg);
+
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("empty goal"),
+        "doctor should report empty goal: {out}"
+    );
+}
+
+#[test]
+fn misc_doctor_name_as_goal() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "namegoal-test", "-g", "namegoal-test"]);
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("goal equals session name"),
+        "doctor should detect name-as-goal: {out}"
+    );
+}
+
+#[test]
+fn misc_doctor_cli_artifact_goal() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "artifact-session", "-g", "placeholder"]);
+
+    let mut reg = ws.read_registry();
+    for s in reg["sessions"].as_array_mut().unwrap() {
+        if s["name"] == "artifact-session" {
+            s["goal"] = serde_json::Value::String("-g leaked flag text".to_string());
+        }
+    }
+    ws.write_registry(&reg);
+
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("cli artifact"),
+        "doctor should detect cli artifact: {out}"
+    );
+}
+
+#[test]
+fn misc_doctor_template_residue() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "residue-session", "-g", "test session"]);
+
+    ws.write_detail(
+        "residue-session",
+        "\
+# Session: {{name}}
+## Goal
+{{goal}}
+",
+    );
+
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("template residue"),
+        "doctor should detect template residue: {out}"
+    );
+}
+
+#[test]
+fn misc_doctor_stale_lock() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "lock-session", "-g", "test session"]);
+
+    let lock_path = ws.global_dir().join("sessions.json.lock");
+    std::fs::write(&lock_path, "locked by test").unwrap();
+
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("stale lock file"),
+        "doctor should report stale lock: {out}"
+    );
+
+    std::fs::remove_file(&lock_path).ok();
+}
+
+#[test]
+fn misc_doctor_completed_empty_scope() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "no-scope-session", "-g", "test completed session"]);
+
+    let mut reg = ws.read_registry();
+    for s in reg["sessions"].as_array_mut().unwrap() {
+        if s["name"] == "no-scope-session" {
+            s["status"] = serde_json::Value::String("completed".to_string());
+        }
+    }
+    ws.write_registry(&reg);
+
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("empty scope"),
+        "doctor should report empty scope: {out}"
+    );
+}
+
+#[test]
+fn misc_doctor_dead_pid() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "pid-session", "-g", "session with dead pid"]);
+
+    let mut reg = ws.read_registry();
+    for s in reg["sessions"].as_array_mut().unwrap() {
+        if s["name"] == "pid-session" {
+            s["pids"] = serde_json::json!([99999999]);
+        }
+    }
+    ws.write_registry(&reg);
+
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("dead pid"),
+        "doctor should report dead pid: {out}"
+    );
+}
+
+#[test]
+fn misc_doctor_orphaned_session_id() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "orphan-session", "-g", "session with orphaned id"]);
+
+    let mut reg = ws.read_registry();
+    for s in reg["sessions"].as_array_mut().unwrap() {
+        if s["name"] == "orphan-session" {
+            s["session_id"] =
+                serde_json::Value::String("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string());
+        }
+    }
+    ws.write_registry(&reg);
+
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("orphaned session_id"),
+        "doctor should report orphaned session_id: {out}"
+    );
+}
+
+#[test]
+fn misc_doctor_orphaned_worktree_dir() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "wt-orphan", "-g", "session for worktree dir test"]);
+
+    // Create a worktree directory with no matching session
+    let wt_dir = ws.global_dir().join("worktrees").join("orphaned-by-test");
+    std::fs::create_dir_all(&wt_dir).unwrap();
+
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("orphaned worktree dir"),
+        "doctor should report orphaned worktree dir: {out}"
+    );
+
+    std::fs::remove_dir_all(ws.global_dir().join("worktrees")).ok();
+}
+
+#[test]
+fn misc_doctor_empty_registry() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    // Run with empty registry (TempWorkspace starts with no sessions)
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("auto-created"),
+        "doctor with empty registry: {out}"
+    );
+}
+
+#[test]
 fn misc_branch_set_and_show() {
     ensure_built();
     let ws = TempWorkspace::new();

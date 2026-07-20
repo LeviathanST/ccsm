@@ -469,3 +469,418 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::{SessionStatus, WorkspaceRegistry, WorkspaceSession};
+    use std::path::PathBuf;
+
+    #[test]
+    fn template_content_contains_required_sections() {
+        assert!(TEMPLATE_CONTENT.contains("## Goal"));
+        assert!(TEMPLATE_CONTENT.contains("## Scope / Plan"));
+        assert!(TEMPLATE_CONTENT.contains("## Tags"));
+        assert!(TEMPLATE_CONTENT.contains("## Progress Log"));
+        assert!(TEMPLATE_CONTENT.contains("## Dependencies"));
+        assert!(TEMPLATE_CONTENT.contains("## Notes"));
+        assert!(TEMPLATE_CONTENT.contains("{{goal}}"));
+        assert!(TEMPLATE_CONTENT.contains("{{scope}}"));
+        assert!(TEMPLATE_CONTENT.contains("{{tags}}"));
+        assert!(TEMPLATE_CONTENT.contains("{{dependencies}}"));
+        assert!(TEMPLATE_CONTENT.contains("{{name}}"));
+        assert!(TEMPLATE_CONTENT.contains("{{status}}"));
+    }
+
+    #[test]
+    fn template_content_has_progress_log_instructions() {
+        assert!(TEMPLATE_CONTENT.contains("[YYYY-MM-DD HH:MM]"));
+    }
+
+    fn setup_doctor_env(sessions: Vec<WorkspaceSession>) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let id = "test-doctor-id";
+        std::fs::write(
+            workspace.join(".ccsm"),
+            format!(
+                "version = \"{}\"\nid = \"{id}\"\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let id_dir = data_dir.join(id);
+        std::fs::create_dir_all(&id_dir).unwrap();
+        let reg = WorkspaceRegistry {
+            updated: "2025-01-01T00:00:00Z".into(),
+            sessions,
+        };
+        std::fs::write(
+            id_dir.join("sessions.json"),
+            serde_json::to_string_pretty(&reg).unwrap(),
+        )
+        .unwrap();
+
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        (dir, workspace, home)
+    }
+
+    fn run_doctor_in_env<F>(workspace: &Path, home: &Path, data_dir: &Path, f: F)
+    where
+        F: FnOnce() + std::panic::UnwindSafe,
+    {
+        let orig_data_dir = std::env::var("CCSM_DATA_DIR").ok();
+        let orig_home = std::env::var("HOME").ok();
+        let orig_cwd = std::env::current_dir().ok();
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir);
+            std::env::set_var("HOME", home);
+        }
+        unsafe { std::env::set_current_dir(workspace).unwrap() };
+
+        let result = std::panic::catch_unwind(f);
+
+        if let Some(cwd) = orig_cwd {
+            unsafe { std::env::set_current_dir(cwd).ok() };
+        }
+        match orig_data_dir {
+            Some(v) => unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            },
+            None => unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            },
+        }
+        match orig_home {
+            Some(v) => unsafe {
+                std::env::set_var("HOME", v);
+            },
+            None => unsafe {
+                std::env::remove_var("HOME");
+            },
+        }
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    fn make_session(
+        name: &str,
+        goal: &str,
+        scope: &str,
+        status: SessionStatus,
+    ) -> WorkspaceSession {
+        WorkspaceSession {
+            session_id: String::new(),
+            name: name.into(),
+            goal: goal.into(),
+            scope: scope.into(),
+            status,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            consumer: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn run_doctor_with_healthy_session() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "my-task",
+            "implement the foo bar feature with tests",
+            "approach: implement foo, add bar, test everything",
+            SessionStatus::Pending,
+        )]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should pass for healthy session: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_detects_empty_goal_on_non_pending() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "empty-goal-task",
+            "",
+            "some scope",
+            SessionStatus::InProgress,
+        )]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle empty goal: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_detects_vague_goal() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "vague",
+            "hi",
+            "",
+            SessionStatus::InProgress,
+        )]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle vague goal: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_detects_name_as_goal() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "my-task",
+            "my-task",
+            "",
+            SessionStatus::InProgress,
+        )]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle name-as-goal: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_detects_cli_artifact_in_goal() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "cli-artifact",
+            "-g fix the bug",
+            "",
+            SessionStatus::InProgress,
+        )]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle cli artifact: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_detects_empty_scope_on_completed() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "no-scope-done",
+            "a real goal that is long enough to be useful",
+            "",
+            SessionStatus::Completed,
+        )]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle empty scope on completed: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_detects_stale_session() {
+        let (dir, workspace, home) = setup_doctor_env(vec![WorkspaceSession {
+            session_id: String::new(),
+            name: "stale-session".into(),
+            goal: "a real goal that is long enough to be useful".into(),
+            scope: "some scope".into(),
+            status: SessionStatus::InProgress,
+            pids: vec![],
+            tags: vec![],
+            started: "2024-01-01T00:00:00Z".into(),
+            completed: String::new(),
+            consumer: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: String::new(),
+            use_worktree: false,
+            retired_session_ids: vec![],
+        }]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle stale session: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_auto_creates_missing_template() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "task",
+            "a real goal that is long enough to be useful task",
+            "approach: do work",
+            SessionStatus::Pending,
+        )]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should auto-create template: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_multiple_sessions_with_issues() {
+        let (dir, workspace, home) = setup_doctor_env(vec![
+            make_session(
+                "healthy-task",
+                "a real goal that is long enough to be useful",
+                "approach: implement, test, deploy",
+                SessionStatus::Pending,
+            ),
+            WorkspaceSession {
+                session_id: String::new(),
+                name: "started-long-ago".into(),
+                goal: "another long enough goal to pass checks".into(),
+                scope: String::new(),
+                status: SessionStatus::InProgress,
+                pids: vec![],
+                tags: vec![],
+                started: "2024-06-01T00:00:00Z".into(),
+                completed: String::new(),
+                consumer: String::new(),
+                group: None,
+                depends_on: vec![],
+                branch: String::new(),
+                use_worktree: false,
+                retired_session_ids: vec![],
+            },
+        ]);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle multiple sessions: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_handles_corrupt_registry_gracefully() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let id = "test-doctor-corrupt";
+        std::fs::write(
+            workspace.join(".ccsm"),
+            format!(
+                "version = \"{}\"\nid = \"{id}\"\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let id_dir = data_dir.join(id);
+        std::fs::create_dir_all(&id_dir).unwrap();
+        std::fs::write(id_dir.join("sessions.json"), "not valid json at all").unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle corrupt registry: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_detects_stale_lock_file() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "task",
+            "a real goal that is long enough to be useful",
+            "approach: do work",
+            SessionStatus::Pending,
+        )]);
+        let data_dir = dir.path().join("data");
+
+        // Create a stale lock file
+        let id_dir = data_dir.join("test-doctor-id");
+        std::fs::write(id_dir.join("sessions.json.lock"), "").unwrap();
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle stale lock: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_multiple_in_progress_triggers_hype() {
+        let mut sessions = Vec::new();
+        for i in 0..20 {
+            sessions.push(make_session(
+                &format!("task-{}", i),
+                &format!("a real goal that is long enough to be useful {}", i),
+                "scope",
+                SessionStatus::InProgress,
+            ));
+        }
+        let (dir, workspace, home) = setup_doctor_env(sessions);
+        let data_dir = dir.path().join("data");
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            let result = run_doctor(&home, &workspace);
+            assert!(
+                result.is_ok(),
+                "doctor should handle hype mode: {:?}",
+                result
+            );
+        });
+    }
+}

@@ -95,7 +95,6 @@ fn collect_rs_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) 
     }
 }
 
-
 #[test]
 fn emoji_not_in_doctor_when_piped() {
     ensure_built();
@@ -170,7 +169,7 @@ fn doctor_warns_missing_detail_file() {
     let detail_path = ws
         .home()
         .join(".ccsm")
-        .join(&id)
+        .join(id)
         .join("sessions")
         .join("missing-detail.md");
     let _ = std::fs::remove_file(&detail_path);
@@ -194,7 +193,7 @@ fn doctor_with_corrupt_registry() {
         .lines()
         .find_map(|l| l.strip_prefix("id = \"").and_then(|s| s.strip_suffix('"')))
         .expect("parse identity id");
-    let reg_path = ws.home().join(".ccsm").join(&id).join("sessions.json");
+    let reg_path = ws.home().join(".ccsm").join(id).join("sessions.json");
     std::fs::write(&reg_path, b"not valid json {{{").unwrap();
     let out = ws.run(&["doctor"]);
     assert!(

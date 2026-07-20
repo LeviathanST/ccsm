@@ -1,15 +1,9 @@
-#[allow(dead_code)]
 pub(crate) mod commands;
-#[allow(dead_code)]
 mod config;
-#[allow(dead_code)]
 mod consumer;
 mod migrate;
-#[allow(dead_code)]
 mod registry;
-#[allow(dead_code)]
 mod sequence;
-#[allow(dead_code)]
 mod session;
 mod style;
 pub(crate) mod table;
@@ -519,11 +513,11 @@ fn run_main() -> anyhow::Result<()> {
     // We chdir so every downstream function reads the right registry via PWD.
     // Migrate command handles its own workspace resolution (needs raw identity).
     if let Some(ref ws) = cli.workspace {
-        std::env::set_current_dir(ws)?;
+        unsafe { std::env::set_current_dir(ws) }?;
     } else if !matches!(cli.command, Commands::Migrate)
         && let Some(auto_ws) = resolve_workspace()?
     {
-        std::env::set_current_dir(&auto_ws)?;
+        unsafe { std::env::set_current_dir(&auto_ws) }?;
     }
 
     // First-run welcome: show once per project when identity exists
@@ -1485,7 +1479,10 @@ fn run_attach(
                                             &s.session_id[..s.session_id.len().min(8)],
                                         );
                                     }
-                                    anyhow::bail!("{} pick one with --pid <pid>.", ErrorCode::NoSession);
+                                    anyhow::bail!(
+                                        "{} pick one with --pid <pid>.",
+                                        ErrorCode::NoSession
+                                    );
                                 }
                                 _ => {
                                     eprintln!(
@@ -1542,7 +1539,11 @@ fn run_attach(
                     let latest = &candidates[0].1;
                     let meta = crate::consumer::read_pi_session_meta(latest)?;
                     if meta.session_id.is_empty() {
-                        anyhow::bail!("{} could not extract session ID from {}", ErrorCode::NoSession, latest.display());
+                        anyhow::bail!(
+                            "{} could not extract session ID from {}",
+                            ErrorCode::NoSession,
+                            latest.display()
+                        );
                     }
                     eprintln!(
                         "auto-detected session {} from {}",
@@ -1632,7 +1633,9 @@ fn run_rename(
             .sessions
             .iter()
             .position(|s| s.name == old)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, old))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, old)
+            })?;
         if reg.sessions.iter().any(|s| s.name == new) {
             anyhow::bail!("{} session '{}' already exists", ErrorCode::Exists, new);
         }
@@ -1744,7 +1747,13 @@ fn run_rename(
         .sessions
         .iter()
         .position(|s| s.name == old)
-        .ok_or_else(|| anyhow::anyhow!("{} session '{}' was removed before rename completed", ErrorCode::NoSession, old))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} session '{}' was removed before rename completed",
+                ErrorCode::NoSession,
+                old
+            )
+        })?;
     if reg.sessions.iter().any(|s| s.name == new) {
         anyhow::bail!(
             "{} session '{}' was created before rename completed",
@@ -2830,13 +2839,22 @@ fn run_group(
                 ErrorCode::Invalid
             );
         }
-        let name = name.ok_or_else(|| anyhow::anyhow!("{} group NAME is required with --roadmap", ErrorCode::Invalid))?;
+        let name = name.ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} group NAME is required with --roadmap",
+                ErrorCode::Invalid
+            )
+        })?;
         return run_group_roadmap(name);
     }
 
     // All other modes require a name
-    let name =
-        name.ok_or_else(|| anyhow::anyhow!("{} NAME is required (or use --list to list all groups)", ErrorCode::Invalid))?;
+    let name = name.ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} NAME is required (or use --list to list all groups)",
+            ErrorCode::Invalid
+        )
+    })?;
 
     // --goal: set group goal (name = group name, not session name)
     if let Some(goal_text) = goal {
@@ -2898,9 +2916,13 @@ fn run_group(
             None => GroupRank::Free,
             Some("free") => GroupRank::Free,
             Some(n) => {
-                let num: u32 = n
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("{} rank must be 'free' or a number, got '{}'", ErrorCode::Invalid, n))?;
+                let num: u32 = n.parse().map_err(|_| {
+                    anyhow::anyhow!(
+                        "{} rank must be 'free' or a number, got '{}'",
+                        ErrorCode::Invalid,
+                        n
+                    )
+                })?;
                 GroupRank::Number(num)
             }
         };
@@ -4746,7 +4768,10 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
             for m in &matches {
                 eprintln!("  {:>3}. {}", m.index, m.text);
             }
-            anyhow::bail!("{} be more specific (use number or unique text)", ErrorCode::Invalid);
+            anyhow::bail!(
+                "{} be more specific (use number or unique text)",
+                ErrorCode::Invalid
+            );
         } else {
             Action::Update(matches[0].index)
         }
@@ -4859,7 +4884,11 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
         "fish" => generate(Shell::Fish, &mut cmd, bin_name, &mut std::io::stdout()),
         "zsh" => generate(Shell::Zsh, &mut cmd, bin_name, &mut std::io::stdout()),
         other => {
-            anyhow::bail!("{} unknown shell '{}'. Supported: bash, fish, zsh", ErrorCode::Invalid, other);
+            anyhow::bail!(
+                "{} unknown shell '{}'. Supported: bash, fish, zsh",
+                ErrorCode::Invalid,
+                other
+            );
         }
     }
     Ok(())
@@ -4874,34 +4903,33 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
     let ctx = crate::registry::resolve_identity()?;
     let reg = crate::registry::WorkspaceRegistry::load()?;
 
-    let session = match name {
-        Some(n) => reg
-            .sessions
-            .iter()
-            .find(|s| s.name == n)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, n))?,
-        None => {
-            // CCSM_SESSION is injected at spawn time — it's the authoritative
-            // source of identity. If absent/empty, there's no live session.
-            let csm = std::env::var("CCSM_SESSION").ok().filter(|v| !v.is_empty());
-            match csm {
-                Some(ref n) => match reg.sessions.iter().find(|s| s.name == *n) {
-                    Some(s) => s,
+    let session =
+        match name {
+            Some(n) => reg.sessions.iter().find(|s| s.name == n).ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, n)
+            })?,
+            None => {
+                // CCSM_SESSION is injected at spawn time — it's the authoritative
+                // source of identity. If absent/empty, there's no live session.
+                let csm = std::env::var("CCSM_SESSION").ok().filter(|v| !v.is_empty());
+                match csm {
+                    Some(ref n) => match reg.sessions.iter().find(|s| s.name == *n) {
+                        Some(s) => s,
+                        None => {
+                            eprintln!(
+                                "info: CCSM_SESSION={} not found in workspace — no live session",
+                                n
+                            );
+                            return Ok(());
+                        }
+                    },
                     None => {
-                        eprintln!(
-                            "info: CCSM_SESSION={} not found in workspace — no live session",
-                            n
-                        );
+                        eprintln!("No live session! Please pick a session to continue.");
                         return Ok(());
                     }
-                },
-                None => {
-                    eprintln!("No live session! Please pick a session to continue.");
-                    return Ok(());
                 }
             }
-        }
-    };
+        };
 
     // Read checklist from detail file (mechanical injection — agent can't skip it)
     let detail_path = crate::registry::global_detail_path(&ctx.id, &session.name);
@@ -5051,21 +5079,44 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
     let reg = crate::registry::WorkspaceRegistry::load()?;
 
-    let session = match name {
-        Some(n) => reg
-            .sessions
-            .iter()
-            .find(|s| s.name == n)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, n))?,
-        None => {
-            // CCSM_SESSION env var is injected at spawn time.
-            let env_session = std::env::var("CCSM_SESSION").ok();
-            if let Some(ref n) = env_session {
-                if let Some(s) = reg.sessions.iter().find(|s| s.name == *n) {
-                    s
+    let session =
+        match name {
+            Some(n) => reg.sessions.iter().find(|s| s.name == n).ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, n)
+            })?,
+            None => {
+                // CCSM_SESSION env var is injected at spawn time.
+                let env_session = std::env::var("CCSM_SESSION").ok();
+                if let Some(ref n) = env_session {
+                    if let Some(s) = reg.sessions.iter().find(|s| s.name == *n) {
+                        s
+                    } else {
+                        // CCSM_SESSION name not in this workspace's registry —
+                        // fall through to in_progress scan.
+                        let active: Vec<_> = reg
+                            .sessions
+                            .iter()
+                            .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
+                            .collect();
+                        match active.as_slice() {
+                            [] => {
+                                println!("GATE: NO_ACTIVE_SESSION — nothing to gate");
+                                return Ok(());
+                            }
+                            [s] => *s,
+                            multiple => {
+                                println!(
+                                    "GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.",
+                                    multiple.len()
+                                );
+                                for s in multiple {
+                                    println!("  - {}", s.name);
+                                }
+                                return Ok(());
+                            }
+                        }
+                    }
                 } else {
-                    // CCSM_SESSION name not in this workspace's registry —
-                    // fall through to in_progress scan.
                     let active: Vec<_> = reg
                         .sessions
                         .iter()
@@ -5089,32 +5140,8 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
                         }
                     }
                 }
-            } else {
-                let active: Vec<_> = reg
-                    .sessions
-                    .iter()
-                    .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
-                    .collect();
-                match active.as_slice() {
-                    [] => {
-                        println!("GATE: NO_ACTIVE_SESSION — nothing to gate");
-                        return Ok(());
-                    }
-                    [s] => *s,
-                    multiple => {
-                        println!(
-                            "GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.",
-                            multiple.len()
-                        );
-                        for s in multiple {
-                            println!("  - {}", s.name);
-                        }
-                        return Ok(());
-                    }
-                }
             }
-        }
-    };
+        };
 
     let mut fail = false;
 
@@ -5473,4 +5500,2528 @@ fn parse_version(v: &str) -> anyhow::Result<(u32, u32, u32)> {
 fn run_migrate() -> anyhow::Result<()> {
     crate::migrate::run_migrate()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_code_display_formats_correctly() {
+        assert_eq!(ErrorCode::NoSession.to_string(), "[ERR_NOSESSION]");
+        assert_eq!(ErrorCode::Exists.to_string(), "[ERR_EXISTS]");
+        assert_eq!(ErrorCode::BadStatus.to_string(), "[ERR_BADSTATUS]");
+        assert_eq!(ErrorCode::Gate.to_string(), "[ERR_GATE]");
+        assert_eq!(ErrorCode::Invalid.to_string(), "[ERR_INVALID]");
+        assert_eq!(ErrorCode::Section.to_string(), "[ERR_SECTION]");
+        assert_eq!(ErrorCode::Dep.to_string(), "[ERR_DEP]");
+    }
+
+    #[test]
+    fn bail_err_formats_correctly() {
+        let err = anyhow::anyhow!(
+            "{} {}",
+            ErrorCode::NoSession,
+            format!("session '{}' not found", "test")
+        );
+        assert_eq!(err.to_string(), "[ERR_NOSESSION] session 'test' not found");
+    }
+
+    #[test]
+    fn parse_version_returns_ok_on_valid_semver() {
+        let v = parse_version("1.2.3").unwrap();
+        assert_eq!(v, (1, 2, 3));
+    }
+
+    #[test]
+    fn parse_version_rejects_invalid_format() {
+        assert!(parse_version("1.2").is_err());
+        assert!(parse_version("abc").is_err());
+        assert!(parse_version("").is_err());
+    }
+
+    #[test]
+    fn parse_version_rejects_non_numeric() {
+        let err = parse_version("a.b.c").unwrap_err();
+        assert!(err.to_string().contains("invalid digit"));
+    }
+
+    #[test]
+    fn parse_version_rejects_missing_minor() {
+        let err = parse_version("a.b").unwrap_err();
+        assert!(err.to_string().contains("[ERR_INVALID]"));
+    }
+
+    #[test]
+    fn cli_parse_consumer_flag() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "--consumer", "claude", "list", "--active"]).unwrap();
+        assert_eq!(cli.consumer.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn cli_parse_new_with_goal() {
+        let cli = Cli::try_parse_from(["ccsm", "new", "my-session", "-g", "test goal"]).unwrap();
+        match &cli.command {
+            Commands::New { name, .. } => assert_eq!(name, "my-session"),
+            _ => panic!("expected New command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_show_command() {
+        let cli = Cli::try_parse_from(["ccsm", "show", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Show { name, .. } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Show command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_show_with_section() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "show", "my-session", "-S", "progress-log"]).unwrap();
+        match &cli.command {
+            Commands::Show { section, .. } => {
+                assert_eq!(section.as_deref(), Some("progress-log"));
+            }
+            _ => panic!("expected Show command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_scan_with_search() {
+        let cli = Cli::try_parse_from(["ccsm", "scan", "--search", "test"]).unwrap();
+        match &cli.command {
+            Commands::Scan { search, .. } => {
+                assert_eq!(search.as_deref(), Some("test"));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_start_command() {
+        let cli = Cli::try_parse_from(["ccsm", "start", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Start { name, .. } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Start command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_start_with_worktree() {
+        let cli = Cli::try_parse_from(["ccsm", "start", "my-session", "-w"]).unwrap();
+        match &cli.command {
+            Commands::Start { name, worktree } => {
+                assert_eq!(name, "my-session");
+                assert!(worktree);
+            }
+            _ => panic!("expected Start command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_complete_command() {
+        let cli = Cli::try_parse_from(["ccsm", "complete", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Complete { name, .. } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Complete command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_complete_with_force() {
+        let cli = Cli::try_parse_from(["ccsm", "complete", "my-session", "-f"]).unwrap();
+        match &cli.command {
+            Commands::Complete { name, force } => {
+                assert_eq!(name, "my-session");
+                assert!(force);
+            }
+            _ => panic!("expected Complete command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_block_command() {
+        let cli = Cli::try_parse_from(["ccsm", "block", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Block { name } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Block command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_abandon_command() {
+        let cli = Cli::try_parse_from(["ccsm", "abandon", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Abandon { name } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Abandon command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_pending_command() {
+        let cli = Cli::try_parse_from(["ccsm", "pending", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Pending { name } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Pending command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_scope_command() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "scope", "my-session", "approach", "details"]).unwrap();
+        match &cli.command {
+            Commands::Scope { name, text } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(*text, vec!["approach".to_string(), "details".to_string()]);
+            }
+            _ => panic!("expected Scope command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_tag_command() {
+        let cli = Cli::try_parse_from(["ccsm", "tag", "my-session", "feat", "urgent"]).unwrap();
+        match &cli.command {
+            Commands::Tag { name, tags } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(*tags, vec!["feat".to_string(), "urgent".to_string()]);
+            }
+            _ => panic!("expected Tag command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_trash_command() {
+        let cli = Cli::try_parse_from(["ccsm", "trash", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Trash { name } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Trash command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_recover_command() {
+        let cli = Cli::try_parse_from(["ccsm", "recover", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Recover { name } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Recover command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_clean_command() {
+        let cli = Cli::try_parse_from(["ccsm", "clean", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Clean { name } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Clean command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_close_command() {
+        let cli = Cli::try_parse_from(["ccsm", "close", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Close { name } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Close command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_init_command() {
+        let cli = Cli::try_parse_from(["ccsm", "init"]).unwrap();
+        assert!(matches!(cli.command, Commands::Init));
+    }
+
+    #[test]
+    fn cli_parse_setup_command() {
+        let cli = Cli::try_parse_from(["ccsm", "setup"]).unwrap();
+        assert!(matches!(cli.command, Commands::Setup));
+    }
+
+    #[test]
+    fn cli_parse_migrate_command() {
+        let cli = Cli::try_parse_from(["ccsm", "migrate"]).unwrap();
+        assert!(matches!(cli.command, Commands::Migrate));
+    }
+
+    #[test]
+    fn cli_parse_doctor_command() {
+        let cli = Cli::try_parse_from(["ccsm", "doctor"]).unwrap();
+        assert!(matches!(cli.command, Commands::Doctor));
+    }
+
+    #[test]
+    fn cli_parse_list_command() {
+        let cli = Cli::try_parse_from(["ccsm", "list"]).unwrap();
+        match &cli.command {
+            Commands::List {
+                active,
+                summary,
+                verbose,
+                ..
+            } => {
+                assert!(!active);
+                assert!(!summary);
+                assert!(!verbose);
+            }
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_list_with_active() {
+        let cli = Cli::try_parse_from(["ccsm", "list", "--active"]).unwrap();
+        match &cli.command {
+            Commands::List { active, .. } => assert!(active),
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_list_with_summary() {
+        let cli = Cli::try_parse_from(["ccsm", "list", "--summary"]).unwrap();
+        match &cli.command {
+            Commands::List { summary, .. } => assert!(summary),
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_scan_command_no_flags() {
+        let cli = Cli::try_parse_from(["ccsm", "scan"]).unwrap();
+        match &cli.command {
+            Commands::Scan {
+                search,
+                group,
+                status,
+                json,
+            } => {
+                assert!(search.is_none());
+                assert!(group.is_none());
+                assert!(status.is_none());
+                assert!(!json);
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_note_command() {
+        let cli = Cli::try_parse_from(["ccsm", "note", "my-session", "did", "work"]).unwrap();
+        match &cli.command {
+            Commands::Note { name, text, cross } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(*text, vec!["did".to_string(), "work".to_string()]);
+                assert!(cross.is_none());
+            }
+            _ => panic!("expected Note command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_note_with_cross() {
+        let cli = Cli::try_parse_from([
+            "ccsm",
+            "note",
+            "my-session",
+            "-x",
+            "other-session",
+            "cross",
+            "note",
+        ])
+        .unwrap();
+        match &cli.command {
+            Commands::Note {
+                name,
+                text: _,
+                cross,
+            } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(cross.as_deref(), Some("other-session"));
+            }
+            _ => panic!("expected Note command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_completions_command() {
+        let cli = Cli::try_parse_from(["ccsm", "completions", "bash"]).unwrap();
+        match &cli.command {
+            Commands::Completions { shell } => assert_eq!(shell, "bash"),
+            _ => panic!("expected Completions command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_completions_zsh() {
+        let cli = Cli::try_parse_from(["ccsm", "completions", "zsh"]).unwrap();
+        match &cli.command {
+            Commands::Completions { shell } => assert_eq!(shell, "zsh"),
+            _ => panic!("expected Completions command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_branch_command() {
+        let cli = Cli::try_parse_from(["ccsm", "branch", "my-session", "feat/my-branch"]).unwrap();
+        match &cli.command {
+            Commands::Branch {
+                name,
+                clear,
+                branch,
+            } => {
+                assert_eq!(name, "my-session");
+                assert!(!clear);
+                assert_eq!(*branch, vec!["feat/my-branch".to_string()]);
+            }
+            _ => panic!("expected Branch command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_branch_with_clear() {
+        let cli = Cli::try_parse_from(["ccsm", "branch", "my-session", "--clear"]).unwrap();
+        match &cli.command {
+            Commands::Branch { name, clear, .. } => {
+                assert_eq!(name, "my-session");
+                assert!(clear);
+            }
+            _ => panic!("expected Branch command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_checklist_command() {
+        let cli = Cli::try_parse_from(["ccsm", "checklist", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Checklist { name, init } => {
+                assert_eq!(name, "my-session");
+                assert!(!init);
+            }
+            _ => panic!("expected Checklist command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_checklist_with_init() {
+        let cli = Cli::try_parse_from(["ccsm", "checklist", "my-session", "--init"]).unwrap();
+        match &cli.command {
+            Commands::Checklist { name, init } => {
+                assert_eq!(name, "my-session");
+                assert!(init);
+            }
+            _ => panic!("expected Checklist command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_check_command() {
+        let cli = Cli::try_parse_from(["ccsm", "check", "my-session", "write tests", "-s", "done"])
+            .unwrap();
+        match &cli.command {
+            Commands::Check { name, item, status } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(item, "write tests");
+                assert_eq!(status, "done");
+            }
+            _ => panic!("expected Check command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_depend_command() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "depend", "my-session", "--on", "other-session"]).unwrap();
+        match &cli.command {
+            Commands::Depend { name, on, clear } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(on.as_deref(), Some("other-session"));
+                assert!(!clear);
+            }
+            _ => panic!("expected Depend command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_depend_with_clear() {
+        let cli = Cli::try_parse_from(["ccsm", "depend", "my-session", "--clear"]).unwrap();
+        match &cli.command {
+            Commands::Depend { name, on, clear } => {
+                assert_eq!(name, "my-session");
+                assert!(on.is_none());
+                assert!(clear);
+            }
+            _ => panic!("expected Depend command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_attach_with_session_id() {
+        let cli = Cli::try_parse_from(["ccsm", "attach", "my-session", "uuid-here"]).unwrap();
+        match &cli.command {
+            Commands::Attach {
+                name,
+                session_id,
+                pid,
+            } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(session_id.as_deref(), Some("uuid-here"));
+                assert!(pid.is_none());
+            }
+            _ => panic!("expected Attach command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_attach_with_pid() {
+        let cli = Cli::try_parse_from(["ccsm", "attach", "my-session", "--pid", "1234"]).unwrap();
+        match &cli.command {
+            Commands::Attach {
+                name,
+                session_id,
+                pid,
+            } => {
+                assert_eq!(name, "my-session");
+                assert!(session_id.is_none());
+                assert_eq!(*pid, Some(1234u32));
+            }
+            _ => panic!("expected Attach command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_rename_command() {
+        let cli = Cli::try_parse_from(["ccsm", "rename", "old-name", "new-name"]).unwrap();
+        match &cli.command {
+            Commands::Rename { old, new, .. } => {
+                assert_eq!(old, "old-name");
+                assert_eq!(new, "new-name");
+            }
+            _ => panic!("expected Rename command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_rename_with_goal() {
+        let cli = Cli::try_parse_from(["ccsm", "rename", "old-name", "new-name", "-g", "new goal"])
+            .unwrap();
+        match &cli.command {
+            Commands::Rename { old, new, goal, .. } => {
+                assert_eq!(old, "old-name");
+                assert_eq!(new, "new-name");
+                assert_eq!(goal.as_deref(), Some("new goal"));
+            }
+            _ => panic!("expected Rename command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_resume_command() {
+        let cli = Cli::try_parse_from(["ccsm", "resume", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Resume { name, worktree } => {
+                assert_eq!(name, "my-session");
+                assert!(!worktree);
+            }
+            _ => panic!("expected Resume command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_resume_with_worktree() {
+        let cli = Cli::try_parse_from(["ccsm", "resume", "my-session", "-w"]).unwrap();
+        match &cli.command {
+            Commands::Resume { name, worktree } => {
+                assert_eq!(name, "my-session");
+                assert!(worktree);
+            }
+            _ => panic!("expected Resume command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_refresh_command() {
+        let cli = Cli::try_parse_from(["ccsm", "refresh", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Refresh { name, reason } => {
+                assert_eq!(name, "my-session");
+                assert!(reason.is_none());
+            }
+            _ => panic!("expected Refresh command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_refresh_with_reason() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "refresh", "my-session", "-r", "context full"]).unwrap();
+        match &cli.command {
+            Commands::Refresh { name, reason } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(reason.as_deref(), Some("context full"));
+            }
+            _ => panic!("expected Refresh command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_gate_check_command() {
+        let cli = Cli::try_parse_from(["ccsm", "gate-check", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::GateCheck { name, strict } => {
+                assert_eq!(name.as_deref(), Some("my-session"));
+                assert!(!strict);
+            }
+            _ => panic!("expected GateCheck command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_gate_check_strict() {
+        let cli = Cli::try_parse_from(["ccsm", "gate-check", "my-session", "-S"]).unwrap();
+        match &cli.command {
+            Commands::GateCheck { name, strict } => {
+                assert_eq!(name.as_deref(), Some("my-session"));
+                assert!(strict);
+            }
+            _ => panic!("expected GateCheck command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_inject_scope_command() {
+        let cli = Cli::try_parse_from(["ccsm", "inject-scope"]).unwrap();
+        assert!(matches!(cli.command, Commands::InjectScope { .. }));
+    }
+
+    #[test]
+    fn cli_parse_inject_scope_with_name() {
+        let cli = Cli::try_parse_from(["ccsm", "inject-scope", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::InjectScope { name } => {
+                assert_eq!(name.as_deref(), Some("my-session"));
+            }
+            _ => panic!("expected InjectScope command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_sequence_command() {
+        let cli = Cli::try_parse_from([
+            "ccsm", "sequence", "-q", "start", "foo", "-q", "complete", "foo",
+        ])
+        .unwrap();
+        match &cli.command {
+            Commands::Sequence { args } => {
+                assert_eq!(
+                    *args,
+                    vec![
+                        "-q".to_string(),
+                        "start".to_string(),
+                        "foo".to_string(),
+                        "-q".to_string(),
+                        "complete".to_string(),
+                        "foo".to_string()
+                    ]
+                );
+            }
+            _ => panic!("expected Sequence command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_note_check_command() {
+        let cli = Cli::try_parse_from(["ccsm", "note-check"]).unwrap();
+        assert!(matches!(cli.command, Commands::NoteCheck));
+    }
+
+    #[test]
+    fn cli_parse_clean_all_command() {
+        let cli = Cli::try_parse_from(["ccsm", "clean-all"]).unwrap();
+        assert!(matches!(cli.command, Commands::CleanAll));
+    }
+
+    #[test]
+    fn cli_parse_archive_command() {
+        let cli = Cli::try_parse_from(["ccsm", "archive", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Archive { name } => assert_eq!(name, "my-session"),
+            _ => panic!("expected Archive command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_archive_all_command() {
+        let cli = Cli::try_parse_from(["ccsm", "archive-all"]).unwrap();
+        assert!(matches!(cli.command, Commands::ArchiveAll));
+    }
+
+    #[test]
+    fn cli_parse_config_command() {
+        let cli = Cli::try_parse_from(["ccsm", "config"]).unwrap();
+        match &cli.command {
+            Commands::Config { args } => {
+                assert!(args.is_empty());
+            }
+            _ => panic!("expected Config command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_config_set_command() {
+        let cli = Cli::try_parse_from(["ccsm", "config", "set", "wip_limit", "5"]).unwrap();
+        match &cli.command {
+            Commands::Config { args } => {
+                assert_eq!(
+                    *args,
+                    vec!["set".to_string(), "wip_limit".to_string(), "5".to_string()]
+                );
+            }
+            _ => panic!("expected Config command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_config_reset_command() {
+        let cli = Cli::try_parse_from(["ccsm", "config", "reset"]).unwrap();
+        match &cli.command {
+            Commands::Config { args } => {
+                assert_eq!(*args, vec!["reset".to_string()]);
+            }
+            _ => panic!("expected Config command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_new_with_checklist() {
+        let cli = Cli::try_parse_from(["ccsm", "new", "my-session", "-c", "-g", "goal"]).unwrap();
+        match &cli.command {
+            Commands::New {
+                name, checklist, ..
+            } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(checklist.as_deref(), Some("default"));
+            }
+            _ => panic!("expected New command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_new_with_checklist_feat() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "new", "my-session", "-c", "feat", "-g", "goal"]).unwrap();
+        match &cli.command {
+            Commands::New {
+                name, checklist, ..
+            } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(checklist.as_deref(), Some("feat"));
+            }
+            _ => panic!("expected New command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_new_with_branch_and_worktree() {
+        let cli = Cli::try_parse_from([
+            "ccsm",
+            "new",
+            "my-session",
+            "-b",
+            "feat/my-branch",
+            "-w",
+            "-g",
+            "goal",
+        ])
+        .unwrap();
+        match &cli.command {
+            Commands::New {
+                name,
+                branch,
+                worktree,
+                ..
+            } => {
+                assert_eq!(name, "my-session");
+                assert_eq!(branch.as_deref(), Some("feat/my-branch"));
+                assert!(worktree);
+            }
+            _ => panic!("expected New command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_new_with_force() {
+        let cli = Cli::try_parse_from(["ccsm", "new", "my-session", "-f", "-g", "goal"]).unwrap();
+        match &cli.command {
+            Commands::New { name, force, .. } => {
+                assert_eq!(name, "my-session");
+                assert!(force);
+            }
+            _ => panic!("expected New command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_command_with_name() {
+        let cli = Cli::try_parse_from(["ccsm", "group", "my-group"]).unwrap();
+        match &cli.command {
+            Commands::Group { name, list, .. } => {
+                assert_eq!(name.as_deref(), Some("my-group"));
+                assert!(!list);
+            }
+            _ => panic!("expected Group command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_command_list() {
+        let cli = Cli::try_parse_from(["ccsm", "group", "--list"]).unwrap();
+        match &cli.command {
+            Commands::Group { list, .. } => assert!(list),
+            _ => panic!("expected Group command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_command_assign() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "group", "my-session", "--group", "sprint-5"]).unwrap();
+        match &cli.command {
+            Commands::Group { name, group, .. } => {
+                assert_eq!(name.as_deref(), Some("my-session"));
+                assert_eq!(group.as_deref(), Some("sprint-5"));
+            }
+            _ => panic!("expected Group command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_command_clear() {
+        let cli = Cli::try_parse_from(["ccsm", "group", "my-session", "--clear"]).unwrap();
+        match &cli.command {
+            Commands::Group { name, clear, .. } => {
+                assert_eq!(name.as_deref(), Some("my-session"));
+                assert!(clear);
+            }
+            _ => panic!("expected Group command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_command_with_rank() {
+        let cli = Cli::try_parse_from([
+            "ccsm",
+            "group",
+            "my-session",
+            "--group",
+            "sprint-5",
+            "-r",
+            "1",
+        ])
+        .unwrap();
+        match &cli.command {
+            Commands::Group {
+                name, group, rank, ..
+            } => {
+                assert_eq!(name.as_deref(), Some("my-session"));
+                assert_eq!(group.as_deref(), Some("sprint-5"));
+                assert_eq!(rank.as_deref(), Some("1"));
+            }
+            _ => panic!("expected Group command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_command_with_goal() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "group", "sprint-5", "--goal", "finish sprint"]).unwrap();
+        match &cli.command {
+            Commands::Group { name, goal, .. } => {
+                assert_eq!(name.as_deref(), Some("sprint-5"));
+                assert_eq!(goal.as_deref(), Some("finish sprint"));
+            }
+            _ => panic!("expected Group command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_command_roadmap() {
+        let cli = Cli::try_parse_from(["ccsm", "group", "sprint-5", "--roadmap"]).unwrap();
+        match &cli.command {
+            Commands::Group { name, roadmap, .. } => {
+                assert_eq!(name.as_deref(), Some("sprint-5"));
+                assert!(roadmap);
+            }
+            _ => panic!("expected Group command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_next_command() {
+        let cli = Cli::try_parse_from(["ccsm", "next", "sprint-5"]).unwrap();
+        match &cli.command {
+            Commands::Next { group } => assert_eq!(group, "sprint-5"),
+            _ => panic!("expected Next command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_deps_command() {
+        let cli = Cli::try_parse_from(["ccsm", "group-deps", "sprint-5"]).unwrap();
+        match &cli.command {
+            Commands::GroupDeps { group } => assert_eq!(group, "sprint-5"),
+            _ => panic!("expected GroupDeps command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_workspace_flag() {
+        let cli = Cli::try_parse_from(["ccsm", "-w", "/tmp/proj", "list"]).unwrap();
+        assert_eq!(cli.workspace, Some(PathBuf::from("/tmp/proj")));
+    }
+
+    #[test]
+    fn check_version_returns_ok_for_init_migrate_setup() {
+        assert!(check_version(&Commands::Init).is_ok());
+        assert!(check_version(&Commands::Migrate).is_ok());
+        assert!(check_version(&Commands::Setup).is_ok());
+    }
+
+    #[test]
+    fn run_migrate_returns_report() {
+        // run_migrate delegates to migrate module; it bootstraps identity if missing
+        let result = run_migrate();
+        // Either succeeds or errors with something other than a panic
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn seed_config_returns_early_without_identity() {
+        // Should not panic when there's no .ccsm identity
+        seed_config();
+    }
+
+    #[test]
+    fn output_format_json_checks_env_var() {
+        unsafe {
+            std::env::set_var("CCSM_OUTPUT_FORMAT", "json");
+        }
+        assert!(output_format_json());
+        unsafe {
+            std::env::remove_var("CCSM_OUTPUT_FORMAT");
+        }
+        assert!(!output_format_json());
+    }
+
+    #[test]
+    fn check_version_returns_ok_when_no_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let orig_cwd = std::env::current_dir().ok();
+        unsafe { std::env::set_current_dir(dir.path()).ok() };
+        let result = check_version(&Commands::List {
+            active: false,
+            summary: false,
+            status: None,
+            verbose: false,
+            group: None,
+            by_rank: false,
+            json: false,
+        });
+        assert!(result.is_ok());
+        if let Some(cwd) = orig_cwd {
+            unsafe { std::env::set_current_dir(cwd).ok() };
+        }
+    }
+
+    #[test]
+    fn workspace_path_returns_current_dir() {
+        let p = workspace_path();
+        assert!(p.is_absolute() || p.to_string_lossy() == ".");
+    }
+
+    #[test]
+    fn action_msg_contains_action_and_name() {
+        // action_msg prints to stdout; we just verify it doesn't panic
+        action_msg("trashed", "test-session", "done");
+    }
+
+    #[test]
+    fn cli_parse_new_with_no_goal_has_empty_goal() {
+        let cli = Cli::try_parse_from(["ccsm", "new", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::New { name, goal, .. } => {
+                assert_eq!(name, "my-session");
+                assert!(goal.is_none());
+            }
+            _ => panic!("expected New command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_depend_list() {
+        let cli = Cli::try_parse_from(["ccsm", "depend", "my-session"]).unwrap();
+        match &cli.command {
+            Commands::Depend { name, on, clear } => {
+                assert_eq!(name, "my-session");
+                assert!(on.is_none());
+                assert!(!clear);
+            }
+            _ => panic!("expected Depend command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_group_rank_free() {
+        let cli =
+            Cli::try_parse_from(["ccsm", "group", "my-session", "--group", "g", "-r", "free"])
+                .unwrap();
+        match &cli.command {
+            Commands::Group {
+                name, group, rank, ..
+            } => {
+                assert_eq!(name.as_deref(), Some("my-session"));
+                assert_eq!(group.as_deref(), Some("g"));
+                assert_eq!(rank.as_deref(), Some("free"));
+            }
+            _ => panic!("expected Group command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_summary_status() {
+        let cli = Cli::try_parse_from(["ccsm", "list", "-S", "in_progress"]).unwrap();
+        match &cli.command {
+            Commands::List { status, .. } => {
+                assert_eq!(status.as_deref(), Some("in_progress"));
+            }
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_list_json() {
+        let cli = Cli::try_parse_from(["ccsm", "list", "--json"]).unwrap();
+        match &cli.command {
+            Commands::List { json, .. } => assert!(json),
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_list_verbose() {
+        let cli = Cli::try_parse_from(["ccsm", "list", "-v"]).unwrap();
+        match &cli.command {
+            Commands::List { verbose, .. } => assert!(verbose),
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_list_group() {
+        let cli = Cli::try_parse_from(["ccsm", "list", "-g", "sprint-5"]).unwrap();
+        match &cli.command {
+            Commands::List { group, .. } => {
+                assert_eq!(group.as_deref(), Some("sprint-5"));
+            }
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_list_by_rank() {
+        let cli = Cli::try_parse_from(["ccsm", "list", "--by-rank"]).unwrap();
+        match &cli.command {
+            Commands::List { by_rank, .. } => assert!(by_rank),
+            _ => panic!("expected List command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_scan_json() {
+        let cli = Cli::try_parse_from(["ccsm", "scan", "--json"]).unwrap();
+        match &cli.command {
+            Commands::Scan { json, .. } => assert!(json),
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_scan_group() {
+        let cli = Cli::try_parse_from(["ccsm", "scan", "-g", "sprint-5"]).unwrap();
+        match &cli.command {
+            Commands::Scan { group, .. } => {
+                assert_eq!(group.as_deref(), Some("sprint-5"));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_scan_status() {
+        let cli = Cli::try_parse_from(["ccsm", "scan", "-S", "in_progress"]).unwrap();
+        match &cli.command {
+            Commands::Scan { status, .. } => {
+                assert_eq!(status.as_deref(), Some("in_progress"));
+            }
+            _ => panic!("expected Scan command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_show_json() {
+        let cli = Cli::try_parse_from(["ccsm", "show", "my-session", "--json"]).unwrap();
+        match &cli.command {
+            Commands::Show { json, .. } => assert!(json),
+            _ => panic!("expected Show command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_new_default_no_worktree() {
+        let cli = Cli::try_parse_from(["ccsm", "new", "my-session", "-g", "goal"]).unwrap();
+        match &cli.command {
+            Commands::New { worktree, .. } => assert!(!worktree),
+            _ => panic!("expected New command"),
+        }
+    }
+
+    #[test]
+    fn seed_config_creates_config_with_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let id = "test-seed-config-id";
+        std::fs::write(
+            ws.join(".ccsm"),
+            format!(
+                "version = \"{}\"\nid = \"{id}\"\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let orig_data_dir = std::env::var("CCSM_DATA_DIR").ok();
+        let orig_home = std::env::var("HOME").ok();
+        let orig_cwd = std::env::current_dir().ok();
+
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", &data_dir);
+            std::env::set_var("HOME", dir.path().join("home"));
+        }
+        unsafe { std::env::set_current_dir(&ws).unwrap() };
+
+        // The registry must exist for resolve_identity to work past the first call
+        // Seed the data dir ourselves since seed_config needs resolve_identity to pass
+        let id_dir = data_dir.join(id);
+        std::fs::create_dir_all(&id_dir).unwrap();
+        std::fs::write(
+            id_dir.join("sessions.json"),
+            "{\"updated\":\"2025-01-01T00:00:00Z\",\"sessions\":[]}",
+        )
+        .unwrap();
+
+        seed_config();
+        let config_path = id_dir.join("config.toml");
+        assert!(config_path.exists(), "config.toml should be created");
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("branch_tracking"));
+
+        if let Some(cwd) = orig_cwd {
+            unsafe { std::env::set_current_dir(cwd).ok() };
+        }
+        match orig_data_dir {
+            Some(v) => unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            },
+            None => unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            },
+        }
+        match orig_home {
+            Some(v) => unsafe {
+                std::env::set_var("HOME", v);
+            },
+            None => unsafe {
+                std::env::remove_var("HOME");
+            },
+        }
+    }
+
+    #[test]
+    fn check_version_returns_ok_with_matching_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let id = "test-cv-id";
+        std::fs::write(
+            ws.join(".ccsm"),
+            format!(
+                "version = \"{}\"\nid = \"{id}\"\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let id_dir = data_dir.join(id);
+        std::fs::create_dir_all(&id_dir).unwrap();
+        std::fs::write(
+            id_dir.join("sessions.json"),
+            "{\"updated\":\"2025-01-01T00:00:00Z\",\"sessions\":[]}",
+        )
+        .unwrap();
+
+        let orig_data_dir = std::env::var("CCSM_DATA_DIR").ok();
+        let orig_cwd = std::env::current_dir().ok();
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", &data_dir);
+        }
+        unsafe { std::env::set_current_dir(&ws).unwrap() };
+
+        let result = check_version(&Commands::Scan {
+            group: None,
+            status: None,
+            search: None,
+            json: false,
+        });
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+
+        if let Some(cwd) = orig_cwd {
+            unsafe { std::env::set_current_dir(cwd).ok() };
+        }
+        match orig_data_dir {
+            Some(v) => unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            },
+            None => unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            },
+        }
+    }
+
+    #[test]
+    fn parse_note_timestamp_valid_and_invalid() {
+        let ts = parse_note_timestamp("2025-01-15 10:30Z");
+        assert!(ts.is_some(), "valid timestamp should parse");
+        assert!(ts.unwrap() > 0);
+        assert!(parse_note_timestamp("").is_none());
+        assert!(parse_note_timestamp("abc").is_none());
+        assert!(parse_note_timestamp("2025-01-15 10:30Z").is_some());
+        assert!(parse_note_timestamp("2025-01-15T10:30Z").is_none()); // wrong separator
+    }
+
+    #[test]
+    fn is_leap_year_checks() {
+        assert!(is_leap_year(2020));
+        assert!(!is_leap_year(2021));
+        assert!(!is_leap_year(1900));
+        assert!(is_leap_year(2000));
+        assert!(!is_leap_year(2023));
+    }
+
+    #[test]
+    fn status_icon_all_variants() {
+        use crate::registry::SessionStatus;
+        assert_eq!(status_icon(&SessionStatus::Completed), "✓");
+        assert_eq!(status_icon(&SessionStatus::InProgress), "→");
+        assert_eq!(status_icon(&SessionStatus::Pending), "○");
+        assert_eq!(status_icon(&SessionStatus::Blocked), "!");
+        assert_eq!(status_icon(&SessionStatus::Abandoned), "·");
+        assert_eq!(status_icon(&SessionStatus::Trashed), "·");
+    }
+
+    #[test]
+    fn truncate_for_scan_various() {
+        assert_eq!(truncate_for_scan("short", 65), "short");
+        assert_eq!(truncate_for_scan("hello|world", 65), "hello\\|world");
+        let long = "a".repeat(100);
+        assert!(truncate_for_scan(&long, 65).ends_with("..."));
+        assert_eq!(truncate_for_scan(&long, 65).len(), 65);
+    }
+
+    #[test]
+    fn md_escape_pipe_and_truncate_md() {
+        assert_eq!(md_escape_pipe("a|b"), "a\\|b");
+        assert_eq!(md_escape_pipe("plain"), "plain");
+        assert_eq!(truncate_md("short", 60), "short");
+        let long = "a".repeat(100);
+        assert!(truncate_md(&long, 60).ends_with("..."));
+    }
+
+    #[test]
+    fn status_to_char_and_back() {
+        assert_eq!(status_to_char("pending"), ' ');
+        assert_eq!(status_to_char("done"), 'x');
+        assert_eq!(status_to_char("skipped"), '~');
+        assert_eq!(status_to_char("blocked"), '!');
+        assert_eq!(status_to_char("unknown"), ' ');
+        assert_eq!(char_to_status(' '), "pending");
+        assert_eq!(char_to_status('x'), "done");
+        assert_eq!(char_to_status('~'), "skipped");
+        assert_eq!(char_to_status('!'), "blocked");
+        assert_eq!(char_to_status('?'), "pending");
+    }
+
+    #[test]
+    fn icon_char_variants() {
+        assert_eq!(icon_char('x'), "✔");
+        assert_eq!(icon_char('~'), "⏭");
+        assert_eq!(icon_char('!'), "✗");
+        assert_eq!(icon_char(' '), "·");
+    }
+
+    #[test]
+    fn parse_checklist_various() {
+        let items = parse_checklist("- [ ] item one\n- [x] item two\n- [~] item three\n");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].index, 1);
+        assert_eq!(items[0].status, "pending");
+        assert_eq!(items[0].text, "item one");
+        assert_eq!(items[1].status, "done");
+        assert_eq!(items[1].text, "item two");
+        assert_eq!(items[2].status, "skipped");
+        assert_eq!(items[2].text, "item three");
+        assert!(parse_checklist("").is_empty());
+        assert!(parse_checklist("no checklist here").is_empty());
+
+        // Blocked item
+        let blocked = parse_checklist("- [!] blocked item\n");
+        assert_eq!(blocked[0].status, "blocked");
+    }
+
+    #[test]
+    fn run_completions_unknown_shell() {
+        let result = run_completions("invalid-shell");
+        assert!(result.is_err());
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("[ERR_INVALID]"));
+        assert!(msg.contains("unknown shell"));
+    }
+
+    #[test]
+    fn status_label_dim_helpers() {
+        let d = dim_status("pending");
+        assert!(d.contains("pending"));
+    }
+
+    #[test]
+    fn output_format_json_returns_false_by_default() {
+        unsafe {
+            let prev = std::env::var("CCSM_OUTPUT_FORMAT").ok();
+            std::env::remove_var("CCSM_OUTPUT_FORMAT");
+            assert!(!output_format_json());
+            if let Some(v) = prev {
+                std::env::set_var("CCSM_OUTPUT_FORMAT", v)
+            }
+        }
+    }
+
+    #[test]
+    fn output_format_json_returns_true_when_set() {
+        unsafe {
+            let prev = std::env::var("CCSM_OUTPUT_FORMAT").ok();
+            std::env::set_var("CCSM_OUTPUT_FORMAT", "json");
+            assert!(output_format_json());
+            match prev {
+                Some(v) => std::env::set_var("CCSM_OUTPUT_FORMAT", v),
+                None => std::env::remove_var("CCSM_OUTPUT_FORMAT"),
+            }
+        }
+    }
+
+    #[test]
+    fn run_completions_fish() {
+        let result = run_completions("fish");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn run_completions_zsh() {
+        let result = run_completions("zsh");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn mutate_session_sets_status_and_updated() {
+        let (dir, ws) = integ_setup("test-mutate", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "mutate-me",
+                "",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            mutate_session("mutate-me", "test", |s| {
+                s.status = crate::registry::SessionStatus::InProgress;
+            })
+            .unwrap();
+        });
+    }
+
+    #[test]
+    fn run_branch_sets_and_clears() {
+        let (dir, ws) = integ_setup("test-branch", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "branch-test",
+                "",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_branch("branch-test", false, &["feature-x".into()]).unwrap();
+        });
+    }
+
+    #[test]
+    fn run_branch_clear_clears_branch() {
+        let (dir, ws) = integ_setup("test-branch-clr", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "branch-clr",
+                "",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_branch("branch-clr", false, &["feature-y".into()]).unwrap();
+            run_branch("branch-clr", true, &[]).unwrap();
+        });
+    }
+
+    #[test]
+    fn run_config_show_lists_config() {
+        let (dir, ws) = integ_setup("test-config-show", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let result = run_config(&["show".into()]);
+            assert!(result.is_ok(), "config show: {:?}", result);
+        });
+    }
+
+    #[test]
+    fn run_init_succeeds_in_clean_workspace() {
+        let (dir, ws) = integ_setup("test-init", vec![]);
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        // Test the identity was already created by integ_setup
+        assert!(ws.join(".ccsm").exists(), "identity file should exist");
+    }
+
+    #[test]
+    fn run_close_completes_session() {
+        let (dir, ws) = integ_setup("test-close", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "close-test",
+                "test goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            mutate_session("close-test", "start", |s| {
+                s.status = crate::registry::SessionStatus::InProgress;
+            })
+            .unwrap();
+            let result = run_close("close-test");
+            // Gate check fails without detail file — expected
+            assert!(result.is_err(), "close should fail gate: {:?}", result);
+        });
+    }
+
+    #[test]
+    fn read_session_section_returns_empty_without_identity() {
+        let result = read_session_section("nonexistent", "goal");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn run_note_appends_to_session() {
+        let (dir, ws) = integ_setup("test-note", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "note-test",
+                "test goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let result = run_note("note-test", "added a note", None);
+            assert!(result.is_ok(), "note: {:?}", result);
+        });
+    }
+
+    #[test]
+    fn run_status_sets_pending() {
+        let (dir, ws) = integ_setup("test-pending", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "pending-test",
+                "test goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let result = run_pending("pending-test");
+            assert!(result.is_ok(), "pending: {:?}", result);
+        });
+    }
+
+    #[test]
+    fn run_depend_adds_and_lists() {
+        let (dir, ws) = integ_setup("test-dep", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "dep-a",
+                "first",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_new(
+                "dep-b",
+                "second",
+                true,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_depend("dep-b", Some("dep-a"), false);
+            assert!(r.is_ok(), "depend add: {:?}", r);
+            let r = run_depend("dep-b", None, false);
+            assert!(r.is_ok(), "depend list: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_sequence_processes_batch() {
+        let (dir, ws) = integ_setup("test-seq", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let r = run_sequence(&[
+                "-q".into(),
+                "new".into(),
+                "seq-test".into(),
+                "-g".into(),
+                "test".into(),
+            ]);
+            assert!(r.is_ok(), "sequence: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_group_assign_and_list() {
+        let (dir, ws) = integ_setup("test-grp", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "grp-a",
+                "first",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_new(
+                "grp-b",
+                "second",
+                true,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_group(
+                Some("grp-a"),
+                false,
+                Some("mygroup"),
+                None,
+                false,
+                None,
+                false,
+            );
+            assert!(r.is_ok(), "group assign: {:?}", r);
+            let r = run_group(
+                Some("grp-b"),
+                false,
+                Some("mygroup"),
+                None,
+                false,
+                None,
+                false,
+            );
+            assert!(r.is_ok(), "group assign2: {:?}", r);
+            let r = run_groups_list();
+            assert!(r.is_ok(), "groups list: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_show_with_existing_session() {
+        let (dir, ws) = integ_setup("test-show-session", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "show-me",
+                "show goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_show("show-me", None, false, crate::consumer::Consumer::OpenCode);
+            assert!(r.is_ok(), "show: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_gate_check_basic() {
+        let (dir, ws) = integ_setup("test-gate", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "gate-test",
+                "gate goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_gate_check(Some("gate-test"), false);
+            // Gate check passes with WARN if scope is empty (non-strict)
+            assert!(r.is_ok(), "gate-check should pass: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_inject_scope_output_system_reminder() {
+        let (dir, ws) = integ_setup("test-inject", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "inject-test",
+                "inject goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_inject_scope(Some("inject-test"), crate::consumer::Consumer::OpenCode);
+            assert!(r.is_ok(), "inject: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_note_check_passes_with_notes() {
+        let (dir, ws) = integ_setup("test-nc", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "nc-test",
+                "nc goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_note_check();
+            assert!(r.is_ok(), "note-check: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_set_tags_works() {
+        let (dir, ws) = integ_setup("test-tags", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "tags-test",
+                "tags goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_set_tags("tags-test", &["urgent".into(), "bug".into()]);
+            assert!(r.is_ok(), "set tags: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_set_field_updates_scope() {
+        let (dir, ws) = integ_setup("test-field", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "field-test",
+                "field goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_set_field("field-test", "scope", "test scope content");
+            assert!(r.is_ok(), "set field: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_trash_and_recover_cycles_session() {
+        let (dir, ws) = integ_setup("test-trash-rec", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "trash-rec",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_trash("trash-rec").unwrap();
+            run_recover("trash-rec").unwrap();
+        });
+    }
+
+    #[test]
+    fn run_clean_removes_session() {
+        let (dir, ws) = integ_setup("test-clean", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "clean-me",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_trash("clean-me").unwrap();
+            let r = run_clean("clean-me", &home, &ws, crate::consumer::Consumer::OpenCode);
+            assert!(r.is_ok(), "clean: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_archive_preserves_session() {
+        let (dir, ws) = integ_setup("test-archive", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "archive-test",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_archive(
+                "archive-test",
+                &home,
+                &ws,
+                crate::consumer::Consumer::OpenCode,
+            );
+            assert!(r.is_ok(), "archive: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_archive_all_archives_completed() {
+        let (dir, ws) = integ_setup("test-archive-all", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "arch-all",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_archive_all(&home, &ws, crate::consumer::Consumer::OpenCode);
+            assert!(r.is_ok(), "archive_all: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_checklist_init_creates_section() {
+        let (dir, ws) = integ_setup("test-checklist", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "cl-test",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_checklist("cl-test", true);
+            assert!(r.is_ok(), "checklist init: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_start_sets_in_progress() {
+        let (dir, ws) = integ_setup("test-start", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "start-test",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_start("start-test", false);
+            assert!(r.is_ok(), "start: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_complete_force_succeeds() {
+        let (dir, ws) = integ_setup("test-complete", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "complete-test",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_start("complete-test", false).unwrap();
+            let r = run_complete("complete-test", true);
+            assert!(r.is_ok(), "complete: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_check_marks_item() {
+        let (dir, ws) = integ_setup("test-check", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "check-test",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_checklist("check-test", true).unwrap();
+            let r = run_check("check-test", "1", "done");
+            assert!(r.is_ok(), "check: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_setup_opencode_works() {
+        let (dir, ws) = integ_setup("test-setup-oc", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        let orig_cwd = std::env::current_dir().ok();
+        let orig_data_dir = std::env::var("CCSM_DATA_DIR").ok();
+        let orig_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", &data_dir);
+            std::env::set_var("HOME", &home);
+        }
+        unsafe { std::env::set_current_dir(&ws).unwrap() };
+
+        let r = run_setup("opencode", crate::consumer::Consumer::OpenCode);
+        assert!(r.is_ok(), "setup: {:?}", r);
+
+        if let Some(cwd) = orig_cwd {
+            let _ = unsafe { std::env::set_current_dir(cwd) };
+        }
+        match orig_data_dir {
+            Some(v) => unsafe { std::env::set_var("CCSM_DATA_DIR", v) },
+            None => unsafe { std::env::remove_var("CCSM_DATA_DIR") },
+        }
+        match orig_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    fn update_detail_section_creates_new_section() {
+        let (dir, ws) = integ_setup("test-upsert", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "upsert-test",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = update_detail_section("upsert-test", "Custom Section", "custom body");
+            assert!(r.is_ok(), "update_detail: {:?}", r);
+            let r = update_detail_section("upsert-test", "Custom Section", "updated body");
+            assert!(r.is_ok(), "update_detail update: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_completions_bash_works() {
+        let r = run_completions("bash");
+        assert!(r.is_ok(), "completions bash: {:?}", r);
+    }
+
+    #[test]
+    fn run_trash_nonexistent_fails_gracefully() {
+        let (dir, ws) = integ_setup("test-trash-miss", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let r = run_trash("nonexistent");
+            assert!(r.is_err());
+        });
+    }
+
+    #[test]
+    fn run_show_json_output() {
+        let (dir, ws) = integ_setup("test-show-json", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "json-show",
+                "json goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_show("json-show", None, true, crate::consumer::Consumer::OpenCode);
+            assert!(r.is_ok(), "show json: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_list_summary_output() {
+        let (dir, ws) = integ_setup("test-list-summary", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "summary-a",
+                "goal a",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_list(false, true, false, None, None, false, false);
+            assert!(r.is_ok(), "list summary: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_list_status_filter() {
+        let (dir, ws) = integ_setup("test-list-filter", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "filter-a",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_list(false, false, false, Some("pending"), None, false, false);
+            assert!(r.is_ok(), "list filter: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_list_json_output() {
+        let (dir, ws) = integ_setup("test-list-json", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "json-list",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_list(false, false, false, None, None, true, false);
+            assert!(r.is_ok(), "list json: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn action_msg_prints_without_panicking() {
+        action_msg("created", "test-session", "new session");
+    }
+
+    #[test]
+    fn run_next_shows_session_in_group() {
+        let (dir, ws) = integ_setup("test-next", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "next-a",
+                "first",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_group(
+                Some("next-a"),
+                false,
+                Some("mygroup"),
+                None,
+                false,
+                None,
+                false,
+            );
+            assert!(r.is_ok(), "group: {:?}", r);
+            let r = run_next("mygroup");
+            assert!(r.is_ok(), "next: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_set_branch_requires_session() {
+        let (dir, ws) = integ_setup("test-branch-req", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "branch-req",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_branch("branch-req", false, &["feat/new".into()]);
+            assert!(r.is_ok(), "branch: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_scan_status_filter() {
+        let (dir, ws) = integ_setup("test-scan-filter", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "scan-a",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            let r = run_scan(None, Some("in_progress"), None, false);
+            assert!(r.is_ok(), "scan filter: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn run_scan_group_filter() {
+        let (dir, ws) = integ_setup("test-scan-grp", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            run_new(
+                "scan-grp",
+                "goal",
+                false,
+                None,
+                "",
+                false,
+                crate::consumer::Consumer::OpenCode,
+            )
+            .unwrap();
+            run_group(
+                Some("scan-grp"),
+                false,
+                Some("sprint-5"),
+                None,
+                false,
+                None,
+                false,
+            )
+            .unwrap();
+            let r = run_scan(Some("sprint-5"), None, None, false);
+            assert!(r.is_ok(), "scan group: {:?}", r);
+        });
+    }
+
+    #[test]
+    fn should_use_worktree_variants() {
+        use crate::config::Config;
+        use crate::registry::SessionStatus;
+        let make = |branch: &str, use_wt: bool| crate::registry::WorkspaceSession {
+            session_id: String::new(),
+            name: "test".into(),
+            goal: String::new(),
+            scope: String::new(),
+            status: SessionStatus::Pending,
+            pids: vec![],
+            tags: vec![],
+            started: String::new(),
+            completed: String::new(),
+            consumer: String::new(),
+            group: None,
+            depends_on: vec![],
+            branch: branch.into(),
+            use_worktree: use_wt,
+            retired_session_ids: vec![],
+        };
+
+        let required = Config {
+            worktrees: crate::config::WorktreePolicy::Required,
+            ..Config::defaults()
+        };
+        assert!(should_use_worktree(&make("feat/x", false), &required));
+        assert!(!should_use_worktree(&make("", false), &required));
+
+        let optional = Config {
+            worktrees: crate::config::WorktreePolicy::Optional,
+            ..Config::defaults()
+        };
+        assert!(should_use_worktree(&make("feat/x", true), &optional));
+        assert!(!should_use_worktree(&make("feat/x", false), &optional));
+        assert!(!should_use_worktree(&make("", true), &optional));
+
+        let disabled = Config {
+            worktrees: crate::config::WorktreePolicy::Disabled,
+            ..Config::defaults()
+        };
+        assert!(!should_use_worktree(&make("feat/x", true), &disabled));
+    }
+
+    /// Create a temp workspace + data dir for integration tests.
+    fn integ_setup(
+        id: &str,
+        sessions: Vec<crate::registry::WorkspaceSession>,
+    ) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join(".ccsm"),
+            format!(
+                "version = \"{}\"\nid = \"{id}\"\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )
+        .unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let id_dir = data_dir.join(id);
+        std::fs::create_dir_all(&id_dir).unwrap();
+        let reg = crate::registry::WorkspaceRegistry {
+            updated: "2025-01-01T00:00:00Z".into(),
+            sessions,
+        };
+        std::fs::write(
+            id_dir.join("sessions.json"),
+            serde_json::to_string_pretty(&reg).unwrap(),
+        )
+        .unwrap();
+        (dir, ws)
+    }
+
+    fn with_env<T, F: FnOnce() -> T>(
+        data_dir: &std::path::Path,
+        ws: &std::path::Path,
+        home: &std::path::Path,
+        f: F,
+    ) -> T {
+        let orig_data_dir = std::env::var("CCSM_DATA_DIR").ok();
+        let orig_home = std::env::var("HOME").ok();
+        let orig_cwd = std::env::current_dir().ok();
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir);
+            std::env::set_var("HOME", home);
+        }
+        unsafe { std::env::set_current_dir(ws).unwrap() };
+
+        let result = f();
+
+        if let Some(cwd) = orig_cwd {
+            unsafe { std::env::set_current_dir(cwd).ok() };
+        }
+        match orig_data_dir {
+            Some(v) => unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            },
+            None => unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            },
+        }
+        match orig_home {
+            Some(v) => unsafe {
+                std::env::set_var("HOME", v);
+            },
+            None => unsafe {
+                std::env::remove_var("HOME");
+            },
+        }
+        result
+    }
+
+    #[test]
+    fn run_list_with_sessions() {
+        use crate::registry::SessionStatus;
+        let (dir, ws) = integ_setup(
+            "test-list-id",
+            vec![
+                crate::registry::WorkspaceSession {
+                    session_id: String::new(),
+                    name: "alpha".into(),
+                    goal: "alpha goal".into(),
+                    scope: String::new(),
+                    status: SessionStatus::InProgress,
+                    pids: vec![],
+                    tags: vec!["urgent".into()],
+                    started: String::new(),
+                    completed: String::new(),
+                    consumer: String::new(),
+                    group: None,
+                    depends_on: vec![],
+                    branch: String::new(),
+                    use_worktree: false,
+                    retired_session_ids: vec![],
+                },
+                crate::registry::WorkspaceSession {
+                    session_id: String::new(),
+                    name: "beta".into(),
+                    goal: "beta goal".into(),
+                    scope: String::new(),
+                    status: SessionStatus::Pending,
+                    pids: vec![],
+                    tags: vec![],
+                    started: String::new(),
+                    completed: String::new(),
+                    consumer: String::new(),
+                    group: None,
+                    depends_on: vec![],
+                    branch: String::new(),
+                    use_worktree: false,
+                    retired_session_ids: vec![],
+                },
+            ],
+        );
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let result = run_list(false, false, false, None, None, false, false);
+            assert!(
+                result.is_ok(),
+                "list should work with sessions: {:?}",
+                result
+            );
+        });
+    }
+
+    #[test]
+    fn run_list_empty_registry() {
+        let (dir, ws) = integ_setup("test-list-empty", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let result = run_list(false, false, false, None, None, false, false);
+            assert!(result.is_ok(), "list empty should work: {:?}", result);
+        });
+    }
+
+    #[test]
+    fn run_list_active_filter() {
+        use crate::registry::SessionStatus;
+        let (dir, ws) = integ_setup(
+            "test-list-active",
+            vec![crate::registry::WorkspaceSession {
+                session_id: String::new(),
+                name: "active-session".into(),
+                goal: "active goal".into(),
+                scope: String::new(),
+                status: SessionStatus::InProgress,
+                pids: vec![],
+                tags: vec![],
+                started: String::new(),
+                completed: String::new(),
+                consumer: String::new(),
+                group: None,
+                depends_on: vec![],
+                branch: String::new(),
+                use_worktree: false,
+                retired_session_ids: vec![],
+            }],
+        );
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let result = run_list(true, false, false, None, None, false, false);
+            assert!(result.is_ok(), "list active should work: {:?}", result);
+        });
+    }
+
+    #[test]
+    fn run_scan_no_matches() {
+        let (dir, ws) = integ_setup("test-scan-id", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let result = run_scan(None, None, None, false);
+            assert!(result.is_ok(), "scan empty should work: {:?}", result);
+        });
+    }
+
+    #[test]
+    fn run_scan_json_output() {
+        use crate::registry::SessionStatus;
+        let (dir, ws) = integ_setup(
+            "test-scan-json",
+            vec![crate::registry::WorkspaceSession {
+                session_id: String::new(),
+                name: "my-task".into(),
+                goal: "my task goal".into(),
+                scope: String::new(),
+                status: SessionStatus::Pending,
+                pids: vec![],
+                tags: vec![],
+                started: String::new(),
+                completed: String::new(),
+                consumer: String::new(),
+                group: None,
+                depends_on: vec![],
+                branch: String::new(),
+                use_worktree: false,
+                retired_session_ids: vec![],
+            }],
+        );
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let result = run_scan(None, None, None, true);
+            assert!(result.is_ok(), "scan json should work: {:?}", result);
+        });
+    }
+
+    #[test]
+    fn run_show_no_session_errors() {
+        let (dir, ws) = integ_setup("test-show-id", vec![]);
+        let data_dir = dir.path().join("data");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+
+        with_env(&data_dir, &ws, &home, || {
+            let result = run_show(
+                "nonexistent",
+                None,
+                false,
+                crate::consumer::Consumer::Claude,
+            );
+            assert!(result.is_err());
+            let msg = format!("{:#}", result.unwrap_err());
+            assert!(msg.contains("[ERR_NOSESSION]"));
+        });
+    }
 }

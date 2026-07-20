@@ -364,4 +364,37 @@ unknown_key = "value"
             deserialized.checklist_templates.get("test").unwrap().items
         );
     }
+
+    #[test]
+    fn load_returns_defaults_when_no_identity() {
+        let cfg = Config::load();
+        assert_eq!(cfg.branch_tracking, BranchTracking::Optional);
+        assert_eq!(cfg.wip_limit, 0);
+    }
+
+    #[test]
+    fn get_checklist_items_uses_custom_over_builtin() {
+        let mut templates = HashMap::new();
+        templates.insert(
+            "feat".to_string(),
+            ChecklistTemplate {
+                items: vec!["Custom step".to_string()],
+            },
+        );
+        let cfg = Config {
+            branch_tracking: BranchTracking::Optional,
+            wip_limit: 0,
+            worktrees: WorktreePolicy::Optional,
+            checklist_templates: templates,
+            default_checklist_type: None,
+        };
+        let items = cfg.get_checklist_items("feat").unwrap();
+        assert_eq!(items, vec!["Custom step"]);
+    }
+
+    #[test]
+    fn load_handles_missing_config_file() {
+        let cfg = Config::load();
+        assert!(cfg.checklist_templates.is_empty());
+    }
 }

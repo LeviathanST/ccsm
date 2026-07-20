@@ -143,7 +143,7 @@ impl TempWorkspace {
     }
 
     /// Resolve the global data dir from the identity file.
-    fn global_dir(&self) -> PathBuf {
+    pub fn global_dir(&self) -> PathBuf {
         let identity = self.path().join(".ccsm");
         let content = std::fs::read_to_string(&identity).expect("read .ccsm identity");
         let id = content
@@ -161,6 +161,13 @@ impl TempWorkspace {
         std::fs::create_dir_all(&sessions_dir).ok();
         std::fs::write(sessions_dir.join(format!("{name}.md")), content)
             .expect("write detail file");
+    }
+
+    /// Write the registry file to global data dir.
+    pub fn write_registry(&self, reg: &serde_json::Value) {
+        let path = self.global_dir().join("sessions.json");
+        std::fs::write(&path, serde_json::to_string_pretty(reg).expect("serialize"))
+            .expect("write registry");
     }
 
     /// Read the registry file from global data dir.
