@@ -5,6 +5,32 @@ All notable changes to ccsm are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 ccsm uses [semantic versioning](https://semver.org/).
 
+## [0.21.1] — 2026-07-20
+
+- push line coverage from 28% to 82%, add 7,300 lines of unit + integration tests
+- bump ccsm-swarm version to match
+- add structured error codes to all untagged error output sites (#38)
+- add no-op migration steps for v0.17→v0.21 chain gap (#37)
+- fix: env lock poisoning recovery with Rust 2024 unsafe wrappers
+
+### CI
+
+- add clippy, rustfmt, and 80% coverage threshold to GitHub Actions (#46)
+- coverage artifact uploads on main, checks run on all PRs
+
+## [0.21.0] — 2026-07-19
+
+- add `style` module with owo-colors helpers, emoji gating (`is_terminal()` + `NO_COLOR`)
+- add `table` helper with ANSI-aware column layout
+- add `config` subcommand (view TOML, set key-value, reset defaults)
+- embed setup assets (plugin, script, skills) via `include_str!` for non-source-tree installs
+- add first-run welcome banner with project slug and quick-start tips
+- normalize all error output with structured `[ERR_*]` codes
+- integrate `Table` helper in `action_msg`, `run_list`, and `run_group` output
+- integrate `Spinner` in resume polling and archive-all progress
+- remove unused `ErrorCode::Consumer` and `ErrorCode::Generic` variants
+- add 20 style + 12 table unit tests, 7 DX integration tests
+
 ## [0.20.0] — 2026-07-16
 
 - inject intent-boundary CONSTRAINTS into agent scope (#28)
@@ -242,7 +268,9 @@ ccsm uses [semantic versioning](https://semver.org/).
 
 ---
 
-[unreleased]: https://github.com/LeviathanST/ccsm/compare/v0.20.0...HEAD
+[unreleased]: https://github.com/LeviathanST/ccsm/compare/v0.21.1...HEAD
+[v0.21.1]: https://github.com/LeviathanST/ccsm/releases/tag/v0.21.1
+[v0.21.0]: https://github.com/LeviathanST/ccsm/releases/tag/v0.21.0
 [v0.20.0]: https://github.com/LeviathanST/ccsm/releases/tag/v0.20.0
 [v0.19.1]: https://github.com/LeviathanST/ccsm/releases/tag/v0.19.1
 [v0.19.0]: https://github.com/LeviathanST/ccsm/releases/tag/v0.19.0
