@@ -9,4 +9,4 @@
 | CI/CD | ci-publish-tag-guard.md | Guard publish jobs to only run on tags that are ancestors of main | 2026-07-14 |
 | CI/CD | github-secrets-environment-vs-repo.md | Environment secrets require `environment:` in job — use repo-level secrets for general CI | 2026-07-14 |
 | OpenCode | opencode-session-timing.md | OpenCode creates session rows lazily (on first message), not at spawn — defer harvest to after child exit | 2026-07-15 |
-| Migration | migration-version-check.md | run_identity_migrations should warn, not hard-block, on binary > project — safety guard is check_version() in main.rs | 2026-07-15 |
+| Testing | parallel-test-isolation.md | Static Mutex to serialize env-dependent tests that race on process-global vars | 2026-07-20 |
