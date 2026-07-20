@@ -37,7 +37,7 @@ const CHAIN: &[ChainLink] = &[
         from: "1",
         to: "0.1.0",
         desc: "normalize pre-semver identity version",
-        run: step_normalize_identity,
+        run: step_noop,
     },
     ChainLink {
         from: "0.1.0",
@@ -57,14 +57,36 @@ const CHAIN: &[ChainLink] = &[
         desc: "seed config, ensure data directory",
         run: step_seed_and_dir,
     },
+    ChainLink {
+        from: "0.17.0",
+        to: "0.18.0",
+        desc: "introduce auto-chain migration framework",
+        run: step_noop,
+    },
+    ChainLink {
+        from: "0.18.0",
+        to: "0.19.0",
+        desc: "structured inject-scope with WORKTREE BOUNDARY env var",
+        run: step_noop,
+    },
+    ChainLink {
+        from: "0.19.0",
+        to: "0.20.0",
+        desc: "inject intent-boundary CONSTRAINTS into agent scope",
+        run: step_noop,
+    },
+    ChainLink {
+        from: "0.20.0",
+        to: env!("CARGO_PKG_VERSION"),
+        desc: "DX enhancements: colors, config cmd, emoji gating, table helper, spinner",
+        run: step_noop,
+    },
 ];
 
 // ── Step Functions ────────────────────────────────────────────────────
 
-/// "1" → "0.1.0": normalize pre-semver identity version.
-/// The version bump is handled by the chain runner — this step exists
-/// as a placeholder for any future data transformations alongside the rename.
-fn step_normalize_identity(_ctx: &MigrationContext) -> Result<()> {
+/// No-op step for versions with no data schema change.
+fn step_noop(_ctx: &MigrationContext) -> Result<()> {
     Ok(())
 }
 
@@ -572,13 +594,13 @@ id = "x"
     // ── Step Functions ──────────────────────────────────────────
 
     #[test]
-    fn step_normalize_is_noop() {
+    fn step_noop_does_nothing() {
         let dir = tempdir().unwrap();
         let ctx = MigrationContext {
             root: dir.path(),
             id: "test",
         };
-        step_normalize_identity(&ctx).unwrap();
+        step_noop(&ctx).unwrap();
         assert!(!dir.path().join(".ccsm").exists());
     }
 

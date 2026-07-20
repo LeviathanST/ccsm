@@ -70,15 +70,15 @@ fn migrate_unknown_version_warns() {
     );
 }
 
-/// Version gap with no chain entry fast-forwards.
+/// Version not in chain fast-forwards to first known entry.
 #[test]
 fn migrate_fast_forwards_gap() {
     ensure_built();
     let ws = TempWorkspace::new();
 
-    // Set to a version after the last chain entry but before current
-    // The chain goes up to "0.17.0", so "0.17.5" should fast-forward
-    ws.set_identity_version("0.17.5");
+    // Set to a version not in the chain — should fast-forward to first
+    // known entry
+    ws.set_identity_version("0.14.0");
 
     let stderr = ws.run_stderr(&["migrate"]);
     assert!(
@@ -104,4 +104,28 @@ fn migrate_full_chain_steps() {
     assert!(stderr.contains("rehome data from .ccsm"), "step rehome");
     assert!(stderr.contains("strip stale worktree"), "step strip");
     assert!(stderr.contains("seed config"), "step seed");
+    assert!(stderr.contains("auto-chain migration"), "step 0.17→0.18");
+    assert!(stderr.contains("inject-scope"), "step 0.18→0.19");
+    assert!(stderr.contains("CONSTRAINTS"), "step 0.19→0.20");
+    assert!(stderr.contains("DX enhancements"), "step 0.20→current");
+}
+
+/// Migrate from 0.17.0 runs the full chain to current.
+#[test]
+fn migrate_from_0170_to_current() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+
+    ws.set_identity_version("0.17.0");
+    let stderr = ws.run_stderr(&["migrate"]);
+    assert!(
+        stderr.contains("migrated"),
+        "should migrate from 0.17.0: {stderr}"
+    );
+
+    let identity = ws.read_identity();
+    assert!(
+        identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
+        "identity at current after migrate: {identity}"
+    );
 }
