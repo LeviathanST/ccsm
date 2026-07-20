@@ -2,7 +2,9 @@ use std::io::IsTerminal;
 
 /// Run the help subcommand: `ccsm help commands`, `ccsm help <command>`, `ccsm help tutorial`.
 pub fn run_help(topic: &[String]) {
-    let topic_str = topic.join(" ").to_lowercase()
+    let topic_str = topic
+        .join(" ")
+        .to_lowercase()
         .replace("  ", " ")
         .replace(' ', "-");
 
@@ -16,13 +18,40 @@ pub fn run_help(topic: &[String]) {
 fn print_categorized() {
     let categories = [
         ("Query", &["list", "scan", "show"] as &[&str]),
-        ("Lifecycle", &["new", "start", "complete", "block", "abandon", "pending"]),
+        (
+            "Lifecycle",
+            &["new", "start", "complete", "block", "abandon", "pending"],
+        ),
         ("Content", &["scope", "tag", "note", "check", "checklist"]),
         ("Groups", &["group", "group-deps", "next", "depend"]),
         ("Resume & Attach", &["resume", "refresh", "attach"]),
-        ("Cleanup", &["trash", "recover", "clean", "clean-all", "archive", "archive-all"]),
-        ("Maintenance", &["doctor", "migrate", "init", "setup", "config", "branch", "close"]),
-        ("Integration", &["inject-scope", "gate-check", "note-check", "completions", "sequence"]),
+        (
+            "Cleanup",
+            &[
+                "trash",
+                "recover",
+                "clean",
+                "clean-all",
+                "archive",
+                "archive-all",
+            ],
+        ),
+        (
+            "Maintenance",
+            &[
+                "doctor", "migrate", "init", "setup", "config", "branch", "close",
+            ],
+        ),
+        (
+            "Integration",
+            &[
+                "inject-scope",
+                "gate-check",
+                "note-check",
+                "completions",
+                "sequence",
+            ],
+        ),
         ("Help", &["help", "tutorial"]),
     ];
 
@@ -34,13 +63,20 @@ fn print_categorized() {
         println!("  {}  {}", style_cat(cat), names.join(&sep));
     }
     println!();
-    println!("  {}  ccsm help <command>  for detailed help with examples", style_dim("→"));
-    println!("  {}  ccsm --help         for the quick reference", style_dim("→"));
+    println!(
+        "  {}  ccsm help <command>  for detailed help with examples",
+        style_dim("→")
+    );
+    println!(
+        "  {}  ccsm --help         for the quick reference",
+        style_dim("→")
+    );
 }
 
 fn print_command_help(topic: &str) {
     let detail = match topic {
-        "list" | "ls" => Some(("list",
+        "list" | "ls" => Some((
+            "list",
             "List sessions. Multiple display modes: default (table), --active, --summary, --verbose, --json.",
             vec![
                 "ccsm list                      # all sessions, table view",
@@ -51,7 +87,8 @@ fn print_command_help(topic: &str) {
                 "ccsm list -g my-group          # filter by group",
             ],
         )),
-        "scan" | "sc" => Some(("scan",
+        "scan" | "sc" => Some((
+            "scan",
             "Compact, grep-friendly output grouped by group. Built-in --search for text filtering.",
             vec![
                 "ccsm scan                      # all sessions, grouped",
@@ -61,7 +98,8 @@ fn print_command_help(topic: &str) {
                 "ccsm scan -S in_progress       # filter by status",
             ],
         )),
-        "show" => Some(("show",
+        "show" => Some((
+            "show",
             "Show session details: goal, scope, tags, session_id, pids, timestamps. Extract a single section with --section.",
             vec![
                 "ccsm show my-session           # full detail",
@@ -69,7 +107,8 @@ fn print_command_help(topic: &str) {
                 "ccsm show my-session --json     # JSON output",
             ],
         )),
-        "new" => Some(("new",
+        "new" => Some((
+            "new",
             "Create a pending session entry. Optionally embed a ## Checklist section with -c. Use -b to associate with a branch, -w for worktree.",
             vec![
                 "ccsm new my-feature -g \"Add dark mode\"",
@@ -77,14 +116,16 @@ fn print_command_help(topic: &str) {
                 "ccsm new my-feature -b feat/my-branch -g \"Work on feature\"",
             ],
         )),
-        "start" => Some(("start",
+        "start" => Some((
+            "start",
             "Move a session from pending → in_progress. With --worktree (-w), also creates a git worktree on the session's target branch.",
             vec![
                 "ccsm start my-feature          # mark active",
                 "ccsm start my-feature -w       # create git worktree too",
             ],
         )),
-        "complete" => Some(("complete",
+        "complete" => Some((
+            "complete",
             "Mark a session completed. Runs gate checks (detail file completeness) and refuses unless --force. Run ccsm close first.",
             vec![
                 "ccsm close my-session          # review gate",
@@ -92,34 +133,41 @@ fn print_command_help(topic: &str) {
                 "ccsm complete my-session --force  # skip gate",
             ],
         )),
-        "block" => Some(("block",
+        "block" => Some((
+            "block",
             "Mark a session as blocked — waiting on a dependency.",
             vec!["ccsm block my-session          # mark blocked"],
         )),
-        "abandon" => Some(("abandon",
+        "abandon" => Some((
+            "abandon",
             "Mark a session as abandoned — no longer relevant.",
             vec!["ccsm abandon my-session        # mark abandoned"],
         )),
-        "pending" => Some(("pending",
+        "pending" => Some((
+            "pending",
             "Reset to pending, clears session_id + pids + timestamps.",
             vec!["ccsm pending my-session        # reset to pending"],
         )),
-        "scope" => Some(("scope",
+        "scope" => Some((
+            "scope",
             "Set the session scope: 2-4 sentences on approach, constraints, what's in/out. Replaces any existing scope.",
             vec!["ccsm scope my-session Implement the auth module, add JWT support, write tests"],
         )),
-        "tag" => Some(("tag",
+        "tag" => Some((
+            "tag",
             "Replace all tags on a session. Space-separated list. Overwrites existing tags.",
             vec!["ccsm tag my-session auth security rust"],
         )),
-        "note" => Some(("note",
+        "note" => Some((
+            "note",
             "Append a timestamped entry to the session's Progress Log. Use -x for cross-session notes.",
             vec![
                 "ccsm note my-session Fixed the auth bug",
                 "ccsm note my-session -x other-session Cross-reference: shared dependency",
             ],
         )),
-        "check" => Some(("check",
+        "check" => Some((
+            "check",
             "Toggle or add checklist items. ITEM can be a 1-based index, text substring, or new item text.",
             vec![
                 "ccsm check my-session \"write tests\" -s pending   # add new item",
@@ -127,14 +175,16 @@ fn print_command_help(topic: &str) {
                 "ccsm check my-session \"write tests\" -s skipped   # mark by text",
             ],
         )),
-        "checklist" => Some(("checklist",
+        "checklist" => Some((
+            "checklist",
             "Initialize the ## Checklist section in a session detail file. Use -i to create if missing.",
             vec![
                 "ccsm checklist my-session      # view items",
                 "ccsm checklist my-session -i   # init section",
             ],
         )),
-        "group" => Some(("group",
+        "group" => Some((
+            "group",
             "Manage session groups. Assign, set goals, render roadmaps.",
             vec![
                 "ccsm group --list              # list all groups",
@@ -144,15 +194,18 @@ fn print_command_help(topic: &str) {
                 "ccsm group my-session --clear  # remove from group",
             ],
         )),
-        "group-deps" => Some(("group-deps",
+        "group-deps" => Some((
+            "group-deps",
             "Show the dependency graph for all sessions in a group.",
             vec!["ccsm group-deps my-group       # render dep graph"],
         )),
-        "next" => Some(("next",
+        "next" => Some((
+            "next",
             "Print the next session to work on in a group.",
             vec!["ccsm next my-group             # next session to work on"],
         )),
-        "depend" => Some(("depend",
+        "depend" => Some((
+            "depend",
             "Manage session dependencies. Add or remove blocking dependencies.",
             vec![
                 "ccsm depend my-session --on prereq  # depends on prereq",
@@ -160,21 +213,24 @@ fn print_command_help(topic: &str) {
                 "ccsm depend my-session --clear      # remove all deps",
             ],
         )),
-        "resume" => Some(("resume",
+        "resume" => Some((
+            "resume",
             "Spawn OpenCode with session context. Harvests session_id on exit.",
             vec![
                 "ccsm resume my-session         # spawn OpenCode",
                 "ccsm resume my-session -w      # spawn inside git worktree",
             ],
         )),
-        "refresh" => Some(("refresh",
+        "refresh" => Some((
+            "refresh",
             "Retire current agent session, spawn fresh. Use when context is bloated.",
             vec![
                 "ccsm refresh my-session                    # fresh spawn",
                 "ccsm refresh my-session -r \"context 45%\"   # with reason",
             ],
         )),
-        "attach" => Some(("attach",
+        "attach" => Some((
+            "attach",
             "Manually link a session UUID to a ccsm entry. Auto-discover, explicit UUID, or --pid.",
             vec![
                 "ccsm attach my-session              # auto-discover",
@@ -182,50 +238,61 @@ fn print_command_help(topic: &str) {
                 "ccsm attach my-session --pid <pid>  # harvest from PID",
             ],
         )),
-        "trash" => Some(("trash",
+        "trash" => Some((
+            "trash",
             "Soft-delete a session. Recoverable with ccsm recover.",
             vec!["ccsm trash my-session           # soft-delete"],
         )),
-        "recover" => Some(("recover",
+        "recover" => Some((
+            "recover",
             "Recover a trashed session. Undoes a trash.",
             vec!["ccsm recover my-session         # restore from trash"],
         )),
-        "clean" => Some(("clean",
+        "clean" => Some((
+            "clean",
             "Permanently delete a session's transcript and files. Irreversible.",
             vec!["ccsm clean my-session           # permanent delete"],
         )),
-        "clean-all" => Some(("clean-all",
+        "clean-all" => Some((
+            "clean-all",
             "Permanently delete ALL trashed entries. Irreversible.",
             vec!["ccsm clean-all                  # nuke all trashed"],
         )),
-        "archive" => Some(("archive",
+        "archive" => Some((
+            "archive",
             "Archive: delete transcript + session files, keep registry entry.",
             vec!["ccsm archive my-session         # archive one"],
         )),
-        "archive-all" => Some(("archive-all",
+        "archive-all" => Some((
+            "archive-all",
             "Archive all completed sessions with transcripts.",
             vec!["ccsm archive-all                # archive all done"],
         )),
-        "doctor" => Some(("doctor",
+        "doctor" => Some((
+            "doctor",
             "Scan for health issues. Pass --fix to auto-clean fixable issues.",
             vec![
                 "ccsm doctor                     # check health",
                 "ccsm doctor --fix               # auto-fix issues",
             ],
         )),
-        "migrate" => Some(("migrate",
+        "migrate" => Some((
+            "migrate",
             "Auto-chain migration from v0.0.0 to current. Safe to re-run.",
             vec!["ccsm migrate                    # run migrations"],
         )),
-        "init" => Some(("init",
+        "init" => Some((
+            "init",
             "Initialize a .ccsm identity in this project.",
             vec!["ccsm init                       # set up identity"],
         )),
-        "setup" => Some(("setup",
+        "setup" => Some((
+            "setup",
             "Install session tracking into global skills.",
             vec!["ccsm setup                      # install integration"],
         )),
-        "config" => Some(("config",
+        "config" => Some((
+            "config",
             "View or modify project configuration.",
             vec![
                 "ccsm config                     # show current config",
@@ -233,36 +300,42 @@ fn print_command_help(topic: &str) {
                 "ccsm config reset               # restore defaults",
             ],
         )),
-        "branch" => Some(("branch",
+        "branch" => Some((
+            "branch",
             "Set or clear the target git branch for a session.",
             vec![
                 "ccsm branch my-session feat/my-branch  # set branch",
                 "ccsm branch my-session --clear         # clear it",
             ],
         )),
-        "close" => Some(("close",
+        "close" => Some((
+            "close",
             "Pre-completion gate check.",
             vec!["ccsm close my-session          # gate review"],
         )),
-        "inject-scope" => Some(("inject-scope",
+        "inject-scope" => Some((
+            "inject-scope",
             "Output <system-reminder> with goal, scope, checklist.",
             vec![
                 "ccsm inject-scope              # for current session",
                 "ccsm inject-scope my-session   # for specific session",
             ],
         )),
-        "gate-check" => Some(("gate-check",
+        "gate-check" => Some((
+            "gate-check",
             "Check if work aligns with session scope.",
             vec![
                 "ccsm gate-check                # check alignment",
                 "ccsm gate-check --strict       # strict mode",
             ],
         )),
-        "note-check" => Some(("note-check",
+        "note-check" => Some((
+            "note-check",
             "Stop-hook: remind to note progress when tree is dirty.",
             vec!["ccsm note-check                # check if note needed"],
         )),
-        "completions" => Some(("completions",
+        "completions" => Some((
+            "completions",
             "Generate shell completion script (bash, fish, zsh).",
             vec![
                 "ccsm completions bash          # bash completions",
@@ -270,18 +343,21 @@ fn print_command_help(topic: &str) {
                 "ccsm completions zsh           # zsh completions",
             ],
         )),
-        "sequence" => Some(("sequence",
+        "sequence" => Some((
+            "sequence",
             "Run multiple mutations in a single lock/load/save cycle.",
             vec!["ccsm sequence -q start foo -q scope foo bar -q complete foo"],
         )),
-        "rename" => Some(("rename",
+        "rename" => Some((
+            "rename",
             "Rename a session across registry, detail file, transcript.",
             vec![
                 "ccsm rename old-name new-name",
                 "ccsm rename old-name new-name -g \"New goal\" -s \"New scope\"",
             ],
         )),
-        "help" => Some(("help",
+        "help" => Some((
+            "help",
             "Browse help by category or get detailed help for a command.",
             vec![
                 "ccsm help commands              # categorized list",
@@ -290,7 +366,8 @@ fn print_command_help(topic: &str) {
                 "ccsm --help                     # quick reference",
             ],
         )),
-        "tutorial" => Some(("tutorial",
+        "tutorial" => Some((
+            "tutorial",
             "Interactive walkthrough of the session lifecycle.",
             vec!["ccsm tutorial                   # start the tutorial"],
         )),
@@ -324,7 +401,10 @@ fn print_tutorial_info() {
     eprintln!();
     eprintln!("  {}", style_cmd("ccsm tutorial"));
     eprintln!();
-    eprintln!("  {}", style_dim("Requires a terminal. Silent in non-interactive contexts."));
+    eprintln!(
+        "  {}",
+        style_dim("Requires a terminal. Silent in non-interactive contexts.")
+    );
 }
 
 // ── Styling helpers (thin wrappers around crate::style) ────────────
@@ -361,12 +441,47 @@ mod tests {
     #[test]
     fn help_all_known_topics() {
         let topics = [
-            "list", "scan", "show", "new", "start", "complete", "block", "abandon",
-            "pending", "scope", "tag", "note", "check", "checklist", "group",
-            "group-deps", "next", "depend", "resume", "refresh", "attach", "trash",
-            "recover", "clean", "clean-all", "archive", "archive-all", "doctor",
-            "migrate", "init", "setup", "config", "branch", "close", "inject-scope",
-            "gate-check", "note-check", "completions", "sequence", "rename", "help",
+            "list",
+            "scan",
+            "show",
+            "new",
+            "start",
+            "complete",
+            "block",
+            "abandon",
+            "pending",
+            "scope",
+            "tag",
+            "note",
+            "check",
+            "checklist",
+            "group",
+            "group-deps",
+            "next",
+            "depend",
+            "resume",
+            "refresh",
+            "attach",
+            "trash",
+            "recover",
+            "clean",
+            "clean-all",
+            "archive",
+            "archive-all",
+            "doctor",
+            "migrate",
+            "init",
+            "setup",
+            "config",
+            "branch",
+            "close",
+            "inject-scope",
+            "gate-check",
+            "note-check",
+            "completions",
+            "sequence",
+            "rename",
+            "help",
             "tutorial",
         ];
         for t in &topics {

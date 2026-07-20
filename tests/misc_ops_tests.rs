@@ -361,8 +361,7 @@ fn misc_doctor_stale_lock() {
 
     let out = ws.run_ok(&["doctor"]);
     assert!(
-        out.contains("recent lock file with dead PID")
-            || out.contains("stale lock file"),
+        out.contains("recent lock file with dead PID") || out.contains("stale lock file"),
         "doctor should report stale lock: {out}"
     );
 

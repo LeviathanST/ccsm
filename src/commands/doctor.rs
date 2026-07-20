@@ -910,12 +910,13 @@ mod tests {
         std::fs::write(&lock_path, "99999999\n").unwrap();
 
         // Set mtime to 10 minutes ago
-        let old_time = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(600);
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
         let f = std::fs::File::open(&lock_path).unwrap();
-        let _ = f.set_times(std::fs::FileTimes::new()
-            .set_accessed(old_time)
-            .set_modified(old_time));
+        let _ = f.set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(old_time)
+                .set_modified(old_time),
+        );
         drop(f);
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
@@ -944,28 +945,33 @@ mod tests {
         std::fs::write(&lock_path, "99999998\n").unwrap();
 
         // Set mtime to 10 minutes ago using file times API
-        let old_time = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(600);
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
         let f = std::fs::File::open(&lock_path).unwrap();
-        f.set_times(std::fs::FileTimes::new()
-            .set_accessed(old_time)
-            .set_modified(old_time)
-        ).unwrap();
+        f.set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(old_time)
+                .set_modified(old_time),
+        )
+        .unwrap();
         drop(f);
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
             // Verify lock exists before fix
-            assert!(lock_path.exists(), "lock should exist before fix at {}", lock_path.display());
-
-            let result = run_doctor(&home, &workspace, true);
             assert!(
-                result.is_ok(),
-                "doctor --fix should succeed: {:?}",
-                result
+                lock_path.exists(),
+                "lock should exist before fix at {}",
+                lock_path.display()
             );
 
+            let result = run_doctor(&home, &workspace, true);
+            assert!(result.is_ok(), "doctor --fix should succeed: {:?}", result);
+
             // Verify lock was removed
-            assert!(!lock_path.exists(), "lock should be removed after --fix at {}", lock_path.display());
+            assert!(
+                !lock_path.exists(),
+                "lock should be removed after --fix at {}",
+                lock_path.display()
+            );
         });
     }
 
