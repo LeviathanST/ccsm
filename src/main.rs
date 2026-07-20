@@ -1,41 +1,76 @@
 #[allow(dead_code)]
+pub(crate) mod commands;
+#[allow(dead_code)]
 mod config;
 #[allow(dead_code)]
 mod consumer;
+mod migrate;
 #[allow(dead_code)]
 mod registry;
 #[allow(dead_code)]
 mod sequence;
 #[allow(dead_code)]
 mod session;
-#[allow(dead_code)]
-pub(crate) mod commands;
-mod migrate;
 mod style;
 pub(crate) mod table;
 
 /// Embedded OpenCode plugin file — ships inside the binary so `ccsm setup` works
 /// even when installed via `cargo install` (no source tree needed).
-const EMBEDDED_OPENCODE_PLUGIN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/opencode/ccsm-plugin.ts"));
+const EMBEDDED_OPENCODE_PLUGIN: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/plugins/opencode/ccsm-plugin.ts"
+));
 
 /// Embedded setup script for Claude consumer — same rationale.
-const EMBEDDED_SETUP_SCRIPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/setup.sh"));
+const EMBEDDED_SETUP_SCRIPT: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/setup.sh"));
 
 /// Embedded skill files for offline `seed_skills`.
 const EMBEDDED_SKILLS: &[(&str, Option<&str>, &str)] = &[
-    ("session-manager", Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/session-manager/skill.json"))), include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/session-manager/SKILL.md"))),
-    ("seed-session", None, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/seed-session/SKILL.md"))),
-    ("wrap-up", None, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/wrap-up/SKILL.md"))),
-    ("learned-lesson-issue", None, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/learned-lesson-issue/SKILL.md"))),
+    (
+        "session-manager",
+        Some(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.claude/skills/session-manager/skill.json"
+        ))),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.claude/skills/session-manager/SKILL.md"
+        )),
+    ),
+    (
+        "seed-session",
+        None,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.claude/skills/seed-session/SKILL.md"
+        )),
+    ),
+    (
+        "wrap-up",
+        None,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.claude/skills/wrap-up/SKILL.md"
+        )),
+    ),
+    (
+        "learned-lesson-issue",
+        None,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.claude/skills/learned-lesson-issue/SKILL.md"
+        )),
+    ),
 ];
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
+use crate::consumer::Consumer;
+use crate::registry::{now_iso as now_iso_ts, parse_sections};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use crate::consumer::Consumer;
-use crate::registry::{parse_sections, now_iso as now_iso_ts};
 
 // ── Structured Error Codes ─────────────────────────────────────────────
 
@@ -64,6 +99,27 @@ impl std::fmt::Display for ErrorCode {
             Self::Dep => write!(f, "[ERR_DEP]"),
         }
     }
+}
+
+/// Emit an anyhow error with a structured error code prefix.
+/// The `[ERR_*]` code is prepended automatically — no way to forget it.
+///
+/// Usage: `bail_err!(ErrorCode::NoSession, "session '{}' not found", name)`
+#[macro_export]
+macro_rules! bail_err {
+    ($code:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
+        anyhow::bail!("{} {}", $code, format!($fmt $(, $arg)*))
+    };
+}
+
+/// Print to stderr with a structured error code prefix.
+///
+/// Usage: `eprint_err!(ErrorCode::Invalid, "bad config: {}", msg)`
+#[macro_export]
+macro_rules! eprint_err {
+    ($code:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
+        eprintln!("{} {}", $code, format!($fmt $(, $arg)*))
+    };
 }
 
 // ── CLI (clap) ──────────────────────────────────────────────────────
@@ -464,22 +520,65 @@ fn run_main() -> anyhow::Result<()> {
     // Migrate command handles its own workspace resolution (needs raw identity).
     if let Some(ref ws) = cli.workspace {
         std::env::set_current_dir(ws)?;
-    } else if !matches!(cli.command, Commands::Migrate) {
-        if let Some(auto_ws) = resolve_workspace()? {
-            std::env::set_current_dir(&auto_ws)?;
-        }
+    } else if !matches!(cli.command, Commands::Migrate)
+        && let Some(auto_ws) = resolve_workspace()?
+    {
+        std::env::set_current_dir(&auto_ws)?;
     }
 
     // First-run welcome: show once per project when identity exists
-    if !matches!(cli.command, Commands::Init | Commands::Setup | Commands::Migrate) {
+    if !matches!(
+        cli.command,
+        Commands::Init | Commands::Setup | Commands::Migrate
+    ) {
         check_first_run().ok();
     }
 
     match cli.command {
-        Commands::Scan { group, status, search, json } => run_scan(group.as_deref(), status.as_deref(), search.as_deref(), json),
-        Commands::List { active, summary, status, verbose, group, by_rank, json } => run_list(active, summary, verbose, status.as_deref(), group.as_deref(), by_rank, json),
-        Commands::Show { name, section, json } => run_show(&name, section.as_deref(), json, consumer),
-        Commands::New { name, goal, force, checklist, branch, worktree } => run_new(&name, goal.as_deref().unwrap_or(""), force, checklist, branch.as_deref().unwrap_or(""), worktree, consumer),
+        Commands::Scan {
+            group,
+            status,
+            search,
+            json,
+        } => run_scan(group.as_deref(), status.as_deref(), search.as_deref(), json),
+        Commands::List {
+            active,
+            summary,
+            status,
+            verbose,
+            group,
+            by_rank,
+            json,
+        } => run_list(
+            active,
+            summary,
+            verbose,
+            status.as_deref(),
+            group.as_deref(),
+            by_rank,
+            json,
+        ),
+        Commands::Show {
+            name,
+            section,
+            json,
+        } => run_show(&name, section.as_deref(), json, consumer),
+        Commands::New {
+            name,
+            goal,
+            force,
+            checklist,
+            branch,
+            worktree,
+        } => run_new(
+            &name,
+            goal.as_deref().unwrap_or(""),
+            force,
+            checklist,
+            branch.as_deref().unwrap_or(""),
+            worktree,
+            consumer,
+        ),
         Commands::Start { name, worktree } => run_start(&name, worktree),
         Commands::Complete { name, force } => run_complete(&name, force),
         Commands::Block { name } => run_status(&name, "block", false),
@@ -487,15 +586,56 @@ fn run_main() -> anyhow::Result<()> {
         Commands::Pending { name } => run_pending(&name),
         Commands::Scope { name, text } => run_set_field(&name, "scope", &text.join(" ")),
         Commands::Tag { name, tags } => run_set_tags(&name, &tags),
-        Commands::Branch { name, clear, branch } => run_branch(&name, clear, branch.as_slice()),
-        Commands::Group { name, list, group, rank, clear, goal, roadmap } => run_group(name.as_deref(), list, group.as_deref(), rank.as_deref(), clear, goal.as_deref(), roadmap),
+        Commands::Branch {
+            name,
+            clear,
+            branch,
+        } => run_branch(&name, clear, branch.as_slice()),
+        Commands::Group {
+            name,
+            list,
+            group,
+            rank,
+            clear,
+            goal,
+            roadmap,
+        } => run_group(
+            name.as_deref(),
+            list,
+            group.as_deref(),
+            rank.as_deref(),
+            clear,
+            goal.as_deref(),
+            roadmap,
+        ),
         Commands::Next { group } => run_next(&group),
         Commands::GroupDeps { group } => run_group_deps(&group),
         Commands::Depend { name, on, clear } => run_depend(&name, on.as_deref(), clear),
-        Commands::Attach { name, session_id, pid } => run_attach(&name, session_id.as_deref(), pid, &home, consumer),
-        Commands::Rename { old, new, goal, scope } => run_rename(&old, &new, goal.as_deref(), scope.as_deref(), &home, &workspace_path(), consumer),
-        Commands::Resume { name, worktree } => commands::resume::run_resume(&name, &workspace_path(), &home, consumer, worktree),
-        Commands::Refresh { name, reason } => run_refresh(&name, reason.as_deref(), &workspace_path(), &home, consumer),
+        Commands::Attach {
+            name,
+            session_id,
+            pid,
+        } => run_attach(&name, session_id.as_deref(), pid, &home, consumer),
+        Commands::Rename {
+            old,
+            new,
+            goal,
+            scope,
+        } => run_rename(
+            &old,
+            &new,
+            goal.as_deref(),
+            scope.as_deref(),
+            &home,
+            &workspace_path(),
+            consumer,
+        ),
+        Commands::Resume { name, worktree } => {
+            commands::resume::run_resume(&name, &workspace_path(), &home, consumer, worktree)
+        }
+        Commands::Refresh { name, reason } => {
+            run_refresh(&name, reason.as_deref(), &workspace_path(), &home, consumer)
+        }
         Commands::Trash { name } => run_trash(&name),
         Commands::Recover { name } => run_recover(&name),
         Commands::Clean { name } => run_clean(&name, &home, &workspace_path(), consumer),
@@ -513,10 +653,12 @@ fn run_main() -> anyhow::Result<()> {
         Commands::InjectScope { name } => run_inject_scope(name.as_deref(), consumer),
         Commands::GateCheck { name, strict } => run_gate_check(name.as_deref(), strict),
         Commands::Init => run_init(),
-        Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into()), consumer),
+        Commands::Setup => run_setup(
+            &std::env::args().next().unwrap_or_else(|| "ccsm".into()),
+            consumer,
+        ),
         Commands::Migrate => run_migrate(),
         Commands::Config { args } => run_config(&args),
-
     }
 }
 // ── First-Run Welcome ───────────────────────────────────────────────
@@ -541,16 +683,53 @@ fn check_first_run() -> anyhow::Result<()> {
 
     // ── Welcome banner ────────────────────────────────────────────
     eprintln!();
-    eprintln!("{}", style::primary("╭──────────────────────────────────────────────────────╮"));
-    eprintln!("{}", style::primary("│  ccsm — Context-aware Session Manager              │"));
-    eprintln!("{}", style::primary("│  Track, resume, organize AI agent sessions         │"));
-    eprintln!("{}", style::primary("╰──────────────────────────────────────────────────────╯"));
+    eprintln!(
+        "{}",
+        style::primary("╭──────────────────────────────────────────────────────╮")
+    );
+    eprintln!(
+        "{}",
+        style::primary("│  ccsm — Context-aware Session Manager              │")
+    );
+    eprintln!(
+        "{}",
+        style::primary("│  Track, resume, organize AI agent sessions         │")
+    );
+    eprintln!(
+        "{}",
+        style::primary("╰──────────────────────────────────────────────────────╯")
+    );
     eprintln!();
-    eprintln!("  {}  {}  {}  {}", style::emoji("📄", "[i]"), style::primary("ccsm new <name>"),    style::dim("   Create a session"), " ");
-    eprintln!("  {}  {}  {}",    style::emoji("📋", "[*]"), style::primary("ccsm list"),          style::dim("   View all sessions"));
-    eprintln!("  {}  {}  {}",    style::emoji("🔍", "[?]"), style::primary("ccsm scan"),          style::dim("   Compact overview"));
-    eprintln!("  {}  {}  {}",    style::emoji("🔧", "[*]"), style::primary("ccsm setup"),         style::dim("   Install agent integration"));
-    eprintln!("  {}  {}  {}",    style::emoji("ℹ", "[?]"),  style::primary("ccsm --help"),        style::dim("   Full reference"));
+    eprintln!(
+        "  {}  {}  {}   ",
+        style::emoji("📄", "[i]"),
+        style::primary("ccsm new <name>"),
+        style::dim("   Create a session")
+    );
+    eprintln!(
+        "  {}  {}  {}",
+        style::emoji("📋", "[*]"),
+        style::primary("ccsm list"),
+        style::dim("   View all sessions")
+    );
+    eprintln!(
+        "  {}  {}  {}",
+        style::emoji("🔍", "[?]"),
+        style::primary("ccsm scan"),
+        style::dim("   Compact overview")
+    );
+    eprintln!(
+        "  {}  {}  {}",
+        style::emoji("🔧", "[*]"),
+        style::primary("ccsm setup"),
+        style::dim("   Install agent integration")
+    );
+    eprintln!(
+        "  {}  {}  {}",
+        style::emoji("ℹ", "[?]"),
+        style::primary("ccsm --help"),
+        style::dim("   Full reference")
+    );
     eprintln!();
     eprintln!("  {}", style::dim(&format!("Project: {}", ctx.slug)));
     eprintln!();
@@ -575,21 +754,23 @@ fn check_first_run() -> anyhow::Result<()> {
 /// Returns `None` when no auto-detection succeeds — the caller uses PWD directly.
 fn resolve_workspace() -> anyhow::Result<Option<PathBuf>> {
     // Priority: CCSM_WORKSPACE env var
-    if let Ok(ws) = std::env::var("CCSM_WORKSPACE") {
-        if !ws.is_empty() {
-            let path = PathBuf::from(&ws);
-            anyhow::ensure!(
-                path.is_absolute(),
-                "CCSM_WORKSPACE must be an absolute path, got: {}",
-                ws,
-            );
-            anyhow::ensure!(
-                path.is_dir(),
-                "CCSM_WORKSPACE points to a non-existent directory: {}",
-                ws,
-            );
-            return Ok(Some(path));
-        }
+    if let Ok(ws) = std::env::var("CCSM_WORKSPACE")
+        && !ws.is_empty()
+    {
+        let path = PathBuf::from(&ws);
+        anyhow::ensure!(
+            path.is_absolute(),
+            "{} CCSM_WORKSPACE must be an absolute path, got: {}",
+            ErrorCode::Invalid,
+            ws,
+        );
+        anyhow::ensure!(
+            path.is_dir(),
+            "{} CCSM_WORKSPACE points to a non-existent directory: {}",
+            ErrorCode::Invalid,
+            ws,
+        );
+        return Ok(Some(path));
     }
 
     // Priority: walk up from PWD looking for .ccsm identity file
@@ -640,7 +821,9 @@ fn action_msg(action: &str, name: &str, detail: &str) {
             _ => action.to_string(),
         };
         let mut action_table = crate::table::Table::new();
-        action_table.col(12).col(0)
+        action_table
+            .col(12)
+            .col(0)
             .add_row(&[&colored_action, &format!("{}  ← {}", name, detail)])
             .print();
     }
@@ -662,12 +845,20 @@ fn run_config(args: &[String]) -> anyhow::Result<()> {
                 String::new()
             };
             let mut parsed: toml::Table = toml_content.parse().unwrap_or_default();
-            parsed.insert(key.clone(), toml::Value::from(value.as_str()));
+            let typed: toml::Value = if let Ok(n) = value.parse::<i64>() {
+                toml::Value::Integer(n)
+            } else if let Ok(f) = value.parse::<f64>() {
+                toml::Value::Float(f)
+            } else {
+                toml::Value::String(value.clone())
+            };
+            parsed.insert(key.clone(), typed);
             if let Some(parent) = config_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let out = toml::to_string_pretty(&parsed)
-                .map_err(|e| anyhow::anyhow!("{} failed to serialize config: {e}", ErrorCode::Invalid))?;
+            let out = toml::to_string_pretty(&parsed).map_err(|e| {
+                anyhow::anyhow!("{} failed to serialize config: {e}", ErrorCode::Invalid)
+            })?;
             std::fs::write(&config_path, out)?;
             action_msg("config-set", key, value);
         }
@@ -692,20 +883,38 @@ fn run_config(args: &[String]) -> anyhow::Result<()> {
                 });
                 println!("{}", serde_json::to_string_pretty(&json)?);
             } else {
-                println!("{} {:?}", style::primary("branch_tracking:"), config.branch_tracking);
+                println!(
+                    "{} {:?}",
+                    style::primary("branch_tracking:"),
+                    config.branch_tracking
+                );
                 println!("{} {}", style::primary("wip_limit:"), config.wip_limit);
-                println!("{} {}", style::primary("worktrees:"), format!("{:?}", config.worktrees));
+                println!(
+                    "{} {}",
+                    style::primary("worktrees:"),
+                    format!("{:?}", config.worktrees)
+                );
                 if let Some(ref dt) = config.default_checklist_type {
                     println!("{} {}", style::primary("default_checklist_type:"), dt);
                 }
                 if !config.checklist_templates.is_empty() {
-                    println!("{} {} custom template(s)", style::primary("checklist_templates:"), config.checklist_templates.len());
+                    println!(
+                        "{} {} custom template(s)",
+                        style::primary("checklist_templates:"),
+                        config.checklist_templates.len()
+                    );
                     for (name, tmpl) in &config.checklist_templates {
                         println!("  {} ({} items)", name, tmpl.items.len());
                     }
                 }
-                println!("\n{}", style::dim(&format!("config: {}", config_path.display())));
-                println!("{}", style::dim("  ccsm config set <key> <value> to change"));
+                println!(
+                    "\n{}",
+                    style::dim(&format!("config: {}", config_path.display()))
+                );
+                println!(
+                    "{}",
+                    style::dim("  ccsm config set <key> <value> to change")
+                );
                 println!("{}", style::dim("  ccsm config reset to restore defaults"));
             }
         }
@@ -719,7 +928,12 @@ fn run_config(args: &[String]) -> anyhow::Result<()> {
 /// Format (json): array of {name, status, group, rank, goal, tags, depends_on}.
 ///
 /// Built-in --search makes grep unnecessary for agents. --json for structured consumers.
-fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Option<&str>, json: bool) -> anyhow::Result<()> {
+fn run_scan(
+    group_filter: Option<&str>,
+    status_filter: Option<&str>,
+    search: Option<&str>,
+    json: bool,
+) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let reg = load_workspace_registry()?;
 
@@ -731,26 +945,38 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
         Some("abandoned") => Some(SessionStatus::Abandoned),
         Some("trashed") => Some(SessionStatus::Trashed),
         Some(other) => {
-            anyhow::bail!("{} unknown status '{}' — valid: pending, in_progress, completed, blocked, abandoned, trashed", ErrorCode::BadStatus, other);
+            anyhow::bail!(
+                "{} unknown status '{}' — valid: pending, in_progress, completed, blocked, abandoned, trashed",
+                ErrorCode::BadStatus,
+                other
+            );
         }
         None => None,
     };
 
     // Collect filtered sessions
-    let sessions: Vec<&crate::registry::WorkspaceSession> = reg.sessions.iter()
+    let sessions: Vec<&crate::registry::WorkspaceSession> = reg
+        .sessions
+        .iter()
         .filter(|s| {
-            if let Some(g) = group_filter {
-                if !s.group.as_ref().is_some_and(|grp| grp.name == g) { return false; }
+            if let Some(g) = group_filter
+                && !s.group.as_ref().is_some_and(|grp| grp.name == g)
+            {
+                return false;
             }
-            if let Some(fs) = status {
-                if s.status != fs { return false; }
+            if let Some(fs) = status
+                && s.status != fs
+            {
+                return false;
             }
             if let Some(q) = search {
                 let qlower = q.to_lowercase();
                 let in_name = s.name.to_lowercase().contains(&qlower);
                 let in_goal = s.goal.to_lowercase().contains(&qlower);
                 let in_tags = s.tags.iter().any(|t| t.to_lowercase().contains(&qlower));
-                if !in_name && !in_goal && !in_tags { return false; }
+                if !in_name && !in_goal && !in_tags {
+                    return false;
+                }
             }
             true
         })
@@ -779,8 +1005,9 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
             depends_on: Vec<String>,
             branch: String,
         }
-        let entries: Vec<ScanEntry> = sessions.iter().map(|s| {
-            ScanEntry {
+        let entries: Vec<ScanEntry> = sessions
+            .iter()
+            .map(|s| ScanEntry {
                 name: s.name.clone(),
                 status: s.status.to_string(),
                 group: s.group.as_ref().map(|g| g.name.clone()),
@@ -789,16 +1016,19 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
                 tags: s.tags.clone(),
                 depends_on: s.depends_on.clone(),
                 branch: s.branch.clone(),
-            }
-        }).collect();
+            })
+            .collect();
         println!("{}", serde_json::to_string_pretty(&entries)?);
         return Ok(());
     }
 
     // Text output — group sessions
-    let mut grouped: std::collections::BTreeMap<String, Vec<&crate::registry::WorkspaceSession>> = std::collections::BTreeMap::new();
+    let mut grouped: std::collections::BTreeMap<String, Vec<&crate::registry::WorkspaceSession>> =
+        std::collections::BTreeMap::new();
     for s in &sessions {
-        let gname = s.group.as_ref()
+        let gname = s
+            .group
+            .as_ref()
             .map(|g| g.name.clone())
             .unwrap_or_else(|| "ungrouped".to_string());
         grouped.entry(gname).or_default().push(s);
@@ -810,9 +1040,18 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
             let ra = a.group.as_ref().map(|g| &g.rank);
             let rb = b.group.as_ref().map(|g| &g.rank);
             match (ra, rb) {
-                (Some(crate::registry::GroupRank::Number(na)), Some(crate::registry::GroupRank::Number(nb))) => na.cmp(nb),
-                (Some(crate::registry::GroupRank::Number(_)), Some(crate::registry::GroupRank::Free)) => std::cmp::Ordering::Greater,
-                (Some(crate::registry::GroupRank::Free), Some(crate::registry::GroupRank::Number(_))) => std::cmp::Ordering::Less,
+                (
+                    Some(crate::registry::GroupRank::Number(na)),
+                    Some(crate::registry::GroupRank::Number(nb)),
+                ) => na.cmp(nb),
+                (
+                    Some(crate::registry::GroupRank::Number(_)),
+                    Some(crate::registry::GroupRank::Free),
+                ) => std::cmp::Ordering::Greater,
+                (
+                    Some(crate::registry::GroupRank::Free),
+                    Some(crate::registry::GroupRank::Number(_)),
+                ) => std::cmp::Ordering::Less,
                 _ => a.name.cmp(&b.name),
             }
         });
@@ -820,13 +1059,11 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
 
     // Sort groups: "ungrouped" last, others alphabetical
     let mut group_names: Vec<String> = grouped.keys().cloned().collect();
-    group_names.sort_by(|a, b| {
-        match (a == "ungrouped", b == "ungrouped") {
-            (true, true) => std::cmp::Ordering::Equal,
-            (true, false) => std::cmp::Ordering::Greater,
-            (false, true) => std::cmp::Ordering::Less,
-            (false, false) => a.cmp(b),
-        }
+    group_names.sort_by(|a, b| match (a == "ungrouped", b == "ungrouped") {
+        (true, true) => std::cmp::Ordering::Equal,
+        (true, false) => std::cmp::Ordering::Greater,
+        (false, true) => std::cmp::Ordering::Less,
+        (false, false) => a.cmp(b),
     });
 
     let mut first_group = true;
@@ -872,7 +1109,15 @@ fn truncate_for_scan(s: &str, max_len: usize) -> String {
 }
 
 /// `ccsm list` — all sessions, one line each.  --active / --summary / --status filter / --verbose / --group / --by-rank / --json.
-fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&str>, group_filter: Option<&str>, by_rank: bool, json: bool) -> anyhow::Result<()> {
+fn run_list(
+    active: bool,
+    summary: bool,
+    verbose: bool,
+    status_filter: Option<&str>,
+    group_filter: Option<&str>,
+    by_rank: bool,
+    json: bool,
+) -> anyhow::Result<()> {
     use crate::registry::SessionStatus;
     let reg = load_workspace_registry()?;
 
@@ -908,9 +1153,15 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
                 continue;
             }
             if let Some(fs) = filter
-                && s.status != fs { continue; }
+                && s.status != fs
+            {
+                continue;
+            }
             if let Some(g) = group_filter
-                && !s.group.as_ref().is_some_and(|grp| grp.name == g) { continue; }
+                && !s.group.as_ref().is_some_and(|grp| grp.name == g)
+            {
+                continue;
+            }
             *counts.entry(s.status).or_insert(0) += 1;
         }
         let total: usize = counts.values().sum();
@@ -935,8 +1186,16 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked) {
                 continue;
             }
-            if let Some(fs) = filter && s.status != fs { continue; }
-            if let Some(g) = group_filter && !s.group.as_ref().is_some_and(|grp| grp.name == g) { continue; }
+            if let Some(fs) = filter
+                && s.status != fs
+            {
+                continue;
+            }
+            if let Some(g) = group_filter
+                && !s.group.as_ref().is_some_and(|grp| grp.name == g)
+            {
+                continue;
+            }
             *counts.entry(s.status).or_insert(0) += 1;
         }
         let total: usize = counts.values().sum();
@@ -972,11 +1231,24 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             consumer: String,
             branch: String,
         }
-        let entries: Vec<ListEntry> = reg.sessions.iter()
+        let entries: Vec<ListEntry> = reg
+            .sessions
+            .iter()
             .filter(|s| {
-                if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked) { return false; }
-                if let Some(fs) = filter && s.status != fs { return false; }
-                if let Some(g) = group_filter && !s.group.as_ref().is_some_and(|grp| grp.name == g) { return false; }
+                if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked)
+                {
+                    return false;
+                }
+                if let Some(fs) = filter
+                    && s.status != fs
+                {
+                    return false;
+                }
+                if let Some(g) = group_filter
+                    && !s.group.as_ref().is_some_and(|grp| grp.name == g)
+                {
+                    return false;
+                }
                 true
             })
             .map(|s| ListEntry {
@@ -1018,9 +1290,18 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             let ra = a.group.as_ref().map(|grp| &grp.rank);
             let rb = b.group.as_ref().map(|grp| &grp.rank);
             match (ra, rb) {
-                (Some(crate::registry::GroupRank::Number(na)), Some(crate::registry::GroupRank::Number(nb))) => na.cmp(nb),
-                (Some(crate::registry::GroupRank::Number(_)), Some(crate::registry::GroupRank::Free)) => std::cmp::Ordering::Greater,
-                (Some(crate::registry::GroupRank::Free), Some(crate::registry::GroupRank::Number(_))) => std::cmp::Ordering::Less,
+                (
+                    Some(crate::registry::GroupRank::Number(na)),
+                    Some(crate::registry::GroupRank::Number(nb)),
+                ) => na.cmp(nb),
+                (
+                    Some(crate::registry::GroupRank::Number(_)),
+                    Some(crate::registry::GroupRank::Free),
+                ) => std::cmp::Ordering::Greater,
+                (
+                    Some(crate::registry::GroupRank::Free),
+                    Some(crate::registry::GroupRank::Number(_)),
+                ) => std::cmp::Ordering::Less,
                 _ => a.name.cmp(&b.name),
             }
         });
@@ -1034,12 +1315,20 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             continue;
         }
         if let Some(fs) = filter
-            && s.status != fs { continue; }
+            && s.status != fs
+        {
+            continue;
+        }
         if let Some(g) = group_filter
-            && !s.group.as_ref().is_some_and(|grp| grp.name == g) {
-                continue;
-            }
-        let group_tag = s.group.as_ref().map(|grp| format!(" [{}:{}]", grp.name, grp.rank)).unwrap_or_default();
+            && !s.group.as_ref().is_some_and(|grp| grp.name == g)
+        {
+            continue;
+        }
+        let group_tag = s
+            .group
+            .as_ref()
+            .map(|grp| format!(" [{}:{}]", grp.name, grp.rank))
+            .unwrap_or_default();
         let status_str = s.status.to_string();
         let colored_status = style::status_label(&status_str);
         if verbose {
@@ -1050,19 +1339,29 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             } else {
                 format!("  [{}]", s.tags.join(", "))
             };
-            t.add_row(&[&colored_status, &s.name, &format!("{}{}{}{}", goal, s.goal, tags, group_tag)]);
+            t.add_row(&[
+                &colored_status,
+                &s.name,
+                &format!("{}{}{}{}", goal, s.goal, tags, group_tag),
+            ]);
         } else {
             let goal = if s.goal.is_empty() { "" } else { " — " };
             let goal_text = if s.goal.len() > 80 {
-                format!("{}{:.77}...", goal, &s.goal)
+                format!("{}{:.77}...", goal, s.goal)
             } else {
-                format!("{}{}", goal, &s.goal)
+                format!("{}{}", goal, s.goal)
             };
-            t.add_row(&[&colored_status, &s.name, &format!("{}{}", goal_text.trim(), group_tag)]);
+            t.add_row(&[
+                &colored_status,
+                &s.name,
+                &format!("{}{}", goal_text.trim(), group_tag),
+            ]);
         }
         printed += 1;
     }
-    if printed > 0 { t.print(); }
+    if printed > 0 {
+        t.print();
+    }
     if printed == 0 {
         println!("(no matching sessions)");
     }
@@ -1083,7 +1382,9 @@ where
             .sessions
             .iter_mut()
             .find(|s| s.name == name)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name)
+            })?;
         let old_status = entry.status;
         f(entry);
         if entry.status != old_status
@@ -1112,7 +1413,13 @@ where
 ///
 /// If neither session-id nor --pid is given, auto-discovers the most recently
 /// updated live Claude session in this workspace.
-fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
+fn run_attach(
+    name: &str,
+    session_id: Option<&str>,
+    pid: Option<u32>,
+    home: &std::path::Path,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     let workspace = std::env::current_dir()?;
 
     let resolved_sid = match (session_id.filter(|s| !s.is_empty()), pid) {
@@ -1122,44 +1429,53 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
         }
         (_, Some(p)) if consumer.is_claude() => crate::registry::harvest_from_pid(home, p)?,
         (_, Some(_p)) => anyhow::bail!(
-            "--pid is not supported for {consumer}. Provide the session UUID directly."
+            "{} --pid is not supported for {consumer}. Provide the session UUID directly.",
+            ErrorCode::Invalid,
         ),
         _ => {
             // Auto-discover
             match consumer {
                 Consumer::Claude => {
-                    let sessions = crate::session::load_all(
-                        &consumer.sessions_dir(home),
-                        Some(&workspace),
-                    )?;
+                    let sessions =
+                        crate::session::load_all(&consumer.sessions_dir(home), Some(&workspace))?;
                     match sessions.as_slice() {
                         [] => anyhow::bail!(
-                            "no live {} sessions found in this workspace.\n\
+                            "{} no live {} sessions found in this workspace.\n\
                              Is {} running? Start it first, then `ccsm attach {}`.",
-                            consumer, consumer.binary(), name,
+                            ErrorCode::NoSession,
+                            consumer,
+                            consumer.binary(),
+                            name,
                         ),
                         [s] => {
                             if s.session_id.is_empty() {
                                 anyhow::bail!(
-                                    "session file for PID {} has no sessionId yet — wait for {} to finish starting",
-                                    s.pid, consumer.binary(),
+                                    "{} session file for PID {} has no sessionId yet — wait for {} to finish starting",
+                                    ErrorCode::NoSession,
+                                    s.pid,
+                                    consumer.binary(),
                                 );
                             }
                             eprintln!("auto-detected PID {} ({})", s.pid, s.display_name());
                             s.session_id.clone()
                         }
                         multiple => {
-                            let by_name: Vec<_> = multiple
-                                .iter()
-                                .filter(|s| s.name == name)
-                                .collect();
+                            let by_name: Vec<_> =
+                                multiple.iter().filter(|s| s.name == name).collect();
                             match by_name.as_slice() {
                                 [s] => {
-                                    eprintln!("auto-detected PID {} (name match: {})", s.pid, s.display_name());
+                                    eprintln!(
+                                        "auto-detected PID {} (name match: {})",
+                                        s.pid,
+                                        s.display_name()
+                                    );
                                     s.session_id.clone()
                                 }
                                 [] => {
-                                    eprintln!("multiple live sessions in this workspace (none named '{}'):", name);
+                                    eprintln!(
+                                        "multiple live sessions in this workspace (none named '{}'):",
+                                        name
+                                    );
                                     for s in multiple {
                                         eprintln!(
                                             "  pid {}  {:16}  {}  {}",
@@ -1169,12 +1485,20 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
                                             &s.session_id[..s.session_id.len().min(8)],
                                         );
                                     }
-                                    anyhow::bail!("pick one with --pid <pid>.");
+                                    anyhow::bail!("{} pick one with --pid <pid>.", ErrorCode::NoSession);
                                 }
                                 _ => {
-                                    eprintln!("multiple sessions named '{}' — picking most recent:", name);
+                                    eprintln!(
+                                        "multiple sessions named '{}' — picking most recent:",
+                                        name
+                                    );
                                     let s = &by_name[0];
-                                    eprintln!("  pid {}  {}  {}", s.pid, s.status, &s.session_id[..s.session_id.len().min(8)]);
+                                    eprintln!(
+                                        "  pid {}  {}  {}",
+                                        s.pid,
+                                        s.status,
+                                        &s.session_id[..s.session_id.len().min(8)]
+                                    );
                                     s.session_id.clone()
                                 }
                             }
@@ -1187,8 +1511,9 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
                     let dir = consumer.projects_dir(home, &slug);
                     if !dir.is_dir() {
                         anyhow::bail!(
-                            "no Pi sessions found in this workspace.\n\
+                            "{} no Pi sessions found in this workspace.\n\
                              Start pi first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
                             name
                         );
                     }
@@ -1208,17 +1533,22 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
                     candidates.sort_by(|a, b| b.0.cmp(&a.0)); // most recent first
                     if candidates.is_empty() {
                         anyhow::bail!(
-                            "no Pi session files found in this workspace.\n\
+                            "{} no Pi session files found in this workspace.\n\
                              Start pi first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
                             name
                         );
                     }
                     let latest = &candidates[0].1;
                     let meta = crate::consumer::read_pi_session_meta(latest)?;
                     if meta.session_id.is_empty() {
-                        anyhow::bail!("could not extract session ID from {}", latest.display());
+                        anyhow::bail!("{} could not extract session ID from {}", ErrorCode::NoSession, latest.display());
                     }
-                    eprintln!("auto-detected session {} from {}", &meta.session_id[..8], latest.display());
+                    eprintln!(
+                        "auto-detected session {} from {}",
+                        &meta.session_id[..8],
+                        latest.display()
+                    );
                     meta.session_id
                 }
                 Consumer::OpenCode => {
@@ -1226,18 +1556,27 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
                     let db_path = crate::consumer::opencode_db_path(home);
                     if !db_path.exists() {
                         anyhow::bail!(
-                            "no opencode DB found at {}. Start opencode first, then `ccsm attach {}`.",
-                            db_path.display(), name
+                            "{} no opencode DB found at {}. Start opencode first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
+                            db_path.display(),
+                            name
                         );
                     }
-                    match crate::consumer::opencode_latest_session(&db_path, &workspace.to_string_lossy()) {
+                    match crate::consumer::opencode_latest_session(
+                        &db_path,
+                        &workspace.to_string_lossy(),
+                    ) {
                         Some(sid) => {
-                            eprintln!("auto-detected session {} from opencode DB", &sid[..sid.len().min(8)]);
+                            eprintln!(
+                                "auto-detected session {} from opencode DB",
+                                &sid[..sid.len().min(8)]
+                            );
                             sid
                         }
                         None => anyhow::bail!(
-                            "no opencode sessions found in this workspace.\n\
+                            "{} no opencode sessions found in this workspace.\n\
                              Start opencode first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
                             name
                         ),
                     }
@@ -1266,13 +1605,25 @@ fn run_attach(name: &str, session_id: Option<&str>, pid: Option<u32>, home: &std
     entry.session_id = resolved_sid.clone();
     reg.updated = crate::registry::now_iso();
     reg.save()?;
-    action_msg("attached", name, &format!("session {}", &resolved_sid[..resolved_sid.len().min(8)]));
+    action_msg(
+        "attached",
+        name,
+        &format!("session {}", &resolved_sid[..resolved_sid.len().min(8)]),
+    );
     Ok(())
 }
 
 /// `ccsm rename <old> <new>` — rename a session across registry, detail file,
 /// live session files, group files, and transcript.
-fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
+fn run_rename(
+    old: &str,
+    new: &str,
+    goal: Option<&str>,
+    scope: Option<&str>,
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     // ── Phase 1: Validate + snapshot under lock, then release for slow I/O ──
     let (sid, old_goal, old_scope, old_group) = {
         let (reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
@@ -1281,13 +1632,14 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
             .sessions
             .iter()
             .position(|s| s.name == old)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", old))?;
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, old))?;
         if reg.sessions.iter().any(|s| s.name == new) {
             anyhow::bail!("{} session '{}' already exists", ErrorCode::Exists, new);
         }
         if !crate::registry::is_kebab_case(new) {
             anyhow::bail!(
-                "'{}' is not kebab-case. Session names must be lowercase letters, digits, and hyphens.",
+                "{} '{}' is not kebab-case. Session names must be lowercase letters, digits, and hyphens.",
+                ErrorCode::Invalid,
                 new
             );
         }
@@ -1322,16 +1674,17 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
             let mut file = std::fs::OpenOptions::new()
                 .append(true)
                 .open(&transcript)
-                .with_context(|| format!("opening transcript for append: {}", transcript.display()))?;
-            file.write_all(rename_line.as_bytes())
-                .with_context(|| format!("appending rename to transcript: {}", transcript.display()))?;
+                .with_context(|| {
+                    format!("opening transcript for append: {}", transcript.display())
+                })?;
+            file.write_all(rename_line.as_bytes()).with_context(|| {
+                format!("appending rename to transcript: {}", transcript.display())
+            })?;
             file.flush()
                 .with_context(|| format!("flushing transcript: {}", transcript.display()))?;
             eprintln!("  transcript  appended custom-title + agent-name: {}", new);
         } else {
-            eprintln!(
-                "  transcript  not found — session may not have been spawned yet (skipping)"
-            );
+            eprintln!("  transcript  not found — session may not have been spawned yet (skipping)");
         }
     }
 
@@ -1343,19 +1696,25 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
             if path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
-            let Ok(contents) = std::fs::read_to_string(&path) else { continue };
+            let Ok(contents) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             if let Ok(session) = serde_json::from_str::<crate::session::Session>(&contents) {
                 let ws = workspace.to_string_lossy().to_string();
-                if session.name == old && session.cwd.starts_with(&ws) {
-                    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&contents) {
-                        if let Some(obj) = value.as_object_mut() {
-                            obj.insert("name".to_string(), serde_json::Value::String(new.to_string()));
-                        }
-                        let updated = serde_json::to_string(&value);
-                        if let Ok(json) = updated {
-                            let _ = std::fs::write(&path, json);
-                            eprintln!("  session file  pid {}  name → {}", session.pid, new);
-                        }
+                if session.name == old
+                    && session.cwd.starts_with(&ws)
+                    && let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&contents)
+                {
+                    if let Some(obj) = value.as_object_mut() {
+                        obj.insert(
+                            "name".to_string(),
+                            serde_json::Value::String(new.to_string()),
+                        );
+                    }
+                    let updated = serde_json::to_string(&value);
+                    if let Ok(json) = updated {
+                        let _ = std::fs::write(&path, json);
+                        eprintln!("  session file  pid {}  name → {}", session.pid, new);
                     }
                 }
             }
@@ -1385,27 +1744,34 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
         .sessions
         .iter()
         .position(|s| s.name == old)
-        .ok_or_else(|| anyhow::anyhow!("session '{}' was removed before rename completed", old))?;
+        .ok_or_else(|| anyhow::anyhow!("{} session '{}' was removed before rename completed", ErrorCode::NoSession, old))?;
     if reg.sessions.iter().any(|s| s.name == new) {
-        anyhow::bail!("{} session '{}' was created before rename completed", ErrorCode::Exists, new);
+        anyhow::bail!(
+            "{} session '{}' was created before rename completed",
+            ErrorCode::Exists,
+            new
+        );
     }
 
     let has_topic_change = goal.is_some() || scope.is_some();
 
     // 4. Update detail file content — replace header, goal, scope
     if detail_new.exists()
-        && let Ok(contents) = std::fs::read_to_string(&detail_new) {
-            let mut updated = contents
-                .replace(&format!("# Session: {}", old), &format!("# Session: {}", new));
-            if let Some(g) = goal {
-                updated = crate::registry::replace_detail_section(&updated, "## Goal", g);
-            }
-            if let Some(s) = scope {
-                updated = crate::registry::replace_detail_section(&updated, "## Scope / Plan", s);
-            }
-            let _ = std::fs::write(&detail_new, &updated);
-            eprintln!("  detail file  updated header");
+        && let Ok(contents) = std::fs::read_to_string(&detail_new)
+    {
+        let mut updated = contents.replace(
+            &format!("# Session: {}", old),
+            &format!("# Session: {}", new),
+        );
+        if let Some(g) = goal {
+            updated = crate::registry::replace_detail_section(&updated, "## Goal", g);
         }
+        if let Some(s) = scope {
+            updated = crate::registry::replace_detail_section(&updated, "## Scope / Plan", s);
+        }
+        let _ = std::fs::write(&detail_new, &updated);
+        eprintln!("  detail file  updated header");
+    }
 
     // 5. Update dependency cross-references — every session that depended_on
     //    the old name now references the new name
@@ -1475,14 +1841,21 @@ fn run_rename(old: &str, new: &str, goal: Option<&str>, scope: Option<&str>, hom
 fn run_trash(name: &str) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     // Get session_id for the entry (may be empty for seed entries).
-    let sid = reg.sessions.iter().rev()
+    let sid = reg
+        .sessions
+        .iter()
+        .rev()
         .find(|s| s.name == name)
         .map(|s| s.session_id.clone())
         .unwrap_or_default();
     if reg.trash(&sid, name) {
         reg.updated = crate::registry::now_iso();
         reg.save()?;
-        action_msg("trashed", name, &format!("soft-deleted (recover with `ccsm recover {}`)", name));
+        action_msg(
+            "trashed",
+            name,
+            &format!("soft-deleted (recover with `ccsm recover {}`)", name),
+        );
     } else {
         anyhow::bail!("{} no session named '{}'", ErrorCode::NoSession, name);
     }
@@ -1495,15 +1868,25 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
 
     // Validate: only trashed sessions can be recovered
     let (sid, status) = {
-        let entry = reg.sessions.iter().rev()
+        let entry = reg
+            .sessions
+            .iter()
+            .rev()
             .find(|s| s.name == name)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name)
+            })?;
         (entry.session_id.clone(), entry.status)
     };
-    if !crate::registry::SessionStatus::transition_allowed(status, crate::registry::SessionStatus::InProgress) {
+    if !crate::registry::SessionStatus::transition_allowed(
+        status,
+        crate::registry::SessionStatus::InProgress,
+    ) {
         anyhow::bail!(
             "{} cannot recover session '{}' from {}",
-            ErrorCode::BadStatus, name, status
+            ErrorCode::BadStatus,
+            name,
+            status
         );
     }
     if reg.recover(&sid, name) {
@@ -1517,12 +1900,20 @@ fn run_recover(name: &str) -> anyhow::Result<()> {
 }
 
 /// `ccsm clean <name>` — permanently delete transcript, session files, and registry entry.
-fn run_clean(name: &str, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
+fn run_clean(
+    name: &str,
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     // Best-effort worktree removal before permanent delete (no lock)
     let _ = commands::worktree::remove_worktree(workspace, name, true);
 
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
-    let sid = reg.sessions.iter().rev()
+    let sid = reg
+        .sessions
+        .iter()
+        .rev()
         .find(|s| s.name == name)
         .map(|s| s.session_id.clone())
         .unwrap_or_default();
@@ -1538,9 +1929,15 @@ fn run_clean(name: &str, home: &std::path::Path, workspace: &std::path::Path, co
 }
 
 /// `ccsm clean-all` — permanently delete ALL trashed entries.
-fn run_clean_all(home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
+fn run_clean_all(
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
-    let count = reg.sessions.iter()
+    let count = reg
+        .sessions
+        .iter()
         .filter(|s| s.status == crate::registry::SessionStatus::Trashed)
         .count();
     if count == 0 {
@@ -1550,14 +1947,26 @@ fn run_clean_all(home: &std::path::Path, workspace: &std::path::Path, consumer: 
     reg.clean_all_trashed(home, workspace, consumer);
     reg.updated = crate::registry::now_iso();
     reg.save()?;
-    action_msg("cleaned", &format!("{} trashed", count), "permanently deleted");
+    action_msg(
+        "cleaned",
+        &format!("{} trashed", count),
+        "permanently deleted",
+    );
     Ok(())
 }
 
 /// `ccsm archive <name>` — delete transcript + session files, keep registry entry.
-fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
+fn run_archive(
+    name: &str,
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
-    let sid = reg.sessions.iter().rev()
+    let sid = reg
+        .sessions
+        .iter()
+        .rev()
         .find(|s| s.name == name)
         .map(|s| s.session_id.clone())
         .unwrap_or_default();
@@ -1568,12 +1977,14 @@ fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path, 
 
     // Check not active
     if let Some(s) = reg.sessions.iter().find(|s| s.name == name)
-        && s.status == crate::registry::SessionStatus::InProgress {
-            anyhow::bail!(
-                "cannot archive active session '{}'. Complete or abandon it first.",
-                name
-            );
-        }
+        && s.status == crate::registry::SessionStatus::InProgress
+    {
+        anyhow::bail!(
+            "{} cannot archive active session '{}'. Complete or abandon it first.",
+            ErrorCode::BadStatus,
+            name
+        );
+    }
 
     let freed = reg.archive(&sid, name, home, workspace, consumer);
     reg.updated = crate::registry::now_iso();
@@ -1588,12 +1999,18 @@ fn run_archive(name: &str, home: &std::path::Path, workspace: &std::path::Path, 
 }
 
 /// `ccsm archive-all` — archive all completed sessions with transcripts.
-fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer: Consumer) -> anyhow::Result<()> {
+fn run_archive_all(
+    home: &std::path::Path,
+    workspace: &std::path::Path,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
     let candidates: Vec<(String, String)> = reg
         .sessions
         .iter()
-        .filter(|s| s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty())
+        .filter(|s| {
+            s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty()
+        })
         .map(|s| (s.session_id.clone(), s.name.clone()))
         .collect();
 
@@ -1623,7 +2040,15 @@ fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer
 }
 
 /// `ccsm new <name> [goal]` — create a new session entry.
-fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branch: &str, worktree: bool, consumer: Consumer) -> anyhow::Result<()> {
+fn run_new(
+    name: &str,
+    goal: &str,
+    force: bool,
+    checklist: Option<String>,
+    branch: &str,
+    worktree: bool,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     let ctx = crate::registry::resolve_identity()?;
     let config = crate::config::Config::load();
 
@@ -1632,9 +2057,11 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
     if config.branch_tracking == BranchTracking::Required && branch.is_empty() {
         let config_path = crate::registry::global_config_path(&ctx.id);
         anyhow::bail!(
-            "\n{} This project requires branch tracking (branch_tracking=required in {}).\n\
+            "{} \n{} This project requires branch tracking (branch_tracking=required in {}).\n\
              Use `ccsm new {} -b <branch> -g \"...\"` to set a target branch.",
-            style::emoji("⚠️", "[!]"), config_path.display(),
+            ErrorCode::Invalid,
+            style::emoji("⚠️", "[!]"),
+            config_path.display(),
             name
         );
     }
@@ -1652,13 +2079,17 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
 
     // ── WIP guard ─────────────────────────────────────────────────────
     if config.wip_limit > 0 {
-        let active_count = reg.sessions.iter()
+        let active_count = reg
+            .sessions
+            .iter()
             .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
             .count();
         if active_count >= config.wip_limit {
             eprintln!(
                 "{} {} sessions already in_progress (limit: {}). Consider finishing those first.",
-                style::emoji("⚠️", "[!]"), active_count, config.wip_limit
+                style::emoji("⚠️", "[!]"),
+                active_count,
+                config.wip_limit
             );
         }
     }
@@ -1687,7 +2118,8 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
             .collect();
         if !similar.is_empty() {
             anyhow::bail!(
-                "session '{}' looks similar to existing: {}. Use --force to create anyway, or `ccsm resume <name>` to continue an existing session.",
+                "{} session '{}' looks similar to existing: {}. Use --force to create anyway, or `ccsm resume <name>` to continue an existing session.",
+                ErrorCode::Exists,
                 name,
                 similar.join(", "),
             );
@@ -1723,31 +2155,39 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
             let _ = std::fs::write(&template_path, crate::commands::doctor::TEMPLATE_CONTENT);
         }
         if template_path.exists()
-            && let Ok(contents) = std::fs::read_to_string(&template_path) {
-                let populated = contents
-                    .replace("{{name}}", name)
-                    .replace("{{goal}}", goal)
-                    .replace("{{status}}", "pending")
-                    .replace("{{scope}}", "(fill in — approach, constraints, what's in/out)")
-                    .replace("{{tags}}", "(fill in)")
-                    .replace("{{pid_count}}", "0")
-                    .replace("{{started}}", "")
-                    .replace("{{completed}}", "")
-                    .replace("{{dependencies}}", "(none)")
-                    .replace("{{now}}", &crate::registry::now_iso())
-                    .replace("{{note}}", "Session created");
-                if let Some(parent) = detail_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&detail_path, populated);
-                // ── Checklist section ─────────────────────────────────
-                if checklist.is_some() || config.default_checklist_type.is_some() {
-                    let template_type = checklist.as_deref()
-                        .or(config.default_checklist_type.as_deref());
-                    let checklist_content = build_checklist_section(name, template_type, &config);
-                    let _ = std::fs::write(&detail_path, std::fs::read_to_string(&detail_path).unwrap_or_default() + &checklist_content);
-                }
+            && let Ok(contents) = std::fs::read_to_string(&template_path)
+        {
+            let populated = contents
+                .replace("{{name}}", name)
+                .replace("{{goal}}", goal)
+                .replace("{{status}}", "pending")
+                .replace(
+                    "{{scope}}",
+                    "(fill in — approach, constraints, what's in/out)",
+                )
+                .replace("{{tags}}", "(fill in)")
+                .replace("{{pid_count}}", "0")
+                .replace("{{started}}", "")
+                .replace("{{completed}}", "")
+                .replace("{{dependencies}}", "(none)")
+                .replace("{{now}}", &crate::registry::now_iso())
+                .replace("{{note}}", "Session created");
+            if let Some(parent) = detail_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
             }
+            let _ = std::fs::write(&detail_path, populated);
+            // ── Checklist section ─────────────────────────────────
+            if checklist.is_some() || config.default_checklist_type.is_some() {
+                let template_type = checklist
+                    .as_deref()
+                    .or(config.default_checklist_type.as_deref());
+                let checklist_content = build_checklist_section(name, template_type, &config);
+                let _ = std::fs::write(
+                    &detail_path,
+                    std::fs::read_to_string(&detail_path).unwrap_or_default() + &checklist_content,
+                );
+            }
+        }
     }
 
     action_msg("pending", name, "created");
@@ -1755,7 +2195,11 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
 }
 
 /// Build a ## Checklist section with optional template items.
-fn build_checklist_section(_name: &str, template_type: Option<&str>, config: &crate::config::Config) -> String {
+fn build_checklist_section(
+    _name: &str,
+    template_type: Option<&str>,
+    config: &crate::config::Config,
+) -> String {
     let header = "\n## Checklist\n\n<!--\n  All items must be resolved before close gate allows completion.\n  Status: pending | done | skipped | blocked\n  Checkbox chars: - [ ] pending, - [x] done, - [~] skipped, - [!] blocked\n-->\n";
 
     let items = match template_type {
@@ -1782,7 +2226,10 @@ fn build_checklist_section(_name: &str, template_type: Option<&str>, config: &cr
 }
 
 /// Determine whether a session should get a worktree, based on config policy + session flags.
-fn should_use_worktree(session: &crate::registry::WorkspaceSession, config: &crate::config::Config) -> bool {
+fn should_use_worktree(
+    session: &crate::registry::WorkspaceSession,
+    config: &crate::config::Config,
+) -> bool {
     use crate::config::WorktreePolicy;
     match config.worktrees {
         WorktreePolicy::Required => !session.branch.is_empty(),
@@ -1804,25 +2251,34 @@ fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
             .sessions
             .iter()
             .find(|s| s.name == name)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name)
+            })?;
 
         anyhow::ensure!(
             entry.status == SessionStatus::Pending,
             "{} session '{}' is {} — only pending sessions can be started",
-            ErrorCode::BadStatus, name, entry.status
+            ErrorCode::BadStatus,
+            name,
+            entry.status
         );
 
         let use_wt = flag_worktree || should_use_worktree(entry, &config);
         if use_wt {
             anyhow::ensure!(
                 !entry.branch.is_empty(),
-                "session '{}' has no target branch. Use `ccsm new {} -b <branch> -g \"...\"` to set one.",
-                name, name
+                "{} session '{}' has no target branch. Use `ccsm new {} -b <branch> -g \"...\"` to set one.",
+                ErrorCode::Invalid,
+                name,
+                name
             );
             anyhow::ensure!(
                 !commands::worktree::worktree_path_for(&workspace, name).exists(),
-                "worktree for session '{}' already exists. Use `ccsm resume {}` to continue, or `ccsm worktree remove {}` to clean up.",
-                name, name, name
+                "{} worktree for session '{}' already exists. Use `ccsm resume {}` to continue, or `ccsm worktree remove {}` to clean up.",
+                ErrorCode::Exists,
+                name,
+                name,
+                name
             );
         }
 
@@ -1831,13 +2287,11 @@ fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
 
     // Phase 2: Create worktree if configured (no lock — git operation)
     let wt_path = if use_wt {
-        let wt = commands::worktree::create_worktree(&workspace, name, &branch)
-            .map_err(|e| {
+        commands::worktree::create_worktree(&workspace, name, &branch)
+            .inspect_err(|_e| {
                 eprintln!("warning: worktree creation failed — continuing without worktree");
-                e
             })
-            .ok();
-        wt
+            .ok()
     } else {
         None
     };
@@ -1853,9 +2307,17 @@ fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
     crate::registry::sync_status_line(name);
 
     if let Some(ref path) = wt_path {
-        println!("{} worktree: {}", style::emoji("📁", "[dir]"), path.display());
+        println!(
+            "{} worktree: {}",
+            style::emoji("📁", "[dir]"),
+            path.display()
+        );
     }
-            eprintln!("{} multi-step? `ccsm checklist {} --init` to add sub-task tracking", style::emoji("💡", "[i]"), name);
+    eprintln!(
+        "{} multi-step? `ccsm checklist {} --init` to add sub-task tracking",
+        style::emoji("💡", "[i]"),
+        name
+    );
 
     Ok(())
 }
@@ -1872,9 +2334,14 @@ fn run_complete(name: &str, force: bool) -> anyhow::Result<()> {
                  \n  → ccsm close {} to see what's needed\n\
                  → ccsm complete {} --force to bypass\n\
                  \n{e}",
-                style::emoji("✗", "[x]"), name, name,
+                style::emoji("✗", "[x]"),
+                name,
+                name,
             );
-            anyhow::bail!("{} gate checks failed — fix issues or use --force", ErrorCode::Gate);
+            anyhow::bail!(
+                "{} gate checks failed — fix issues or use --force",
+                ErrorCode::Gate
+            );
         }
         println!();
         println!(
@@ -1894,12 +2361,10 @@ fn run_complete(name: &str, force: bool) -> anyhow::Result<()> {
     // Phase 1: Remove worktree if one exists (best-effort)
     let has_worktree = commands::worktree::worktree_path_for(&workspace, name).exists();
 
-    if has_worktree {
-        if let Err(e) = commands::worktree::remove_worktree(&workspace, name, force) {
-            // Don't fail completion — warn and continue
-            eprintln!("warning: worktree removal failed: {e}");
-            eprintln!("  (the session will still be marked as completed)");
-        }
+    if has_worktree && let Err(e) = commands::worktree::remove_worktree(&workspace, name, force) {
+        // Don't fail completion — warn and continue
+        eprintln!("warning: worktree removal failed: {e}");
+        eprintln!("  (the session will still be marked as completed)");
     }
 
     // Phase 2: Status transition (locked)
@@ -1924,9 +2389,14 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
                  \n  → ccsm close {} to see what's needed\n\
                  → ccsm complete {} --force to bypass\n\
                  \n{e}",
-                style::emoji("✗", "[x]"), name, name,
+                style::emoji("✗", "[x]"),
+                name,
+                name,
             );
-            anyhow::bail!("{} gate checks failed — fix issues or use --force", ErrorCode::Gate);
+            anyhow::bail!(
+                "{} gate checks failed — fix issues or use --force",
+                ErrorCode::Gate
+            );
         }
         // Gate passed — print the self-review checklist
         println!();
@@ -1963,7 +2433,8 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
     if action == "start" {
         eprintln!(
             "{} multi-step? `ccsm checklist {} --init` to add sub-task tracking",
-            style::emoji("💡", "[i]"), name,
+            style::emoji("💡", "[i]"),
+            name,
         );
     }
 
@@ -1978,7 +2449,13 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
 /// Moves the current session_id to `retired_session_ids` with timestamp and reason,
 /// then spawns a fresh agent (no --resume) with `CCSM_SESSION` injected so the
 /// new agent knows which ccsm session it serves.
-fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &PathBuf, consumer: Consumer) -> anyhow::Result<()> {
+fn run_refresh(
+    name: &str,
+    reason: Option<&str>,
+    workspace: &PathBuf,
+    home: &PathBuf,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     let now = now_iso_ts();
     let reason_text = reason.unwrap_or("context refresh");
 
@@ -1990,22 +2467,28 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             .iter_mut()
             .rev()
             .find(|e| e.name == name)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name)
+            })?;
 
         if entry.status != crate::registry::SessionStatus::InProgress {
             anyhow::bail!(
-                "session '{}' is {} — only in_progress sessions can be refreshed",
-                name, entry.status,
+                "{} session '{}' is {} — only in_progress sessions can be refreshed",
+                ErrorCode::BadStatus,
+                name,
+                entry.status,
             );
         }
 
         // Retire current session_id if one exists
         if !entry.session_id.is_empty() {
-            entry.retired_session_ids.push(crate::registry::RetiredSession {
-                id: entry.session_id.clone(),
-                retired_at: now.clone(),
-                reason: reason_text.to_string(),
-            });
+            entry
+                .retired_session_ids
+                .push(crate::registry::RetiredSession {
+                    id: entry.session_id.clone(),
+                    retired_at: now.clone(),
+                    reason: reason_text.to_string(),
+                });
         }
 
         // Clear identity fields — fresh session repopulates them
@@ -2028,7 +2511,10 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
     };
 
     let note_text = if retired_count <= 1 {
-        format!("Refreshed session — fresh context (reason: {})", reason_text)
+        format!(
+            "Refreshed session — fresh context (reason: {})",
+            reason_text
+        )
     } else {
         format!(
             "Refreshed session ({}th refresh) — fresh context (reason: {})",
@@ -2075,7 +2561,8 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             Some(entry) => entry.pids = vec![child_pid],
             None => anyhow::bail!(
-                "internal error: session '{}' vanished from registry between Phase 1 and Phase 4",
+                "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 4",
+                ErrorCode::NoSession,
                 name
             ),
         }
@@ -2097,9 +2584,12 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
         }
         if !found {
             anyhow::bail!(
-                "{} did not write a session file at {} within 5s.\n\
+                "{} {} did not write a session file at {} within 5s.\n\
                  {} may have failed to start. Check for errors above.",
-                bin, session_file.display(), bin,
+                ErrorCode::NoSession,
+                bin,
+                session_file.display(),
+                bin,
             );
         }
 
@@ -2109,7 +2599,8 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
-                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                    "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                    ErrorCode::NoSession,
                     name
                 ),
             };
@@ -2129,7 +2620,8 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
                         eprintln!(
                             "warning: failed to parse session file {}: {}. \
                              Session tracking may be incomplete.",
-                            session_file.display(), e
+                            session_file.display(),
+                            e
                         );
                     }
                 },
@@ -2137,7 +2629,8 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
                     eprintln!(
                         "warning: failed to read session file {}: {}. \
                          Session tracking may be incomplete.",
-                        session_file.display(), e
+                        session_file.display(),
+                        e
                     );
                 }
             }
@@ -2153,12 +2646,12 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
         );
         if let Some(ref sid) = harvested_id {
             {
-                let (mut reg, _lock) =
-                    crate::registry::WorkspaceRegistry::load_locked()?;
+                let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
                 let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                     Some(e) => e,
                     None => anyhow::bail!(
-                        "internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                        "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                        ErrorCode::NoSession,
                         name
                     ),
                 };
@@ -2206,7 +2699,7 @@ fn run_refresh(name: &str, reason: Option<&str>, workspace: &PathBuf, home: &Pat
     }
 
     if !status.success() {
-        anyhow::bail!("{} exited with {status}", bin);
+        anyhow::bail!("{} {} exited with {status}", ErrorCode::Gate, bin);
     }
     Ok(())
 }
@@ -2311,7 +2804,15 @@ fn update_detail_section(name: &str, header: &str, body: &str) -> anyhow::Result
 /// `ccsm group <name> --roadmap` — render a markdown roadmap for the group.
 /// `ccsm group <session> --group <g> [--rank free|<n>]` — assign to group.
 /// `ccsm group <session> --clear` — remove from group.
-fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&str>, clear: bool, goal: Option<&str>, roadmap: bool) -> anyhow::Result<()> {
+fn run_group(
+    name: Option<&str>,
+    list: bool,
+    group: Option<&str>,
+    rank: Option<&str>,
+    clear: bool,
+    goal: Option<&str>,
+    roadmap: bool,
+) -> anyhow::Result<()> {
     use crate::registry::{Group, GroupRank};
 
     let ctx = crate::registry::resolve_identity()?;
@@ -2324,19 +2825,26 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
     // --roadmap: render a markdown roadmap for the group
     if roadmap {
         if group.is_some() || clear || goal.is_some() {
-            anyhow::bail!("--roadmap can't be combined with --group, --clear, or --goal. Usage: ccsm group <group-name> --roadmap");
+            anyhow::bail!(
+                "{} --roadmap can't be combined with --group, --clear, or --goal. Usage: ccsm group <group-name> --roadmap",
+                ErrorCode::Invalid
+            );
         }
-        let name = name.ok_or_else(|| anyhow::anyhow!("group NAME is required with --roadmap"))?;
+        let name = name.ok_or_else(|| anyhow::anyhow!("{} group NAME is required with --roadmap", ErrorCode::Invalid))?;
         return run_group_roadmap(name);
     }
 
     // All other modes require a name
-    let name = name.ok_or_else(|| anyhow::anyhow!("NAME is required (or use --list to list all groups)"))?;
+    let name =
+        name.ok_or_else(|| anyhow::anyhow!("{} NAME is required (or use --list to list all groups)", ErrorCode::Invalid))?;
 
     // --goal: set group goal (name = group name, not session name)
     if let Some(goal_text) = goal {
         if group.is_some() || clear {
-            anyhow::bail!("--goal can't be combined with --group or --clear. Use: ccsm group <group-name> --goal <text>");
+            anyhow::bail!(
+                "{} --goal can't be combined with --group or --clear. Use: ccsm group <group-name> --goal <text>",
+                ErrorCode::Invalid
+            );
         }
         set_group_goal(name, goal_text)?;
         action_msg("group-goal", name, goal_text);
@@ -2350,7 +2858,9 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
             .sessions
             .iter_mut()
             .find(|s| s.name == name)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name)
+            })?;
         if entry.group.is_none() {
             action_msg("ungrouped", name, "not in a group");
             return Ok(());
@@ -2360,9 +2870,17 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
         reg.save()?;
         let deleted = update_group_members(&old_group.name, &reg)?;
         if deleted {
-            action_msg("ungrouped", name, &format!("removed from '{}' (group file deleted)", old_group.name));
+            action_msg(
+                "ungrouped",
+                name,
+                &format!("removed from '{}' (group file deleted)", old_group.name),
+            );
         } else {
-            action_msg("ungrouped", name, &format!("removed from '{}'", old_group.name));
+            action_msg(
+                "ungrouped",
+                name,
+                &format!("removed from '{}'", old_group.name),
+            );
         }
         return Ok(());
     }
@@ -2370,14 +2888,19 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
     if let Some(group_name) = group {
         // Assign session to a group
         if !crate::registry::is_kebab_case(group_name) {
-            anyhow::bail!("{} group name '{}' must be kebab-case", ErrorCode::Invalid, group_name);
+            anyhow::bail!(
+                "{} group name '{}' must be kebab-case",
+                ErrorCode::Invalid,
+                group_name
+            );
         }
         let rank = match rank {
             None => GroupRank::Free,
             Some("free") => GroupRank::Free,
             Some(n) => {
-                let num: u32 = n.parse()
-                    .map_err(|_| anyhow::anyhow!("rank must be 'free' or a number, got '{}'", n))?;
+                let num: u32 = n
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("{} rank must be 'free' or a number, got '{}'", ErrorCode::Invalid, n))?;
                 GroupRank::Number(num)
             }
         };
@@ -2386,7 +2909,9 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
             .sessions
             .iter_mut()
             .find(|s| s.name == name)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name)
+            })?;
         entry.group = Some(Group {
             name: group_name.to_string(),
             rank,
@@ -2396,12 +2921,12 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
 
         // Update detail file — add/update ## Group section
         let detail_path = crate::registry::global_detail_path(&ctx.id, name);
-        if detail_path.exists() {
-            if let Ok(contents) = std::fs::read_to_string(&detail_path) {
-                let body = format!("- **Group:** {}\n- **Rank:** {}", group_name, rank);
-                let updated = crate::registry::replace_detail_section(&contents, "## Group", &body);
-                let _ = std::fs::write(&detail_path, updated);
-            }
+        if detail_path.exists()
+            && let Ok(contents) = std::fs::read_to_string(&detail_path)
+        {
+            let body = format!("- **Group:** {}\n- **Rank:** {}", group_name, rank);
+            let updated = crate::registry::replace_detail_section(&contents, "## Group", &body);
+            let _ = std::fs::write(&detail_path, updated);
         }
 
         // Create or update the group detail file
@@ -2421,7 +2946,10 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
 
     if members.is_empty() {
         if output_format_json() {
-            println!("{}", serde_json::json!({"ok": true, "group": name, "members": []}));
+            println!(
+                "{}",
+                serde_json::json!({"ok": true, "group": name, "members": []})
+            );
         } else {
             println!("(no sessions in group '{}')", name);
         }
@@ -2441,15 +2969,22 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
     });
 
     if output_format_json() {
-        let members_json: Vec<_> = members.iter().map(|m| {
-            let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
-            serde_json::json!({
-                "name": m.name,
-                "status": m.status.to_string(),
-                "rank": rank_str,
-                "goal": m.goal,
+        let members_json: Vec<_> = members
+            .iter()
+            .map(|m| {
+                let rank_str = m
+                    .group
+                    .as_ref()
+                    .map(|g| g.rank.to_string())
+                    .unwrap_or_default();
+                serde_json::json!({
+                    "name": m.name,
+                    "status": m.status.to_string(),
+                    "rank": rank_str,
+                    "goal": m.goal,
+                })
             })
-        }).collect();
+            .collect();
         let out = serde_json::json!({"ok": true, "group": name, "members": members_json});
         println!("{}", out);
         return Ok(());
@@ -2459,22 +2994,34 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
     let mut t = crate::table::Table::new();
     t.indent("  ").col(12).col(30).col(0);
     for m in &members {
-        let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
-        t.add_row(&[&m.status.to_string(), &m.name, &format!("rank: {}", rank_str)]);
+        let rank_str = m
+            .group
+            .as_ref()
+            .map(|g| g.rank.to_string())
+            .unwrap_or_default();
+        t.add_row(&[
+            &m.status.to_string(),
+            &m.name,
+            &format!("rank: {}", rank_str),
+        ]);
     }
     t.print();
-    println!("{} member{}", members.len(), if members.len() == 1 { "" } else { "s" });
+    println!(
+        "{} member{}",
+        members.len(),
+        if members.len() == 1 { "" } else { "s" }
+    );
 
     // Display group detail file if it exists
     let gpath = group_file_path(name);
-    if gpath.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&gpath) {
-            let sections = crate::registry::parse_sections(&contents);
-            if let Some((_, goal_body)) = sections.iter().find(|(h, _)| h == "Goal") {
-                let goal = goal_body.trim();
-                if !goal.is_empty() && !goal.starts_with('_') {
-                    println!("  Goal: {}", goal);
-                }
+    if gpath.exists()
+        && let Ok(contents) = std::fs::read_to_string(&gpath)
+    {
+        let sections = crate::registry::parse_sections(&contents);
+        if let Some((_, goal_body)) = sections.iter().find(|(h, _)| h == "Goal") {
+            let goal = goal_body.trim();
+            if !goal.is_empty() && !goal.starts_with('_') {
+                println!("  Goal: {}", goal);
             }
         }
     }
@@ -2506,36 +3053,54 @@ fn run_groups_list() -> anyhow::Result<()> {
     }
 
     if output_format_json() {
-        let groups_json: Vec<_> = groups.iter().map(|(name, members)| {
-            let count = members.len();
-            let in_progress = members.iter().filter(|m| m.status == crate::registry::SessionStatus::InProgress).count();
-            let pending = members.iter().filter(|m| m.status == crate::registry::SessionStatus::Pending).count();
-            let goal_snippet = {
-                let path = group_file_path(name);
-                if path.exists() {
-                    if let Ok(contents) = std::fs::read_to_string(&path) {
-                        let sections = crate::registry::parse_sections(&contents);
-                        sections.iter()
-                            .find(|(h, _)| h == "Goal")
-                            .map(|(_, b)| b.trim().to_string())
-                            .filter(|g| !g.is_empty() && !g.starts_with('_'))
-                            .unwrap_or_default()
-                    } else { String::new() }
-                } else { String::new() }
-            };
-            serde_json::json!({
-                "name": name,
-                "session_count": count,
-                "in_progress": in_progress,
-                "pending": pending,
-                "goal": goal_snippet,
+        let groups_json: Vec<_> = groups
+            .iter()
+            .map(|(name, members)| {
+                let count = members.len();
+                let in_progress = members
+                    .iter()
+                    .filter(|m| m.status == crate::registry::SessionStatus::InProgress)
+                    .count();
+                let pending = members
+                    .iter()
+                    .filter(|m| m.status == crate::registry::SessionStatus::Pending)
+                    .count();
+                let goal_snippet = {
+                    let path = group_file_path(name);
+                    if path.exists() {
+                        if let Ok(contents) = std::fs::read_to_string(&path) {
+                            let sections = crate::registry::parse_sections(&contents);
+                            sections
+                                .iter()
+                                .find(|(h, _)| h == "Goal")
+                                .map(|(_, b)| b.trim().to_string())
+                                .filter(|g| !g.is_empty() && !g.starts_with('_'))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    }
+                };
+                serde_json::json!({
+                    "name": name,
+                    "session_count": count,
+                    "in_progress": in_progress,
+                    "pending": pending,
+                    "goal": goal_snippet,
+                })
             })
-        }).collect();
+            .collect();
         println!("{}", serde_json::json!({"ok": true, "groups": groups_json}));
         return Ok(());
     }
 
-    println!("{} group{}:", groups.len(), if groups.len() == 1 { "" } else { "s" });
+    println!(
+        "{} group{}:",
+        groups.len(),
+        if groups.len() == 1 { "" } else { "s" }
+    );
     for (name, members) in &groups {
         // Read goal snippet from group detail file
         let goal_snippet = {
@@ -2562,7 +3127,12 @@ fn run_groups_list() -> anyhow::Result<()> {
         let in_progress = statuses.iter().filter(|s| *s == "in_progress").count();
         let pending = statuses.iter().filter(|s| *s == "pending").count();
 
-        print!("  {:30}  {} session{}", name, count, if count == 1 { "" } else { "s" });
+        print!(
+            "  {:30}  {} session{}",
+            name,
+            count,
+            if count == 1 { "" } else { "s" }
+        );
         if in_progress > 0 {
             print!(" ({} in_progress)", in_progress);
         }
@@ -2590,25 +3160,38 @@ fn run_group_deps(group_name: &str) -> anyhow::Result<()> {
         .collect();
 
     if members.is_empty() {
-        anyhow::bail!("{} no sessions in group '{}'", ErrorCode::NoSession, group_name);
+        anyhow::bail!(
+            "{} no sessions in group '{}'",
+            ErrorCode::NoSession,
+            group_name
+        );
     }
 
     if output_format_json() {
-        let tree: Vec<_> = members.iter().map(|m| {
-            let deps: Vec<_> = m.depends_on.iter().map(|dep| {
-                let dep_status = reg.sessions.iter()
-                    .find(|s| &s.name == dep)
-                    .map(|s| s.status.to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
-                serde_json::json!({"name": dep, "status": dep_status})
-            }).collect();
-            serde_json::json!({
-                "name": m.name,
-                "status": m.status.to_string(),
-                "goal": m.goal,
-                "depends_on": deps,
+        let tree: Vec<_> = members
+            .iter()
+            .map(|m| {
+                let deps: Vec<_> = m
+                    .depends_on
+                    .iter()
+                    .map(|dep| {
+                        let dep_status = reg
+                            .sessions
+                            .iter()
+                            .find(|s| &s.name == dep)
+                            .map(|s| s.status.to_string())
+                            .unwrap_or_else(|| "unknown".to_string());
+                        serde_json::json!({"name": dep, "status": dep_status})
+                    })
+                    .collect();
+                serde_json::json!({
+                    "name": m.name,
+                    "status": m.status.to_string(),
+                    "goal": m.goal,
+                    "depends_on": deps,
+                })
             })
-        }).collect();
+            .collect();
         let out = serde_json::json!({"ok": true, "group": group_name, "tree": tree});
         println!("{}", out);
         return Ok(());
@@ -2643,7 +3226,7 @@ fn run_group_deps(group_name: &str) -> anyhow::Result<()> {
                 } else {
                     "○"
                 };
-                println!("    {} depends on {} {} ({})", "├─", dep_marker, dep, dep_status);
+                println!("    ├─ depends on {} {} ({})", dep_marker, dep, dep_status);
             }
         }
         println!();
@@ -2668,7 +3251,11 @@ fn run_group_roadmap(group_name: &str) -> anyhow::Result<()> {
         .collect();
 
     if members.is_empty() {
-        anyhow::bail!("{} no sessions in group '{}'", ErrorCode::NoSession, group_name);
+        anyhow::bail!(
+            "{} no sessions in group '{}'",
+            ErrorCode::NoSession,
+            group_name
+        );
     }
 
     // Sort by rank (same as everywhere)
@@ -2716,13 +3303,25 @@ fn run_group_roadmap(group_name: &str) -> anyhow::Result<()> {
     println!("|------|---------|--------|------|-------|");
 
     for m in &members {
-        let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
+        let rank_str = m
+            .group
+            .as_ref()
+            .map(|g| g.rank.to_string())
+            .unwrap_or_default();
         let icon = status_icon(&m.status);
 
         let goal_owned = read_session_section(&m.name, "Goal");
-        let goal: &str = if goal_owned.is_empty() { &m.goal } else { &goal_owned };
+        let goal: &str = if goal_owned.is_empty() {
+            &m.goal
+        } else {
+            &goal_owned
+        };
         let scope_owned = read_session_section(&m.name, "Scope / Plan");
-        let scope: &str = if scope_owned.is_empty() { &m.scope } else { &scope_owned };
+        let scope: &str = if scope_owned.is_empty() {
+            &m.scope
+        } else {
+            &scope_owned
+        };
 
         println!(
             "| {} | {} | {} {} | {} | {} |",
@@ -2797,17 +3396,15 @@ fn read_session_section(name: &str, header: &str) -> String {
         return String::new();
     };
     let detail_path = crate::registry::global_detail_path(&ctx.id, name);
-    if detail_path.exists() {
-        if let Ok(contents) = std::fs::read_to_string(&detail_path) {
-            let sections = crate::registry::parse_sections(&contents);
-            if let Some((_, body)) = sections.iter().find(|(h, _)| h == header) {
-                let trimmed = body.trim();
-                if !trimmed.is_empty()
-                    && !trimmed.starts_with('_')
-                    && !trimmed.starts_with("(fill in")
-                {
-                    return trimmed.to_string();
-                }
+    if detail_path.exists()
+        && let Ok(contents) = std::fs::read_to_string(&detail_path)
+    {
+        let sections = crate::registry::parse_sections(&contents);
+        if let Some((_, body)) = sections.iter().find(|(h, _)| h == header) {
+            let trimmed = body.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with('_') && !trimmed.starts_with("(fill in")
+            {
+                return trimmed.to_string();
             }
         }
     }
@@ -2863,11 +3460,13 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
             anyhow::bail!("{} a session cannot depend on itself", ErrorCode::Dep);
         }
         // Validate: dep session must exist
-        let dep_session = reg
-            .sessions
-            .iter()
-            .find(|s| s.name == dep)
-            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}' — dependencies must be between existing sessions", ErrorCode::NoSession, dep))?;
+        let dep_session = reg.sessions.iter().find(|s| s.name == dep).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} no session named '{}' — dependencies must be between existing sessions",
+                ErrorCode::NoSession,
+                dep
+            )
+        })?;
         // Validate: both sessions must be in the same group
         let session_group = reg
             .sessions
@@ -2878,7 +3477,11 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
         if session_group != dep_group {
             anyhow::bail!(
                 "{} dependencies must be within the same group — '{}' is in group {:?}, '{}' is in group {:?}",
-                ErrorCode::Dep, name, session_group, dep, dep_group
+                ErrorCode::Dep,
+                name,
+                session_group,
+                dep,
+                dep_group
             );
         }
         let deps = {
@@ -2906,13 +3509,19 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
 
     // JSON dep listing
     if output_format_json() {
-        let deps: Vec<_> = entry.depends_on.iter().map(|dep| {
-            let status = reg.sessions.iter()
-                .find(|s| &s.name == dep)
-                .map(|s| s.status.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            serde_json::json!({"name": dep, "status": status})
-        }).collect();
+        let deps: Vec<_> = entry
+            .depends_on
+            .iter()
+            .map(|dep| {
+                let status = reg
+                    .sessions
+                    .iter()
+                    .find(|s| &s.name == dep)
+                    .map(|s| s.status.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                serde_json::json!({"name": dep, "status": status})
+            })
+            .collect();
         let out = serde_json::json!({"ok": true, "name": name, "depends_on": deps});
         println!("{}", out);
     } else {
@@ -2932,10 +3541,7 @@ fn run_depend(name: &str, on: Option<&str>, clear: bool) -> anyhow::Result<()> {
 }
 
 /// Sync the `depends_on` list to the session detail file `## Dependencies` section.
-fn update_deps_in_detail(
-    name: &str,
-    deps: &[String],
-) -> anyhow::Result<()> {
+fn update_deps_in_detail(name: &str, deps: &[String]) -> anyhow::Result<()> {
     let Ok(ctx) = crate::registry::resolve_identity() else {
         return Ok(());
     };
@@ -2960,14 +3566,12 @@ fn update_deps_in_detail(
 // ── Group Detail File Helpers ───────────────────────────────────────
 
 fn group_dir() -> std::path::PathBuf {
-    let ctx = crate::registry::resolve_identity()
-        .unwrap_or_else(|_| std::process::exit(1));
+    let ctx = crate::registry::resolve_identity().unwrap_or_else(|_| std::process::exit(1));
     crate::registry::global_data_dir(&ctx.id).join("session-group")
 }
 
 fn group_file_path(group_name: &str) -> std::path::PathBuf {
-    let ctx = crate::registry::resolve_identity()
-        .unwrap_or_else(|_| std::process::exit(1));
+    let ctx = crate::registry::resolve_identity().unwrap_or_else(|_| std::process::exit(1));
     crate::registry::global_group_path(&ctx.id, group_name)
 }
 
@@ -3062,17 +3666,13 @@ fn update_group_members(
         .join("\n");
 
     let contents = std::fs::read_to_string(&path)?;
-    let updated =
-        crate::registry::replace_detail_section(&contents, "## Members", &members_body);
+    let updated = crate::registry::replace_detail_section(&contents, "## Members", &members_body);
     std::fs::write(&path, updated)?;
     Ok(false)
 }
 
 /// Set the ## Goal section of a group detail file.
-fn set_group_goal(
-    group_name: &str,
-    goal: &str,
-) -> anyhow::Result<()> {
+fn set_group_goal(group_name: &str, goal: &str) -> anyhow::Result<()> {
     let path = group_file_path(group_name);
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
@@ -3122,7 +3722,11 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
         .collect();
 
     if members.is_empty() {
-        anyhow::bail!("{} no sessions in group '{}'", ErrorCode::NoSession, group_name);
+        anyhow::bail!(
+            "{} no sessions in group '{}'",
+            ErrorCode::NoSession,
+            group_name
+        );
     }
 
     // Sort for deterministic selection
@@ -3147,7 +3751,11 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     if in_progress.len() > 1 {
-        eprintln!("warning: {} in_progress sessions in group '{}'", in_progress.len(), group_name);
+        eprintln!(
+            "warning: {} in_progress sessions in group '{}'",
+            in_progress.len(),
+            group_name
+        );
         let pick = in_progress
             .iter()
             .max_by_key(|m| &m.started)
@@ -3173,7 +3781,12 @@ fn run_next(group_name: &str) -> anyhow::Result<()> {
 /// `ccsm show <name>` — registry fields + detail file section list.
 /// `ccsm show <name> --section <s>` — extract one section from detail file.
 /// `ccsm show <name> --json` — output all fields as JSON.
-fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -> anyhow::Result<()> {
+fn run_show(
+    name: &str,
+    section: Option<&str>,
+    json: bool,
+    consumer: Consumer,
+) -> anyhow::Result<()> {
     let ctx = crate::registry::resolve_identity()?;
     let reg = crate::registry::WorkspaceRegistry::load()?;
     let session = reg
@@ -3187,7 +3800,12 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
     // If --section is given, extract and print just that section.
     if let Some(sec) = section {
         if !detail_path.exists() {
-            anyhow::bail!("{} no detail file for '{}' (expected {})", ErrorCode::Section, name, detail_path.display());
+            anyhow::bail!(
+                "{} no detail file for '{}' (expected {})",
+                ErrorCode::Section,
+                name,
+                detail_path.display()
+            );
         }
         let contents = std::fs::read_to_string(&detail_path)?;
         let sections = crate::registry::parse_sections(&contents);
@@ -3226,10 +3844,14 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
         if let Ok(contents) = std::fs::read_to_string(&detail_path) {
             detail_contents = Some(contents);
             let sections = crate::registry::parse_sections(detail_contents.as_ref().unwrap());
-            detail_goal = sections.iter().find(|(h, _)| h == "Goal")
+            detail_goal = sections
+                .iter()
+                .find(|(h, _)| h == "Goal")
                 .map(|(_, b)| b.trim().to_string())
                 .filter(|g| !g.is_empty() && !g.starts_with('_') && !g.starts_with("(fill in"));
-            detail_scope = sections.iter().find(|(h, _)| h == "Scope / Plan")
+            detail_scope = sections
+                .iter()
+                .find(|(h, _)| h == "Scope / Plan")
                 .map(|(_, b)| b.trim().to_string())
                 .filter(|s| !s.is_empty() && !s.starts_with('_') && !s.starts_with("(fill in"));
         } else {
@@ -3295,10 +3917,12 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
 
         let sections: Vec<SectionJson> = if let Some(ref contents) = detail_contents {
             let secs = crate::registry::parse_sections(contents);
-            secs.iter().map(|(h, b)| SectionJson {
-                header: h.clone(),
-                lines: b.lines().filter(|l| !l.trim().is_empty()).count(),
-            }).collect()
+            secs.iter()
+                .map(|(h, b)| SectionJson {
+                    header: h.clone(),
+                    lines: b.lines().filter(|l| !l.trim().is_empty()).count(),
+                })
+                .collect()
         } else {
             Vec::new()
         };
@@ -3322,18 +3946,24 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
             depends_on: session.depends_on.clone(),
             branch: session.branch.clone(),
             worktree: if session.use_worktree {
-                crate::commands::worktree::worktree_path_for(&ctx.root, &session.name).to_string_lossy().to_string()
+                crate::commands::worktree::worktree_path_for(&ctx.root, &session.name)
+                    .to_string_lossy()
+                    .to_string()
             } else {
                 String::new()
             },
             detail_file: detail_path_exists.then(|| detail_path.display().to_string()),
             has_detail_file: detail_path_exists,
             sections,
-            retired: session.retired_session_ids.iter().map(|r| RetiredJson {
-                id: r.id.clone(),
-                retired_at: r.retired_at.clone(),
-                reason: r.reason.clone(),
-            }).collect(),
+            retired: session
+                .retired_session_ids
+                .iter()
+                .map(|r| RetiredJson {
+                    id: r.id.clone(),
+                    retired_at: r.retired_at.clone(),
+                    reason: r.reason.clone(),
+                })
+                .collect(),
         };
         println!("{}", serde_json::to_string_pretty(&entry)?);
         return Ok(());
@@ -3343,13 +3973,22 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
 
     // ── Registry fields ──────────────────────────────────────────
     println!("{} {}", style::primary("name:"), session.name);
-    println!("{} {}", style::primary("status:"), style::status_label(&session.status.to_string()));
+    println!(
+        "{} {}",
+        style::primary("status:"),
+        style::status_label(&session.status.to_string())
+    );
     if !session.consumer.is_empty() {
         let current = consumer.to_string();
         let label = if session.consumer == current {
             format!("{} (current)", session.consumer)
         } else {
-            format!("{} {} running as {}", session.consumer, style::warning_stderr(warn_icon), current)
+            format!(
+                "{} {} running as {}",
+                session.consumer,
+                style::warning_stderr(warn_icon),
+                current
+            )
         };
         println!("{} {}", style::primary("agent:"), label);
     }
@@ -3380,7 +4019,16 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
     if session.pids.is_empty() {
         println!("{} {}", style::primary("pids:"), style::dim("(none)"));
     } else {
-        println!("{} {}", style::primary("pids:"), session.pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
+        println!(
+            "{} {}",
+            style::primary("pids:"),
+            session
+                .pids
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     if !session.started.is_empty() {
         println!("{} {}", style::primary("started:"), session.started);
@@ -3389,8 +4037,16 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
         println!("{} {}", style::primary("completed:"), session.completed);
     }
     if !session.retired_session_ids.is_empty() {
-        println!("{} {} session{}", style::primary("retired:"), session.retired_session_ids.len(),
-            if session.retired_session_ids.len() == 1 { "" } else { "s" });
+        println!(
+            "{} {} session{}",
+            style::primary("retired:"),
+            session.retired_session_ids.len(),
+            if session.retired_session_ids.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
         for r in &session.retired_session_ids {
             println!("  {}  {}", r.retired_at, r.reason);
         }
@@ -3415,10 +4071,14 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
                 };
                 println!("{} {}", style::dim("  ##"), format!("{}{}", header, hint));
             }
-            println!("\n   `ccsm show {} --section <name>` to read one section", name);
+            println!(
+                "\n   `ccsm show {} --section <name>` to read one section",
+                name
+            );
         }
     } else {
-        println!("\n{} no detail file — create: cp {} {}",
+        println!(
+            "\n{} no detail file — create: cp {} {}",
             tip_icon,
             crate::registry::global_template_path(&ctx.id).display(),
             detail_path.display(),
@@ -3427,8 +4087,6 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
 
     Ok(())
 }
-
-
 
 // ── Sequence subcommand ────────────────────────────────────────────────
 
@@ -3457,7 +4115,10 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
     }
 
     if groups.is_empty() {
-        anyhow::bail!("{} expected at least one -q <command> ... group", ErrorCode::Invalid);
+        anyhow::bail!(
+            "{} expected at least one -q <command> ... group",
+            ErrorCode::Invalid
+        );
     }
 
     // Phase 1: Parse all operations (no lock — fail-fast on bad input)
@@ -3469,8 +4130,7 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
     // Phase 2: Execute all operations in memory (single lock)
     let now = crate::registry::now_iso();
     let outputs = {
-        let (mut reg, _lock) =
-            crate::registry::WorkspaceRegistry::load_locked()?;
+        let (mut reg, _lock) = crate::registry::WorkspaceRegistry::load_locked()?;
 
         let mut outputs = Vec::new();
         for op in &ops {
@@ -3511,7 +4171,10 @@ fn run_sequence(args: &[String]) -> anyhow::Result<()> {
 fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
     let text = text.trim();
     if text.is_empty() {
-        anyhow::bail!("{} note text is required. Usage: ccsm note <name> <text>", ErrorCode::Invalid);
+        anyhow::bail!(
+            "{} note text is required. Usage: ccsm note <name> <text>",
+            ErrorCode::Invalid
+        );
     }
 
     let ctx = crate::registry::resolve_identity()?;
@@ -3533,30 +4196,61 @@ fn run_note(name: &str, text: &str, cross: Option<&str>) -> anyhow::Result<()> {
             let _ = std::fs::write(&template_path, crate::commands::doctor::TEMPLATE_CONTENT);
         }
         if template_path.exists()
-            && let Ok(template) = std::fs::read_to_string(&template_path) {
-                let status = session.status.to_string();
-                let tags = if session.tags.is_empty() { "(none)".into() } else { session.tags.join(", ") };
-                let pids = if session.pids.is_empty() { "(none)".into() } else { session.pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ") };
-                let populated = template
-                    .replace("{{name}}", name)
-                    .replace("{{goal}}", &session.goal)
-                    .replace("{{status}}", &status)
-                    .replace("{{scope}}", &session.scope)
-                    .replace("{{tags}}", &tags)
-                    .replace("{{session_id}}", &if session.session_id.is_empty() { "(auto — ccsm manages)".into() } else { session.session_id.clone() })
-                    .replace("{{pids}}", &pids)
-                    .replace("{{kind}}", "(auto)")
-                    .replace("{{version}}", "(auto)")
-                    .replace("{{waiting_for}}", "(none)")
-                    .replace("{{dependencies}}", &if session.depends_on.is_empty() { "(none)".into() } else { session.depends_on.join(", ") })
-                    .replace("{{now}}", &crate::registry::note_timestamp())
-                    .replace("{{note}}", "Session detail file auto-created by ccsm note (was missing)");
-                if let Some(parent) = detail_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&detail_path, populated);
-                eprintln!("  (auto-created missing detail file for '{}')", name);
+            && let Ok(template) = std::fs::read_to_string(&template_path)
+        {
+            let status = session.status.to_string();
+            let tags = if session.tags.is_empty() {
+                "(none)".into()
+            } else {
+                session.tags.join(", ")
+            };
+            let pids = if session.pids.is_empty() {
+                "(none)".into()
+            } else {
+                session
+                    .pids
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let populated = template
+                .replace("{{name}}", name)
+                .replace("{{goal}}", &session.goal)
+                .replace("{{status}}", &status)
+                .replace("{{scope}}", &session.scope)
+                .replace("{{tags}}", &tags)
+                .replace(
+                    "{{session_id}}",
+                    &if session.session_id.is_empty() {
+                        "(auto — ccsm manages)".into()
+                    } else {
+                        session.session_id.clone()
+                    },
+                )
+                .replace("{{pids}}", &pids)
+                .replace("{{kind}}", "(auto)")
+                .replace("{{version}}", "(auto)")
+                .replace("{{waiting_for}}", "(none)")
+                .replace(
+                    "{{dependencies}}",
+                    &if session.depends_on.is_empty() {
+                        "(none)".into()
+                    } else {
+                        session.depends_on.join(", ")
+                    },
+                )
+                .replace("{{now}}", &crate::registry::note_timestamp())
+                .replace(
+                    "{{note}}",
+                    "Session detail file auto-created by ccsm note (was missing)",
+                );
+            if let Some(parent) = detail_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
             }
+            let _ = std::fs::write(&detail_path, populated);
+            eprintln!("  (auto-created missing detail file for '{}')", name);
+        }
     }
 
     let contents = std::fs::read_to_string(&detail_path)?;
@@ -3600,11 +4294,17 @@ fn run_note_check() -> anyhow::Result<()> {
     let session = {
         let env_session = std::env::var("CCSM_SESSION").ok();
         let s = if let Some(ref n) = env_session {
-            reg.sessions.iter().find(|s| s.name == *n && s.status == SessionStatus::InProgress)
+            reg.sessions
+                .iter()
+                .find(|s| s.name == *n && s.status == SessionStatus::InProgress)
         } else {
             None
         };
-        match s.or_else(|| reg.sessions.iter().find(|s| s.status == SessionStatus::InProgress)) {
+        match s.or_else(|| {
+            reg.sessions
+                .iter()
+                .find(|s| s.status == SessionStatus::InProgress)
+        }) {
             Some(s) => s,
             None => return Ok(()), // no active session → silent
         }
@@ -3637,7 +4337,7 @@ fn run_note_check() -> anyhow::Result<()> {
                 None
             }
         })
-        .last();
+        .next_back();
 
     let stale = match last_ts {
         Some(ts) => {
@@ -3776,7 +4476,11 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
             "  Checklist: {} pending item{}: {}",
             pending.len(),
             if pending.len() == 1 { "" } else { "s" },
-            pending.iter().map(|i| format!("#{}. {}", i.index, i.text)).collect::<Vec<_>>().join(", "),
+            pending
+                .iter()
+                .map(|i| format!("#{}. {}", i.index, i.text))
+                .collect::<Vec<_>>()
+                .join(", "),
         ));
     }
     if !blocked.is_empty() {
@@ -3784,14 +4488,21 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
             "  Checklist: {} blocked item{}: {}",
             blocked.len(),
             if blocked.len() == 1 { "" } else { "s" },
-            blocked.iter().map(|i| format!("#{}. {}", i.index, i.text)).collect::<Vec<_>>().join(", "),
+            blocked
+                .iter()
+                .map(|i| format!("#{}. {}", i.index, i.text))
+                .collect::<Vec<_>>()
+                .join(", "),
         ));
     }
     // Non-blocking nudge: session with real work but no checklist section
     if !has_checklist_section && note_count >= 2 {
         eprintln!(
             "{} {} has {} progress notes but no checklist — `ccsm checklist {} --init` to add",
-            style::emoji("💡", "[i]"), name, note_count, name,
+            style::emoji("💡", "[i]"),
+            name,
+            note_count,
+            name,
         );
     }
 
@@ -3809,10 +4520,7 @@ fn format_err(failures: &[String], name: &str) -> anyhow::Error {
         msg.push_str(f);
         msg.push('\n');
     }
-    msg.push_str(&format!(
-        "  → edit ~/.ccsm/<id>/sessions/{}.md",
-        name,
-    ));
+    msg.push_str(&format!("  → edit ~/.ccsm/<id>/sessions/{}.md", name,));
     anyhow::anyhow!("{}", msg)
 }
 
@@ -3876,19 +4584,19 @@ fn parse_checklist(body: &str) -> Vec<ChecklistItem> {
     for line in body.lines() {
         let trimmed = line.trim_start();
         // Match "- [X] text..." or "- [X]text..."
-        if let Some(rest) = trimmed.strip_prefix("- [") {
-            if rest.len() >= 2 {
-                let ch = rest.chars().next().unwrap();
-                let after_check = &rest[1..]; // skip the checkbox char
-                let desc = after_check.trim_start_matches("] ").trim_start_matches(']');
-                let status = char_to_status(ch);
-                let idx = items.len() + 1;
-                items.push(ChecklistItem {
-                    index: idx,
-                    status: status.to_string(),
-                    text: desc.trim().to_string(),
-                });
-            }
+        if let Some(rest) = trimmed.strip_prefix("- [")
+            && rest.len() >= 2
+        {
+            let ch = rest.chars().next().unwrap();
+            let after_check = &rest[1..]; // skip the checkbox char
+            let desc = after_check.trim_start_matches("] ").trim_start_matches(']');
+            let status = char_to_status(ch);
+            let idx = items.len() + 1;
+            items.push(ChecklistItem {
+                index: idx,
+                status: status.to_string(),
+                text: desc.trim().to_string(),
+            });
         }
     }
     items
@@ -3901,7 +4609,8 @@ fn run_checklist(name: &str, init: bool) -> anyhow::Result<()> {
 
     if !detail_path.exists() {
         anyhow::bail!(
-            "{} no detail file for session '{}' at {}", ErrorCode::Section,
+            "{} no detail file for session '{}' at {}",
+            ErrorCode::Section,
             name,
             detail_path.display()
         );
@@ -3949,7 +4658,10 @@ fn run_checklist(name: &str, init: bool) -> anyhow::Result<()> {
         };
         println!(
             "{:>3} [{}] {} {}",
-            item.index, icon, item.text, dim_status(&item.status)
+            item.index,
+            icon,
+            item.text,
+            dim_status(&item.status)
         );
     }
 
@@ -3977,7 +4689,8 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
     if !CHECKBOX_CHARS.iter().any(|(_, s)| *s == status) {
         anyhow::bail!(
             "{} invalid status '{}' — use: pending, done, skipped, blocked",
-            ErrorCode::BadStatus, status
+            ErrorCode::BadStatus,
+            status
         );
     }
 
@@ -3986,7 +4699,8 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
 
     if !detail_path.exists() {
         anyhow::bail!(
-            "{} no detail file for session '{}' at {}", ErrorCode::Section,
+            "{} no detail file for session '{}' at {}",
+            ErrorCode::Section,
             name,
             detail_path.display()
         );
@@ -4004,8 +4718,8 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
 
     // ── Resolve item: numeric index, text match, or auto-add ──────────
     enum Action {
-        Update(usize),            // existing item index (1-based)
-        Append(String),           // new item text
+        Update(usize),  // existing item index (1-based)
+        Append(String), // new item text
     }
 
     let action = if items.is_empty() {
@@ -4032,7 +4746,7 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
             for m in &matches {
                 eprintln!("  {:>3}. {}", m.index, m.text);
             }
-            anyhow::bail!("be more specific (use number or unique text)");
+            anyhow::bail!("{} be more specific (use number or unique text)", ErrorCode::Invalid);
         } else {
             Action::Update(matches[0].index)
         }
@@ -4085,7 +4799,11 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
             let target_item = &items[target_idx - 1];
             println!(
                 "{} #{}. [{}] {} → {}",
-                name, target_idx, icon_char(new_char), target_item.text, status,
+                name,
+                target_idx,
+                icon_char(new_char),
+                target_item.text,
+                status,
             );
         }
         Action::Append(text) => {
@@ -4107,10 +4825,7 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
             std::fs::write(&detail_path, &contents)?;
 
             let idx = items.len() + 1;
-            println!(
-                "{} + #{}. [{}] {}",
-                name, idx, icon_char(new_char), text,
-            );
+            println!("{} + #{}. [{}] {}", name, idx, icon_char(new_char), text,);
             if !has_section {
                 eprintln!("  (## Checklist section auto-created)");
             }
@@ -4144,10 +4859,7 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
         "fish" => generate(Shell::Fish, &mut cmd, bin_name, &mut std::io::stdout()),
         "zsh" => generate(Shell::Zsh, &mut cmd, bin_name, &mut std::io::stdout()),
         other => {
-            anyhow::bail!(
-                "unknown shell '{}'. Supported: bash, fish, zsh",
-                other
-            );
+            anyhow::bail!("{} unknown shell '{}'. Supported: bash, fish, zsh", ErrorCode::Invalid, other);
         }
     }
     Ok(())
@@ -4167,26 +4879,22 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
             .sessions
             .iter()
             .find(|s| s.name == n)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, n))?,
         None => {
             // CCSM_SESSION is injected at spawn time — it's the authoritative
             // source of identity. If absent/empty, there's no live session.
-            let csm = std::env::var("CCSM_SESSION")
-                .ok()
-                .filter(|v| !v.is_empty());
+            let csm = std::env::var("CCSM_SESSION").ok().filter(|v| !v.is_empty());
             match csm {
-                Some(ref n) => {
-                    match reg.sessions.iter().find(|s| s.name == *n) {
-                        Some(s) => s,
-                        None => {
-                            eprintln!(
-                                "info: CCSM_SESSION={} not found in workspace — no live session",
-                                n
-                            );
-                            return Ok(());
-                        }
+                Some(ref n) => match reg.sessions.iter().find(|s| s.name == *n) {
+                    Some(s) => s,
+                    None => {
+                        eprintln!(
+                            "info: CCSM_SESSION={} not found in workspace — no live session",
+                            n
+                        );
+                        return Ok(());
                     }
-                }
+                },
                 None => {
                     eprintln!("No live session! Please pick a session to continue.");
                     return Ok(());
@@ -4251,19 +4959,23 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
             Ok(output) => {
                 let current = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if current.is_empty() {
-                    format!("BRANCH: {} (detached HEAD — no active branch)", session.branch)
+                    format!(
+                        "BRANCH: {} (detached HEAD — no active branch)",
+                        session.branch
+                    )
                 } else if current == session.branch {
                     format!("BRANCH: {} {}", session.branch, style::emoji("✓", "[ok]"))
                 } else {
                     format!(
                         "BRANCH: {} (current: {}) {} MISMATCH — this session targets '{}'",
-                        session.branch, current, style::emoji("⚠️", "[!]"), session.branch
+                        session.branch,
+                        current,
+                        style::emoji("⚠️", "[!]"),
+                        session.branch
                     )
                 }
             }
-            Err(_) => {
-                String::new()
-            }
+            Err(_) => String::new(),
         }
     };
 
@@ -4301,7 +5013,10 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
         println!("  - Use `ccsm` for session management");
         println!();
         println!("DON'T:");
-        println!("  - Read/edit/create files in the parent repo: {}", ctx.root.display());
+        println!(
+            "  - Read/edit/create files in the parent repo: {}",
+            ctx.root.display()
+        );
         println!("  - Access `.claude/` at the workspace root level");
         println!("  - Run git commands in the parent repository");
         println!("  - Write files outside the worktree directory");
@@ -4341,7 +5056,7 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
             .sessions
             .iter()
             .find(|s| s.name == n)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, n))?,
         None => {
             // CCSM_SESSION env var is injected at spawn time.
             let env_session = std::env::var("CCSM_SESSION").ok();
@@ -4363,7 +5078,10 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
                         }
                         [s] => *s,
                         multiple => {
-                            println!("GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.", multiple.len());
+                            println!(
+                                "GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.",
+                                multiple.len()
+                            );
                             for s in multiple {
                                 println!("  - {}", s.name);
                             }
@@ -4384,7 +5102,10 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
                     }
                     [s] => *s,
                     multiple => {
-                        println!("GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.", multiple.len());
+                        println!(
+                            "GATE: MULTIPLE_ACTIVE — {} in_progress sessions. Pass --name.",
+                            multiple.len()
+                        );
                         for s in multiple {
                             println!("  - {}", s.name);
                         }
@@ -4426,33 +5147,35 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
         .args(["diff", "--stat", "HEAD"])
         .current_dir(&workspace)
         .output()
-        && !output.stdout.is_empty() {
-            let stat = String::from_utf8_lossy(&output.stdout);
-            println!("GATE: CHANGED FILES");
-            let lines: Vec<&str> = stat.lines().collect();
-            for line in lines.iter().take(20) {
-                println!("  {}", line);
-            }
-            if lines.len() > 20 {
-                println!("  ... and {} more lines", lines.len() - 20);
-            }
+        && !output.stdout.is_empty()
+    {
+        let stat = String::from_utf8_lossy(&output.stdout);
+        println!("GATE: CHANGED FILES");
+        let lines: Vec<&str> = stat.lines().collect();
+        for line in lines.iter().take(20) {
+            println!("  {}", line);
         }
+        if lines.len() > 20 {
+            println!("  ... and {} more lines", lines.len() - 20);
+        }
+    }
 
     // ── Untracked files ───────────────────────────────────────────────
     if let Ok(output) = std::process::Command::new("git")
         .args(["ls-files", "--others", "--exclude-standard"])
         .current_dir(&workspace)
         .output()
-        && !output.stdout.is_empty() {
-            let text = String::from_utf8_lossy(&output.stdout);
-            let files: Vec<&str> = text.lines().collect();
-            if !files.is_empty() {
-                println!("GATE: UNTRACKED ({})", files.len());
-                for f in files.iter().take(10) {
-                    println!("  ? {}", f);
-                }
+        && !output.stdout.is_empty()
+    {
+        let text = String::from_utf8_lossy(&output.stdout);
+        let files: Vec<&str> = text.lines().collect();
+        if !files.is_empty() {
+            println!("GATE: UNTRACKED ({})", files.len());
+            for f in files.iter().take(10) {
+                println!("  ? {}", f);
             }
         }
+    }
 
     if fail {
         std::process::exit(1);
@@ -4486,10 +5209,24 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             println!();
             let ok = style::emoji("✓", "[*]");
             println!("  {} .pi/extensions/ccsm/ — auto-discovered by Pi", ok);
-            println!("  {} 22 custom tools registered (ccsm_list, ccsm_new, ...)", ok);
-            println!("  {} Auto-injects active session scope into system prompt", ok);
-            println!("  {} Consumer auto-detection (--consumer pi or CCSM_CONSUMER=pi)", ok);
-            println!("  {} {} skill{} seeded to ~/.pi/agent/skills/", ok, copied, if copied == 1 { "" } else { "s" });
+            println!(
+                "  {} 22 custom tools registered (ccsm_list, ccsm_new, ...)",
+                ok
+            );
+            println!(
+                "  {} Auto-injects active session scope into system prompt",
+                ok
+            );
+            println!(
+                "  {} Consumer auto-detection (--consumer pi or CCSM_CONSUMER=pi)",
+                ok
+            );
+            println!(
+                "  {} {} skill{} seeded to ~/.pi/agent/skills/",
+                ok,
+                copied,
+                if copied == 1 { "" } else { "s" }
+            );
             println!();
             println!("Usage: pi (tools auto-available) or ccsm --consumer pi <command>");
             Ok(())
@@ -4502,7 +5239,10 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             std::fs::create_dir_all(&script_dir)?;
             let script_path = script_dir.join("setup.sh");
             std::fs::write(&script_path, EMBEDDED_SETUP_SCRIPT)?;
-            std::fs::set_permissions(&script_path, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+            std::fs::set_permissions(
+                &script_path,
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )?;
 
             println!("ccsm setup ({})\n", bin_path);
             let status = Command::new("bash")
@@ -4511,21 +5251,23 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("failed to run setup script: {e}"))?;
 
             if !status.success() {
-                anyhow::bail!("setup script exited with {status}");
+                anyhow::bail!("{} setup script exited with {status}", ErrorCode::Gate);
             }
-            println!("  ✓ {} skill{} seeded to ~/.claude/skills/", copied, if copied == 1 { "" } else { "s" });
+            println!(
+                "  ✓ {} skill{} seeded to ~/.claude/skills/",
+                copied,
+                if copied == 1 { "" } else { "s" }
+            );
             Ok(())
         }
         Consumer::OpenCode => {
-            let plugins_dir = std::path::PathBuf::from(
-                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-            )
-            .join(".config")
-            .join("opencode")
-            .join("plugins");
+            let plugins_dir =
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                    .join(".config")
+                    .join("opencode")
+                    .join("plugins");
 
-            std::fs::create_dir_all(&plugins_dir)
-                .context("creating opencode plugins directory")?;
+            std::fs::create_dir_all(&plugins_dir).context("creating opencode plugins directory")?;
 
             let plugin_dst = plugins_dir.join("ccsm-plugin.ts");
             std::fs::write(&plugin_dst, EMBEDDED_OPENCODE_PLUGIN)
@@ -4537,7 +5279,11 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             println!("  ✓ Injects session scope (goal + checklist) every LLM turn");
             println!("  ✓ Auto-links opencode sessions to ccsm registry");
             println!("  ✓ Consumer auto-detection (--consumer opencode or CCSM_CONSUMER=opencode)");
-            println!("  ✓ {} skill{} seeded to ~/.config/opencode/skills/", copied, if copied == 1 { "" } else { "s" });
+            println!(
+                "  ✓ {} skill{} seeded to ~/.config/opencode/skills/",
+                copied,
+                if copied == 1 { "" } else { "s" }
+            );
             println!();
             println!("Usage: opencode (plugin auto-loaded) or ccsm --consumer opencode <command>");
             println!("       Restart opencode if it's currently running.");
@@ -4551,27 +5297,21 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
 fn seed_skills(consumer: Consumer) -> u32 {
     let dst_skills = match consumer {
         Consumer::Claude => {
-            std::path::PathBuf::from(
-                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-            )
-            .join(".claude")
-            .join("skills")
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                .join(".claude")
+                .join("skills")
         }
         Consumer::Pi => {
-            std::path::PathBuf::from(
-                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-            )
-            .join(".pi")
-            .join("agent")
-            .join("skills")
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                .join(".pi")
+                .join("agent")
+                .join("skills")
         }
         Consumer::OpenCode => {
-            std::path::PathBuf::from(
-                std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
-            )
-            .join(".config")
-            .join("opencode")
-            .join("skills")
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                .join(".config")
+                .join("opencode")
+                .join("skills")
         }
     };
 
@@ -4597,7 +5337,7 @@ fn seed_skills(consumer: Consumer) -> u32 {
             for entry in entries.flatten() {
                 let src = entry.path();
                 let name = src.file_name().unwrap_or_default();
-                let dst = dst_skills.join(&name);
+                let dst = dst_skills.join(name);
                 if src.is_dir() && src.join("SKILL.md").exists() {
                     std::fs::create_dir_all(&dst).ok();
                     if std::fs::copy(src.join("SKILL.md"), dst.join("SKILL.md")).is_ok() {
@@ -4614,7 +5354,9 @@ fn seed_skills(consumer: Consumer) -> u32 {
 /// Seed `~/.ccsm/<id>/config.toml` if it doesn't exist yet.
 /// Called during `ccsm setup` and can be reused as a standalone bootstrap.
 fn seed_config() {
-    let Ok(ctx) = crate::registry::resolve_identity() else { return };
+    let Ok(ctx) = crate::registry::resolve_identity() else {
+        return;
+    };
     let config_path = crate::registry::global_config_path(&ctx.id);
     if config_path.exists() {
         return;
@@ -4653,8 +5395,16 @@ wip_limit = 0
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(&config_path, default_config) {
-        Ok(()) => eprintln!("  {} {} created", style::emoji("✓", "[*]"), config_path.display()),
-        Err(e) => eprintln!("  {} could not create {}: {e}", style::emoji("⚠", "[!]"), config_path.display()),
+        Ok(()) => eprintln!(
+            "  {} {} created",
+            style::emoji("✓", "[*]"),
+            config_path.display()
+        ),
+        Err(e) => eprintln!(
+            "  {} could not create {}: {e}",
+            style::emoji("⚠", "[!]"),
+            config_path.display()
+        ),
     }
 }
 
@@ -4684,12 +5434,13 @@ fn check_version(cmd: &Commands) -> anyhow::Result<()> {
     }
 
     // Check if binary is older than project version
-    let version_old = if let (Ok(bv), Ok(iv)) = (parse_version(binary), parse_version(&identity.version)) {
-        bv < iv
-    } else {
-        // Can't parse; identity version is non-semver (e.g. "1") → binary is always newer
-        false
-    };
+    let version_old =
+        if let (Ok(bv), Ok(iv)) = (parse_version(binary), parse_version(&identity.version)) {
+            bv < iv
+        } else {
+            // Can't parse; identity version is non-semver (e.g. "1") → binary is always newer
+            false
+        };
 
     if version_old {
         anyhow::bail!(
@@ -4709,7 +5460,7 @@ fn check_version(cmd: &Commands) -> anyhow::Result<()> {
 fn parse_version(v: &str) -> anyhow::Result<(u32, u32, u32)> {
     let parts: Vec<&str> = v.split('.').collect();
     if parts.len() != 3 {
-        anyhow::bail!("invalid semver: {v}");
+        anyhow::bail!("{} invalid semver: {v}", ErrorCode::Invalid);
     }
     Ok((
         parts[0].parse::<u32>()?,
@@ -4723,7 +5474,3 @@ fn run_migrate() -> anyhow::Result<()> {
     crate::migrate::run_migrate()?;
     Ok(())
 }
-
-
-
-

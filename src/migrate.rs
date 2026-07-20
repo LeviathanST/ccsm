@@ -6,7 +6,6 @@
 ///
 /// This ensures incremental transformations even when jumping many versions:
 ///   v0.0.0 → v0.1.0 → v0.15.0 → v0.16.0 → v0.17.0
-
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -38,7 +37,7 @@ const CHAIN: &[ChainLink] = &[
         from: "1",
         to: "0.1.0",
         desc: "normalize pre-semver identity version",
-        run: step_normalize_identity,
+        run: step_noop,
     },
     ChainLink {
         from: "0.1.0",
@@ -58,14 +57,36 @@ const CHAIN: &[ChainLink] = &[
         desc: "seed config, ensure data directory",
         run: step_seed_and_dir,
     },
+    ChainLink {
+        from: "0.17.0",
+        to: "0.18.0",
+        desc: "introduce auto-chain migration framework",
+        run: step_noop,
+    },
+    ChainLink {
+        from: "0.18.0",
+        to: "0.19.0",
+        desc: "structured inject-scope with WORKTREE BOUNDARY env var",
+        run: step_noop,
+    },
+    ChainLink {
+        from: "0.19.0",
+        to: "0.20.0",
+        desc: "inject intent-boundary CONSTRAINTS into agent scope",
+        run: step_noop,
+    },
+    ChainLink {
+        from: "0.20.0",
+        to: env!("CARGO_PKG_VERSION"),
+        desc: "DX enhancements: colors, config cmd, emoji gating, table helper, spinner",
+        run: step_noop,
+    },
 ];
 
 // ── Step Functions ────────────────────────────────────────────────────
 
-/// "1" → "0.1.0": normalize pre-semver identity version.
-/// The version bump is handled by the chain runner — this step exists
-/// as a placeholder for any future data transformations alongside the rename.
-fn step_normalize_identity(_ctx: &MigrationContext) -> Result<()> {
+/// No-op step for versions with no data schema change.
+fn step_noop(_ctx: &MigrationContext) -> Result<()> {
     Ok(())
 }
 
@@ -92,8 +113,7 @@ fn step_strip_worktree(ctx: &MigrationContext) -> Result<()> {
         .context("parsing sessions.json to strip stale worktree fields")?;
     reg.updated = crate::registry::now_iso();
     let new_contents = serde_json::to_string_pretty(&reg)?;
-    std::fs::write(&reg_path, new_contents)
-        .context("writing cleaned sessions.json")?;
+    std::fs::write(&reg_path, new_contents).context("writing cleaned sessions.json")?;
     Ok(())
 }
 
@@ -143,8 +163,8 @@ fn read_identity(root: &Path) -> Result<Option<crate::registry::WorkspaceIdentit
     }
     let content = std::fs::read_to_string(&ccsm_path)
         .with_context(|| format!("reading {}", ccsm_path.display()))?;
-    let identity: crate::registry::WorkspaceIdentity = toml::from_str(&content)
-        .with_context(|| format!("parsing {}", ccsm_path.display()))?;
+    let identity: crate::registry::WorkspaceIdentity =
+        toml::from_str(&content).with_context(|| format!("parsing {}", ccsm_path.display()))?;
     Ok(Some(identity))
 }
 
@@ -168,7 +188,10 @@ fn bootstrap_identity(root: &Path) -> Result<String> {
         id: id.clone(),
     };
     write_identity(root, &identity)?;
-    eprintln!("  {} created .ccsm identity (starting from v1)", crate::style::emoji("✓", "[*]"));
+    eprintln!(
+        "  {} created .ccsm identity (starting from v1)",
+        crate::style::emoji("✓", "[*]")
+    );
     Ok(id)
 }
 
@@ -251,7 +274,11 @@ fn migrate_claude_legacy(root: &Path, id: &str) -> Result<bool> {
         copied += 1;
     }
 
-    eprintln!("  {} migrated {} items from .claude/", crate::style::emoji("✓", "[*]"), copied);
+    eprintln!(
+        "  {} migrated {} items from .claude/",
+        crate::style::emoji("✓", "[*]"),
+        copied
+    );
     Ok(true)
 }
 
@@ -266,10 +293,7 @@ pub fn run_migrate() -> Result<MigrationReport> {
 
     let mut report = MigrationReport::default();
 
-    eprintln!(
-        "ccsm: auto-chain migration → v{}",
-        target
-    );
+    eprintln!("ccsm: auto-chain migration → v{}", target);
     eprintln!("  workspace root: {}", root.display());
     eprintln!();
 
@@ -318,11 +342,296 @@ pub fn run_migrate() -> Result<MigrationReport> {
     }
 
     if !ran_any {
-        eprintln!("  {} already at v{} — nothing to migrate", crate::style::emoji("✓", "[*]"), first_version);
+        eprintln!(
+            "  {} already at v{} — nothing to migrate",
+            crate::style::emoji("✓", "[*]"),
+            first_version
+        );
     } else {
         eprintln!();
-        eprintln!("  {} migrated from v{} → v{}", crate::style::emoji("✓", "[*]"), first_version, target);
+        eprintln!(
+            "  {} migrated from v{} → v{}",
+            crate::style::emoji("✓", "[*]"),
+            first_version,
+            target
+        );
     }
 
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::WorkspaceIdentity;
+    use tempfile::tempdir;
+
+    // ── Chain Structure ─────────────────────────────────────────
+
+    #[test]
+    fn chain_starts_at_version_1() {
+        assert_eq!(CHAIN.first().unwrap().from, "1");
+    }
+
+    #[test]
+    fn chain_links_are_sequential() {
+        for w in CHAIN.windows(2) {
+            assert_eq!(
+                w[0].to, w[1].from,
+                "gap: {} → {} then {} → {}",
+                w[0].from, w[0].to, w[1].from, w[1].to
+            );
+        }
+    }
+
+    #[test]
+    fn chain_has_no_duplicate_from_versions() {
+        let mut seen = std::collections::HashSet::new();
+        for link in CHAIN {
+            assert!(seen.insert(link.from), "duplicate from: {}", link.from);
+        }
+    }
+
+    #[test]
+    fn chain_links_have_non_empty_descriptions() {
+        for link in CHAIN {
+            assert!(
+                !link.desc.is_empty(),
+                "link {} → {} has empty desc",
+                link.from,
+                link.to
+            );
+        }
+    }
+
+    // ── MigrationReport ─────────────────────────────────────────
+
+    #[test]
+    fn report_default_has_no_steps() {
+        let report = MigrationReport::default();
+        assert!(report.steps_run.is_empty());
+    }
+
+    #[test]
+    fn report_tracks_steps_in_order() {
+        let mut report = MigrationReport::default();
+        report.steps_run.push("first".into());
+        report.steps_run.push("second".into());
+        assert_eq!(report.steps_run, &["first", "second"]);
+    }
+
+    // ── read_identity / write_identity ──────────────────────────
+
+    #[test]
+    fn read_identity_returns_none_when_absent() {
+        let dir = tempdir().unwrap();
+        assert!(read_identity(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_identity_returns_some_when_present() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".ccsm"),
+            r#"version = "0.15.0"
+id = "my-project"
+"#,
+        )
+        .unwrap();
+        let identity = read_identity(dir.path()).unwrap().unwrap();
+        assert_eq!(identity.version, "0.15.0");
+        assert_eq!(identity.id, "my-project");
+    }
+
+    #[test]
+    fn read_identity_errors_on_malformed_file() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".ccsm"), "not valid toml").unwrap();
+        assert!(read_identity(dir.path()).is_err());
+    }
+
+    #[test]
+    fn write_identity_creates_file() {
+        let dir = tempdir().unwrap();
+        let identity = WorkspaceIdentity {
+            version: "0.17.0".into(),
+            id: "my-project".into(),
+        };
+        write_identity(dir.path(), &identity).unwrap();
+        let content = std::fs::read_to_string(dir.path().join(".ccsm")).unwrap();
+        assert_eq!(content, "version = \"0.17.0\"\nid = \"my-project\"\n");
+    }
+
+    #[test]
+    fn write_identity_overwrites_existing() {
+        let dir = tempdir().unwrap();
+        write_identity(
+            dir.path(),
+            &WorkspaceIdentity {
+                version: "1".into(),
+                id: "a".into(),
+            },
+        )
+        .unwrap();
+        write_identity(
+            dir.path(),
+            &WorkspaceIdentity {
+                version: "0.16.0".into(),
+                id: "b".into(),
+            },
+        )
+        .unwrap();
+        let identity = read_identity(dir.path()).unwrap().unwrap();
+        assert_eq!(identity.version, "0.16.0");
+        assert_eq!(identity.id, "b");
+    }
+
+    #[test]
+    fn read_write_identity_roundtrip() {
+        let dir = tempdir().unwrap();
+        let original = WorkspaceIdentity {
+            version: "0.15.0".into(),
+            id: "roundtrip-test".into(),
+        };
+        write_identity(dir.path(), &original).unwrap();
+        let loaded = read_identity(dir.path()).unwrap().unwrap();
+        assert_eq!(loaded.version, original.version);
+        assert_eq!(loaded.id, original.id);
+    }
+
+    // ── bootstrap_identity ──────────────────────────────────────
+
+    #[test]
+    fn bootstrap_identity_creates_ccsm_file() {
+        let dir = tempdir().unwrap();
+        let id = bootstrap_identity(dir.path()).unwrap();
+        let path = dir.path().join(".ccsm");
+        assert!(path.exists(), ".ccsm file should exist");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(&id), "content should contain the id");
+        assert!(
+            content.contains(r#"version = "1""#),
+            "content should have version 1"
+        );
+    }
+
+    #[test]
+    fn bootstrap_identity_returns_uuid_format() {
+        let dir = tempdir().unwrap();
+        let id = bootstrap_identity(dir.path()).unwrap();
+        assert_eq!(id.len(), 36, "UUID v4 should be 36 chars");
+        assert_eq!(id.chars().filter(|&c| c == '-').count(), 4);
+        assert_eq!(id.chars().filter(|&c| c.is_ascii_hexdigit()).count(), 32);
+    }
+
+    #[test]
+    fn bootstrap_identity_writes_new_id_on_each_call() {
+        let dir = tempdir().unwrap();
+        let id1 = bootstrap_identity(dir.path()).unwrap();
+        let id2 = bootstrap_identity(dir.path()).unwrap();
+        assert_ne!(id1, id2, "each call should generate a fresh id");
+    }
+
+    // ── find_root ───────────────────────────────────────────────
+
+    #[test]
+    fn find_root_with_ccsm_file() {
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        std::fs::write(
+            dir.path().join(".ccsm"),
+            r#"version = "1"
+id = "x"
+"#,
+        )
+        .unwrap();
+        let sub = dir.path().join("a").join("b");
+        std::fs::create_dir_all(&sub).unwrap();
+        let root = find_root(&sub);
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn find_root_with_git_dir() {
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let sub = dir.path().join("deep");
+        std::fs::create_dir_all(&sub).unwrap();
+        let root = find_root(&sub);
+        assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn find_root_with_git_file() {
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        // Submodule worktree: .git is a file, not a directory
+        std::fs::write(dir.path().join(".git"), "gitdir: ../.git/modules/x").unwrap();
+        let root = find_root(dir.path());
+        assert_eq!(root, dir.path());
+    }
+
+    #[test]
+    fn find_root_falls_back_to_cwd() {
+        let dir = tempfile::Builder::new()
+            .prefix("ccsm-test-")
+            .tempdir_in("/var/tmp")
+            .unwrap();
+        let root = find_root(dir.path());
+        assert_eq!(root, dir.path());
+    }
+
+    // ── Step Functions ──────────────────────────────────────────
+
+    #[test]
+    fn step_noop_does_nothing() {
+        let dir = tempdir().unwrap();
+        let ctx = MigrationContext {
+            root: dir.path(),
+            id: "test",
+        };
+        step_noop(&ctx).unwrap();
+        assert!(!dir.path().join(".ccsm").exists());
+    }
+
+    #[test]
+    fn step_ccsm_dir_to_global_noop_when_no_legacy_dir() {
+        let dir = tempdir().unwrap();
+        let ctx = MigrationContext {
+            root: dir.path(),
+            id: "noop-test",
+        };
+        // No legacy .ccsm/ directory — early return, no crash
+        step_ccsm_dir_to_global(&ctx).unwrap();
+    }
+
+    #[test]
+    fn step_strip_worktree_noop_when_no_registry() {
+        let dir = tempdir().unwrap();
+        let ctx = MigrationContext {
+            root: dir.path(),
+            id: "no-registry-test",
+        };
+        step_strip_worktree(&ctx).unwrap();
+        // No global registry exists — should not crash
+    }
+
+    // ── migrate_claude_legacy ───────────────────────────────────
+
+    #[test]
+    fn migrate_claude_legacy_returns_false_when_no_claude() {
+        let dir = tempdir().unwrap();
+        let result = migrate_claude_legacy(dir.path(), "test-id").unwrap();
+        assert!(!result);
+    }
 }

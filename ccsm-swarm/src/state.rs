@@ -15,16 +15,15 @@ pub struct SwarmState {
 impl SwarmState {
     pub fn set_label(&mut self, pane_id: &str, label: &str) {
         self.labels.insert(label.to_string(), pane_id.to_string());
-        self.panes.entry(pane_id.to_string())
-            .or_default()
-            .label = label.to_string();
+        self.panes.entry(pane_id.to_string()).or_default().label = label.to_string();
     }
 
     pub fn resolve_target(&self, target: &str) -> String {
         if is_tmux_syntax(target) {
             target.to_string()
         } else {
-            self.labels.get(target)
+            self.labels
+                .get(target)
                 .cloned()
                 .unwrap_or_else(|| target.to_string())
         }
@@ -47,7 +46,11 @@ impl SwarmState {
 
     pub fn label_for(&self, pane_id: &str) -> Option<&str> {
         self.panes.get(pane_id).and_then(|s| {
-            if s.label.is_empty() { None } else { Some(s.label.as_str()) }
+            if s.label.is_empty() {
+                None
+            } else {
+                Some(s.label.as_str())
+            }
         })
     }
 
@@ -59,13 +62,23 @@ impl SwarmState {
 
 fn is_tmux_syntax(target: &str) -> bool {
     // Pane ID: %0, %1, %12 (reject bare "%")
-    if target.len() > 1 && target.starts_with('%') && target[1..].chars().all(|c| c.is_ascii_digit()) {
+    if target.len() > 1
+        && target.starts_with('%')
+        && target[1..].chars().all(|c| c.is_ascii_digit())
+    {
         return true;
     }
     // session:window.pane  or  session:window
-    if let Some(colon_idx) = target.find(':') && colon_idx > 0 {
+    if let Some(colon_idx) = target.find(':')
+        && colon_idx > 0
+    {
         let after = &target[colon_idx + 1..];
-        if !after.is_empty() && after.chars().next().is_some_and(|c| c.is_ascii_digit() || c == '.') {
+        if !after.is_empty()
+            && after
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit() || c == '.')
+        {
             return true;
         }
     }

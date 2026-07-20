@@ -46,8 +46,14 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     let reg = match crate::registry::WorkspaceRegistry::load() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{} registry file is corrupt — some checks skipped\n   {:#}", crate::style::emoji("⚠", "[!]"), e);
-            eprintln!("   → fix the JSON manually, delete the file to start fresh, or use a JSON formatter\n");
+            eprintln!(
+                "{} registry file is corrupt — some checks skipped\n   {:#}",
+                crate::style::emoji("⚠", "[!]"),
+                e
+            );
+            eprintln!(
+                "   → fix the JSON manually, delete the file to start fresh, or use a JSON formatter\n"
+            );
             crate::registry::WorkspaceRegistry::empty()
         }
     };
@@ -60,7 +66,9 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     let mut healthy = 0usize;
     let mut auto_created: Vec<String> = Vec::new();
 
-    let in_progress_count = reg.sessions.iter()
+    let in_progress_count = reg
+        .sessions
+        .iter()
         .filter(|s| s.status == crate::registry::SessionStatus::InProgress)
         .count();
 
@@ -147,32 +155,33 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
 
         // 6. Template residue in detail file
         if detail.exists()
-            && let Ok(contents) = std::fs::read_to_string(&detail) {
-                let mut residue: Vec<&str> = Vec::new();
-                for line in contents.lines() {
-                    let trimmed = line.trim();
-                    // Skip HTML comments (template instructions)
-                    if trimmed.starts_with("<!--") || trimmed.starts_with("-->") || trimmed == "-->" {
-                        continue;
-                    }
-                    if trimmed.contains("(fill in") {
-                        residue.push("(fill in)");
-                    }
-                    if trimmed.contains("{{") && trimmed.contains("}}") {
-                        residue.push("{{placeholder}}");
-                    }
+            && let Ok(contents) = std::fs::read_to_string(&detail)
+        {
+            let mut residue: Vec<&str> = Vec::new();
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                // Skip HTML comments (template instructions)
+                if trimmed.starts_with("<!--") || trimmed.starts_with("-->") || trimmed == "-->" {
+                    continue;
                 }
-                if !residue.is_empty() {
-                    residue.dedup();
-                    warnings.push(format!(
+                if trimmed.contains("(fill in") {
+                    residue.push("(fill in)");
+                }
+                if trimmed.contains("{{") && trimmed.contains("}}") {
+                    residue.push("{{placeholder}}");
+                }
+            }
+            if !residue.is_empty() {
+                residue.dedup();
+                warnings.push(format!(
                         "  template residue  {}\n    detail file has unfilled {} — status is {}\n    → edit detail file and fill the placeholder sections",
                         s.name,
                         residue.join(", "),
                         s.status,
                     ));
-                    session_issues += 1;
-                }
+                session_issues += 1;
             }
+        }
         // 7. Worktree checks — path derived deterministically from workspace + name
         let wt_path = crate::commands::worktree::worktree_path_for(workspace, &s.name);
         let mut wt_issue = false;
@@ -198,7 +207,9 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 s.name, s.branch, s.name,
             ));
         }
-        if wt_issue { session_issues += 1; }
+        if wt_issue {
+            session_issues += 1;
+        }
 
         if session_issues == 0 {
             healthy += 1;
@@ -242,42 +253,52 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     }
     // 11. Orphaned worktree directories (no matching session)
     let wt_dir = registry::global_data_dir(&ctx.id).join("worktrees");
-    if wt_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&wt_dir) {
-            for entry in entries.flatten() {
-                let dir_name = entry.file_name();
-                let name_str = dir_name.to_string_lossy();
-                if entry.path().is_dir() && !reg.sessions.iter().any(|s| s.name == name_str) {
-                    tips.push(format!(
+    if wt_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&wt_dir)
+    {
+        for entry in entries.flatten() {
+            let dir_name = entry.file_name();
+            let name_str = dir_name.to_string_lossy();
+            if entry.path().is_dir() && !reg.sessions.iter().any(|s| s.name == name_str) {
+                tips.push(format!(
                         "  orphaned worktree dir  {}\n    {} has no matching session\n    → git worktree remove \"{}\"",
                         name_str, entry.path().display(), entry.path().display(),
                     ));
-                }
             }
         }
     }
 
     // ── Orphaned identity check ──────────────────────────────────────
     let ccsm_dir = home.join(".ccsm");
-    if ccsm_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&ccsm_dir) {
-            for entry in entries.flatten() {
-                let id = entry.file_name();
-                let id_str = id.to_string_lossy();
-                if id_str.len() < 30 || !id_str.contains('-') { continue; }
-                let id_dir = entry.path();
-                if !id_dir.is_dir() { continue; }
-                if id_str == ctx.id { continue; }
+    if ccsm_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&ccsm_dir)
+    {
+        for entry in entries.flatten() {
+            let id = entry.file_name();
+            let id_str = id.to_string_lossy();
+            if id_str.len() < 30 || !id_str.contains('-') {
+                continue;
+            }
+            let id_dir = entry.path();
+            if !id_dir.is_dir() {
+                continue;
+            }
+            if id_str == ctx.id {
+                continue;
+            }
 
-                let reg_file = id_dir.join("sessions.json");
-                let has_sessions = reg_file.exists()
-                    && std::fs::read_to_string(&reg_file).ok()
-                        .and_then(|s| serde_json::from_str::<crate::registry::WorkspaceRegistry>(&s).ok())
-                        .map(|r| !r.sessions.is_empty())
-                        .unwrap_or(false);
+            let reg_file = id_dir.join("sessions.json");
+            let has_sessions = reg_file.exists()
+                && std::fs::read_to_string(&reg_file)
+                    .ok()
+                    .and_then(|s| {
+                        serde_json::from_str::<crate::registry::WorkspaceRegistry>(&s).ok()
+                    })
+                    .map(|r| !r.sessions.is_empty())
+                    .unwrap_or(false);
 
-                // Check if any .ccsm identity file references this UUID (up to 4 levels under home)
-                let has_project = std::process::Command::new("sh")
+            // Check if any .ccsm identity file references this UUID (up to 4 levels under home)
+            let has_project = std::process::Command::new("sh")
                     .args(["-c", &format!(
                         "find {} -maxdepth 4 -name .ccsm -exec grep -l '{}' {{}} + 2>/dev/null | head -1",
                         home.display(),
@@ -288,21 +309,25 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                     .map(|o| !o.stdout.is_empty())
                     .unwrap_or(false);
 
-                if !has_project && has_sessions {
-                    let count = std::fs::read_to_string(&reg_file).ok()
-                        .and_then(|s| serde_json::from_str::<crate::registry::WorkspaceRegistry>(&s).ok())
-                        .map(|r| r.sessions.len())
-                        .unwrap_or(0);
-                    infos.push(format!(
+            if !has_project && has_sessions {
+                let count = std::fs::read_to_string(&reg_file)
+                    .ok()
+                    .and_then(|s| {
+                        serde_json::from_str::<crate::registry::WorkspaceRegistry>(&s).ok()
+                    })
+                    .map(|r| r.sessions.len())
+                    .unwrap_or(0);
+                infos.push(format!(
                         "  orphaned identity  {}\n    {} has {} session(s) but no project references it\n    → investigate or clean with `rm -rf {}`",
                         id_str, id_dir.display(), count, id_dir.display(),
                     ));
-                } else if !has_project {
-                    tips.push(format!(
-                        "  empty identity  {}\n    {} has no sessions and no project\n    → rm -rf {}",
-                        id_str, id_dir.display(), id_dir.display(),
-                    ));
-                }
+            } else if !has_project {
+                tips.push(format!(
+                    "  empty identity  {}\n    {} has no sessions and no project\n    → rm -rf {}",
+                    id_str,
+                    id_dir.display(),
+                    id_dir.display(),
+                ));
             }
         }
     }
@@ -310,7 +335,10 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     // 10. Large transcripts — candidates for archive
     let mut large: Vec<(String, u64)> = Vec::new();
     for s in &reg.sessions {
-        if s.status == crate::registry::SessionStatus::Completed && !s.session_id.is_empty() && !consumer.is_opencode() {
+        if s.status == crate::registry::SessionStatus::Completed
+            && !s.session_id.is_empty()
+            && !consumer.is_opencode()
+        {
             let transcript = proj_dir.join(format!("{}.jsonl", s.session_id));
             if let Ok(meta) = std::fs::metadata(&transcript) {
                 let mb = meta.len() / 1_000_000;
@@ -322,7 +350,10 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     }
     if !large.is_empty() {
         large.sort_by_key(|b| std::cmp::Reverse(b.1));
-        let names: Vec<String> = large.iter().map(|(n, mb)| format!("{} ({} MB)", n, mb)).collect();
+        let names: Vec<String> = large
+            .iter()
+            .map(|(n, mb)| format!("{} ({} MB)", n, mb))
+            .collect();
         let total: u64 = large.iter().map(|(_, mb)| *mb).sum();
         if total >= 5 {
             tips.push(format!(
@@ -346,7 +377,8 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         if let Err(e) = std::fs::create_dir_all(&sessions_dir) {
             warnings.push(format!(
                 "  cannot create sessions dir  {}\n    {}",
-                sessions_dir.display(), e,
+                sessions_dir.display(),
+                e,
             ));
         } else {
             auto_created.push(format!("  {}sessions/", global.display()));
@@ -358,7 +390,8 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         if let Err(e) = std::fs::write(&template_path, TEMPLATE_CONTENT) {
             warnings.push(format!(
                 "  cannot create template  {}\n    {}",
-                template_path.display(), e,
+                template_path.display(),
+                e,
             ));
         } else {
             auto_created.push(format!("  {}", template_path.display()));
@@ -366,17 +399,19 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     }
 
     // 10c. session-group/ directory under global data dir (non-essential)
-    if !group_dir.exists() {
-        if let Err(e) = std::fs::create_dir_all(&group_dir) {
-            warnings.push(format!(
-                "  cannot create group dir  {}\n    {}",
-                group_dir.display(), e,
-            ));
-        }
+    if !group_dir.exists()
+        && let Err(e) = std::fs::create_dir_all(&group_dir)
+    {
+        warnings.push(format!(
+            "  cannot create group dir  {}\n    {}",
+            group_dir.display(),
+            e,
+        ));
     }
 
     // ── Print results ───────────────────────────────────────────────
-    let any_issues = !warnings.is_empty() || !infos.is_empty() || !tips.is_empty() || !auto_created.is_empty();
+    let any_issues =
+        !warnings.is_empty() || !infos.is_empty() || !tips.is_empty() || !auto_created.is_empty();
 
     let w = crate::style::emoji("🔧", "[*]");
     let ww = crate::style::emoji("⚠", "[!]");
@@ -386,29 +421,50 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
 
     if !auto_created.is_empty() {
         println!("{} auto-created", crate::style::info(w));
-        for a in &auto_created { println!("{}", a); }
+        for a in &auto_created {
+            println!("{}", a);
+        }
         println!();
     }
 
     if !warnings.is_empty() {
-        println!("{}", crate::style::warning(&format!("{} warnings (should fix)", ww)));
-        for w in &warnings { println!("{}", w); }
+        println!(
+            "{}",
+            crate::style::warning(&format!("{} warnings (should fix)", ww))
+        );
+        for w in &warnings {
+            println!("{}", w);
+        }
         println!();
     }
     if !infos.is_empty() {
         println!("{}", crate::style::info(&format!("{} info", ii)));
-        for i in &infos { println!("{}", i); }
+        for i in &infos {
+            println!("{}", i);
+        }
         println!();
     }
     if !tips.is_empty() {
         println!("{}", crate::style::info(&format!("{} tips", tt)));
-        for t in &tips { println!("{}", t); }
+        for t in &tips {
+            println!("{}", t);
+        }
         println!();
     }
     if healthy > 0 && any_issues {
-        println!("{} {} healthy session{}", crate::style::success(ok), healthy, if healthy == 1 { "" } else { "s" });
+        println!(
+            "{} {} healthy session{}",
+            crate::style::success(ok),
+            healthy,
+            if healthy == 1 { "" } else { "s" }
+        );
     } else if !any_issues {
-        println!("{} all {} session{} healthy", crate::style::success(ok), healthy, if healthy == 1 { "" } else { "s" });
+        println!(
+            "{} all {} session{} healthy",
+            crate::style::success(ok),
+            healthy,
+            if healthy == 1 { "" } else { "s" }
+        );
     }
 
     Ok(())

@@ -12,13 +12,21 @@ fn migrate_from_v1_to_current() {
 
     // Identity was created with version "1" by TempWorkspace
     let stderr = ws.run_stderr(&["migrate"]);
-    assert!(stderr.contains("normalize pre-semver"), "should run identity normalize: {stderr}");
-    assert!(stderr.contains("migrated from v1"), "should report migration: {stderr}");
+    assert!(
+        stderr.contains("normalize pre-semver"),
+        "should run identity normalize: {stderr}"
+    );
+    assert!(
+        stderr.contains("migrated from v1"),
+        "should report migration: {stderr}"
+    );
 
     // Identity file should now be at current version
     let identity = ws.read_identity();
-    assert!(identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
-        "identity should be at current version, got: {identity}");
+    assert!(
+        identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
+        "identity should be at current version, got: {identity}"
+    );
 }
 
 /// Running migrate when already at current version is a no-op.
@@ -32,7 +40,10 @@ fn migrate_noop_when_current() {
 
     // Run again — should be no-op
     let stderr = ws.run_stderr(&["migrate"]);
-    assert!(stderr.contains("nothing to migrate"), "second run should be no-op: {stderr}");
+    assert!(
+        stderr.contains("nothing to migrate"),
+        "second run should be no-op: {stderr}"
+    );
 }
 
 /// Unknown version in non-interactive mode warns and leaves identity untouched.
@@ -46,30 +57,40 @@ fn migrate_unknown_version_warns() {
 
     let stderr = ws.run_stderr(&["migrate"]);
     // The chain runner hits the unknown version and fast-forwards
-    assert!(stderr.contains("no data changes"), "should fast-forward: {stderr}");
+    assert!(
+        stderr.contains("no data changes"),
+        "should fast-forward: {stderr}"
+    );
 
     // Identity should now be at current (fast-forward bumps it)
     let identity = ws.read_identity();
-    assert!(identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
-        "should fast-forward to current: {identity}");
+    assert!(
+        identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
+        "should fast-forward to current: {identity}"
+    );
 }
 
-/// Version gap with no chain entry fast-forwards.
+/// Version not in chain fast-forwards to first known entry.
 #[test]
 fn migrate_fast_forwards_gap() {
     ensure_built();
     let ws = TempWorkspace::new();
 
-    // Set to a version after the last chain entry but before current
-    // The chain goes up to "0.17.0", so "0.17.5" should fast-forward
-    ws.set_identity_version("0.17.5");
+    // Set to a version not in the chain — should fast-forward to first
+    // known entry
+    ws.set_identity_version("0.14.0");
 
     let stderr = ws.run_stderr(&["migrate"]);
-    assert!(stderr.contains("fast-forward"), "should fast-forward: {stderr}");
+    assert!(
+        stderr.contains("fast-forward"),
+        "should fast-forward: {stderr}"
+    );
 
     let identity = ws.read_identity();
-    assert!(identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
-        "identity at current after fast-forward: {identity}");
+    assert!(
+        identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
+        "identity at current after fast-forward: {identity}"
+    );
 }
 
 /// Full chain from v1 runs all expected steps and ends at current.
@@ -83,4 +104,28 @@ fn migrate_full_chain_steps() {
     assert!(stderr.contains("rehome data from .ccsm"), "step rehome");
     assert!(stderr.contains("strip stale worktree"), "step strip");
     assert!(stderr.contains("seed config"), "step seed");
+    assert!(stderr.contains("auto-chain migration"), "step 0.17→0.18");
+    assert!(stderr.contains("inject-scope"), "step 0.18→0.19");
+    assert!(stderr.contains("CONSTRAINTS"), "step 0.19→0.20");
+    assert!(stderr.contains("DX enhancements"), "step 0.20→current");
+}
+
+/// Migrate from 0.17.0 runs the full chain to current.
+#[test]
+fn migrate_from_0170_to_current() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+
+    ws.set_identity_version("0.17.0");
+    let stderr = ws.run_stderr(&["migrate"]);
+    assert!(
+        stderr.contains("migrated"),
+        "should migrate from 0.17.0: {stderr}"
+    );
+
+    let identity = ws.read_identity();
+    assert!(
+        identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
+        "identity at current after migrate: {identity}"
+    );
 }

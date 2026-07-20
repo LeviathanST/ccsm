@@ -10,11 +10,25 @@ fn sequence_new_start_complete() {
 
     let out = ws.run_ok(&[
         "sequence",
-        "-q", "new", "seq-test", "batch goal",
-        "-q", "start", "seq-test",
-        "-q", "scope", "seq-test", "batch approach",
-        "-q", "tag", "seq-test", "batch", "test",
-        "-q", "complete", "seq-test",
+        "-q",
+        "new",
+        "seq-test",
+        "batch goal",
+        "-q",
+        "start",
+        "seq-test",
+        "-q",
+        "scope",
+        "seq-test",
+        "batch approach",
+        "-q",
+        "tag",
+        "seq-test",
+        "batch",
+        "test",
+        "-q",
+        "complete",
+        "seq-test",
     ]);
     assert!(out.contains("created"), "seq new: {}", out);
     assert!(out.contains("start"), "seq start: {}", out);
@@ -40,10 +54,19 @@ fn sequence_trash_recover() {
     // New → Start → Trash → Recover in one sequence
     ws.run_ok(&[
         "sequence",
-        "-q", "new", "seq-trash", "test",
-        "-q", "start", "seq-trash",
-        "-q", "trash", "seq-trash",
-        "-q", "recover", "seq-trash",
+        "-q",
+        "new",
+        "seq-trash",
+        "test",
+        "-q",
+        "start",
+        "seq-trash",
+        "-q",
+        "trash",
+        "seq-trash",
+        "-q",
+        "recover",
+        "seq-trash",
     ]);
 
     let reg = ws.read_registry();
@@ -62,9 +85,7 @@ fn sequence_blocks_duplicate() {
     let ws = TempWorkspace::new();
 
     let err = ws.run_err(&[
-        "sequence",
-        "-q", "new", "dup", "first",
-        "-q", "new", "dup", "second",
+        "sequence", "-q", "new", "dup", "first", "-q", "new", "dup", "second",
     ]);
     assert!(err.contains("already exists"), "duplicate: {}", err);
 }

@@ -1,6 +1,6 @@
+use anyhow::Result;
 use std::io::ErrorKind;
 use std::process::Command;
-use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub struct PaneInfo {
@@ -12,27 +12,40 @@ pub struct PaneInfo {
 }
 
 pub fn list_panes(session: Option<&str>) -> Result<Vec<PaneInfo>> {
-    let mut args = vec!["list-panes", "-a", "-F",
-        "#{session_name}:#{window_index}:#{pane_index}:#{pane_id}:#{pane_current_command}"];
+    let mut args = vec![
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}:#{window_index}:#{pane_index}:#{pane_id}:#{pane_current_command}",
+    ];
     if let Some(s) = session {
-        args = vec!["list-panes", "-s", "-t", s, "-F",
-            "#{session_name}:#{window_index}:#{pane_index}:#{pane_id}:#{pane_current_command}"];
+        args = vec![
+            "list-panes",
+            "-s",
+            "-t",
+            s,
+            "-F",
+            "#{session_name}:#{window_index}:#{pane_index}:#{pane_id}:#{pane_current_command}",
+        ];
     }
     let out = tmux(&args)?;
-    Ok(out.lines().filter_map(|line| {
-        let parts: Vec<&str> = line.splitn(5, ':').collect();
-        if parts.len() == 5 {
-            Some(PaneInfo {
-                session: parts[0].to_string(),
-                window: parts[1].to_string(),
-                pane_index: parts[2].to_string(),
-                pane_id: parts[3].to_string(),
-                process: parts[4].to_string(),
-            })
-        } else {
-            None
-        }
-    }).collect())
+    Ok(out
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(5, ':').collect();
+            if parts.len() == 5 {
+                Some(PaneInfo {
+                    session: parts[0].to_string(),
+                    window: parts[1].to_string(),
+                    pane_index: parts[2].to_string(),
+                    pane_id: parts[3].to_string(),
+                    process: parts[4].to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect())
 }
 
 pub fn capture_pane(target: &str, tail_lines: Option<usize>) -> Result<String> {
@@ -66,16 +79,13 @@ pub fn check_tmux() -> Result<()> {
 }
 
 fn tmux(args: &[&str]) -> Result<String> {
-    let out = Command::new("tmux")
-        .args(args)
-        .output()
-        .map_err(|e| {
-            if e.kind() == ErrorKind::NotFound {
-                anyhow::anyhow!("tmux binary not found. Install tmux and ensure it's in your PATH.")
-            } else {
-                anyhow::anyhow!("failed to execute tmux: {}", e)
-            }
-        })?;
+    let out = Command::new("tmux").args(args).output().map_err(|e| {
+        if e.kind() == ErrorKind::NotFound {
+            anyhow::anyhow!("tmux binary not found. Install tmux and ensure it's in your PATH.")
+        } else {
+            anyhow::anyhow!("failed to execute tmux: {}", e)
+        }
+    })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         anyhow::bail!("tmux error: {}", stderr.trim());

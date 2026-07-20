@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use rmcp::{ErrorData as McpError, schemars, ServiceExt, tool, tool_handler, tool_router};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{ServerInfo, ServerCapabilities};
+use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::{ErrorData as McpError, ServiceExt, schemars, tool, tool_handler, tool_router};
 
-mod tmux;
 mod state;
+mod tmux;
 
 use state::SwarmState;
 
@@ -39,7 +39,9 @@ struct InjectParam {
     enter: Option<bool>,
 }
 
-fn default_true() -> Option<bool> { Some(true) }
+fn default_true() -> Option<bool> {
+    Some(true)
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct WaitParam {
@@ -52,7 +54,9 @@ struct WaitParam {
     timeout_secs: u64,
 }
 
-fn default_300() -> u64 { 300 }
+fn default_300() -> u64 {
+    300
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct BroadcastParam {
@@ -94,21 +98,26 @@ impl SwarmServer {
 #[tool_router]
 impl SwarmServer {
     /// List all tmux sessions and their panes.
-    #[tool(name = "swarm-list-panes", description = "List all tmux panes with session, window, and process info")]
+    #[tool(
+        name = "swarm-list-panes",
+        description = "List all tmux panes with session, window, and process info"
+    )]
     async fn swarm_list_panes(&self) -> Result<String, McpError> {
-        let panes = tmux::list_panes(None).map_err(|e| {
-            McpError::internal_error(e.to_string(), None)
-        })?;
+        let panes =
+            tmux::list_panes(None).map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let output: Vec<serde_json::Value> = panes.iter().map(|p| {
-            serde_json::json!({
-                "session": p.session,
-                "window": p.window,
-                "pane_index": p.pane_index,
-                "pane_id": p.pane_id,
-                "process": p.process,
+        let output: Vec<serde_json::Value> = panes
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "session": p.session,
+                    "window": p.window,
+                    "pane_index": p.pane_index,
+                    "pane_id": p.pane_id,
+                    "process": p.process,
+                })
             })
-        }).collect();
+            .collect();
 
         serde_json::to_string(&output)
             .map_err(|e| McpError::internal_error(format!("json serialization failed: {e}"), None))
@@ -116,7 +125,10 @@ impl SwarmServer {
 
     /// Capture pane output. Delta-aware: returns only new content since last read by default.
     /// Omit or pass `lines: -1` for delta mode. Pass `lines: N` (positive) for explicit last N lines (bypasses delta).
-    #[tool(name = "swarm-capture", description = "Capture pane output (delta-aware — returns only new content)")]
+    #[tool(
+        name = "swarm-capture",
+        description = "Capture pane output (delta-aware — returns only new content)"
+    )]
     async fn swarm_capture(
         &self,
         Parameters(CaptureParam { target, lines }): Parameters<CaptureParam>,
@@ -154,10 +166,17 @@ impl SwarmServer {
     }
 
     /// Send text to a pane. Optionally press Enter after the text.
-    #[tool(name = "swarm-inject", description = "Type text into a pane (optionally press Enter)")]
+    #[tool(
+        name = "swarm-inject",
+        description = "Type text into a pane (optionally press Enter)"
+    )]
     async fn swarm_inject(
         &self,
-        Parameters(InjectParam { target, text, enter }): Parameters<InjectParam>,
+        Parameters(InjectParam {
+            target,
+            text,
+            enter,
+        }): Parameters<InjectParam>,
     ) -> Result<String, McpError> {
         let enter = enter.unwrap_or(true);
         let resolved = self.resolve(&target).await;
@@ -177,10 +196,17 @@ impl SwarmServer {
 
     /// Block until a sentinel string appears in pane output.
     /// Polls every 2s. Returns content up to the sentinel on match, or timeout error.
-    #[tool(name = "swarm-wait", description = "Block until a sentinel string appears in pane output")]
+    #[tool(
+        name = "swarm-wait",
+        description = "Block until a sentinel string appears in pane output"
+    )]
     async fn swarm_wait(
         &self,
-        Parameters(WaitParam { target, sentinel, timeout_secs }): Parameters<WaitParam>,
+        Parameters(WaitParam {
+            target,
+            sentinel,
+            timeout_secs,
+        }): Parameters<WaitParam>,
     ) -> Result<String, McpError> {
         let timeout_secs = timeout_secs.min(MAX_TIMEOUT);
         let resolved = self.resolve(&target).await;
@@ -190,15 +216,20 @@ impl SwarmServer {
         loop {
             if start.elapsed() > timeout {
                 return Err(McpError::internal_error(
-                    format!("wait timed out after {timeout_secs}s, sentinel '{}' not found in pane '{target}'", sentinel),
+                    format!(
+                        "wait timed out after {timeout_secs}s, sentinel '{}' not found in pane '{target}'",
+                        sentinel
+                    ),
                     None,
                 ));
             }
 
-            let content = tmux::capture_pane(&resolved, Some(300))
-                .map_err(|e| McpError::internal_error(
-                    format!("wait for sentinel '{}' failed: {e}", sentinel), None,
-                ))?;
+            let content = tmux::capture_pane(&resolved, Some(300)).map_err(|e| {
+                McpError::internal_error(
+                    format!("wait for sentinel '{}' failed: {e}", sentinel),
+                    None,
+                )
+            })?;
 
             if content.contains(&sentinel) {
                 let total = content.len();
@@ -209,7 +240,8 @@ impl SwarmServer {
                 return Ok(serde_json::json!({
                     "ok": true,
                     "content": content,
-                }).to_string());
+                })
+                .to_string());
             }
 
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -217,7 +249,10 @@ impl SwarmServer {
     }
 
     /// Consolidated status of all agent panes or a specific one.
-    #[tool(name = "swarm-status", description = "Consolidated status of all panes or a specific one")]
+    #[tool(
+        name = "swarm-status",
+        description = "Consolidated status of all panes or a specific one"
+    )]
     async fn swarm_status(
         &self,
         Parameters(TargetParam { target }): Parameters<TargetParam>,
@@ -227,8 +262,8 @@ impl SwarmServer {
             _ => None,
         };
 
-        let panes = tmux::list_panes(None)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let panes =
+            tmux::list_panes(None).map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let mut results = Vec::new();
         for pane in &panes {
@@ -240,12 +275,11 @@ impl SwarmServer {
             }
 
             let (last_line, error) = match tmux::capture_pane(&pane.pane_id, Some(10)) {
-                Ok(content) => {
-                    (content.lines().last().unwrap_or("").to_string(), None::<String>)
-                }
-                Err(e) => {
-                    (String::new(), Some(e.to_string()))
-                }
+                Ok(content) => (
+                    content.lines().last().unwrap_or("").to_string(),
+                    None::<String>,
+                ),
+                Err(e) => (String::new(), Some(e.to_string())),
             };
 
             let label = {
@@ -277,8 +311,8 @@ impl SwarmServer {
         Parameters(BroadcastParam { text, enter }): Parameters<BroadcastParam>,
     ) -> Result<String, McpError> {
         let enter = enter.unwrap_or(true);
-        let panes = tmux::list_panes(None)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let panes =
+            tmux::list_panes(None).map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let mut results: Vec<serde_json::Value> = Vec::new();
         for pane in &panes {
@@ -299,17 +333,24 @@ impl SwarmServer {
             }
         }
 
-        let ok_count = results.iter().filter(|r| r["ok"].as_bool().unwrap_or(false)).count();
+        let ok_count = results
+            .iter()
+            .filter(|r| r["ok"].as_bool().unwrap_or(false))
+            .count();
         Ok(serde_json::json!({
             "ok": ok_count > 0,
             "results": results,
             "ok_count": ok_count,
             "fail_count": results.len() - ok_count,
-        }).to_string())
+        })
+        .to_string())
     }
 
     /// Assign a label to a pane for name-based targeting in other tools.
-    #[tool(name = "swarm-label", description = "Label a pane for name-based targeting")]
+    #[tool(
+        name = "swarm-label",
+        description = "Label a pane for name-based targeting"
+    )]
     async fn swarm_label(
         &self,
         Parameters(LabelParam { target, label }): Parameters<LabelParam>,
@@ -326,9 +367,7 @@ impl rmcp::handler::server::ServerHandler for SwarmServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: Default::default(),
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: rmcp::model::Implementation {
                 name: "ccsm-swarm".into(),
                 version: "0.1.0".into(),
@@ -344,7 +383,9 @@ async fn main() -> anyhow::Result<()> {
     tmux::check_tmux()?;
 
     let server = SwarmServer::new();
-    let service = server.serve((tokio::io::stdin(), tokio::io::stdout())).await?;
+    let service = server
+        .serve((tokio::io::stdin(), tokio::io::stdout()))
+        .await?;
     service.waiting().await?;
     Ok(())
 }

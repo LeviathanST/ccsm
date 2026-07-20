@@ -33,22 +33,23 @@ pub struct TempWorkspace {
     home: PathBuf,
 }
 
+#[allow(dead_code)]
 impl TempWorkspace {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let home = dir.path().join("home");
 
         // Create identity file at workspace root (a FILE named .ccsm)
-        let id = format!("{:x}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos());
+        let id = format!(
+            "{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         let identity_path = dir.path().join(".ccsm");
-        std::fs::write(
-            &identity_path,
-            format!("version = \"1\"\nid = \"{id}\"\n"),
-        )
-        .expect("write .ccsm identity");
+        std::fs::write(&identity_path, format!("version = \"1\"\nid = \"{id}\"\n"))
+            .expect("write .ccsm identity");
 
         // Create global data directory at $HOME/.ccsm/<id>/
         let global_dir = home.join(".ccsm").join(&id);
@@ -109,8 +110,11 @@ impl TempWorkspace {
             .find_map(|l| l.strip_prefix("id = \"").and_then(|s| s.strip_suffix('"')))
             .expect("parse identity id");
         let identity_path = self.path().join(".ccsm");
-        std::fs::write(&identity_path, format!("version = \"{version}\"\nid = \"{id}\"\n"))
-            .expect("write updated identity");
+        std::fs::write(
+            &identity_path,
+            format!("version = \"{version}\"\nid = \"{id}\"\n"),
+        )
+        .expect("write updated identity");
     }
 
     /// Run ccsm and return stderr as String (regardless of exit status).
@@ -124,11 +128,7 @@ impl TempWorkspace {
         let out = self.run(args);
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            panic!(
-                "ccsm {:?} failed: {}",
-                args,
-                stderr
-            );
+            panic!("ccsm {:?} failed: {}", args, stderr);
         }
         String::from_utf8_lossy(&out.stdout).to_string()
     }

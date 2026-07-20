@@ -50,7 +50,10 @@ fn clean_all_trashed_only() {
     assert!(out.contains("cleaned"), "clean-all: {}", out);
 
     let reg = ws.read_registry();
-    assert!(reg["sessions"].as_array().unwrap().is_empty(), "all should be removed");
+    assert!(
+        reg["sessions"].as_array().unwrap().is_empty(),
+        "all should be removed"
+    );
 }
 
 #[test]
