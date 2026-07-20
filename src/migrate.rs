@@ -168,7 +168,7 @@ fn bootstrap_identity(root: &Path) -> Result<String> {
         id: id.clone(),
     };
     write_identity(root, &identity)?;
-    eprintln!("  ✓ created .ccsm identity (starting from v1)");
+    eprintln!("  {} created .ccsm identity (starting from v1)", crate::style::emoji("✓", "[*]"));
     Ok(id)
 }
 
@@ -251,7 +251,7 @@ fn migrate_claude_legacy(root: &Path, id: &str) -> Result<bool> {
         copied += 1;
     }
 
-    eprintln!("  ✓ migrated {} items from .claude/", copied);
+    eprintln!("  {} migrated {} items from .claude/", crate::style::emoji("✓", "[*]"), copied);
     Ok(true)
 }
 
@@ -318,10 +318,10 @@ pub fn run_migrate() -> Result<MigrationReport> {
     }
 
     if !ran_any {
-        eprintln!("  ✓ already at v{} — nothing to migrate", first_version);
+        eprintln!("  {} already at v{} — nothing to migrate", crate::style::emoji("✓", "[*]"), first_version);
     } else {
         eprintln!();
-        eprintln!("  ✓ migrated from v{} → v{}", first_version, target);
+        eprintln!("  {} migrated from v{} → v{}", crate::style::emoji("✓", "[*]"), first_version, target);
     }
 
     Ok(report)

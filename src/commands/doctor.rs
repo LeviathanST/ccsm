@@ -46,7 +46,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     let reg = match crate::registry::WorkspaceRegistry::load() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("⚠ registry file is corrupt — some checks skipped\n   {:#}", e);
+            eprintln!("{} registry file is corrupt — some checks skipped\n   {:#}", crate::style::emoji("⚠", "[!]"), e);
             eprintln!("   → fix the JSON manually, delete the file to start fresh, or use a JSON formatter\n");
             crate::registry::WorkspaceRegistry::empty()
         }
@@ -378,31 +378,37 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
     // ── Print results ───────────────────────────────────────────────
     let any_issues = !warnings.is_empty() || !infos.is_empty() || !tips.is_empty() || !auto_created.is_empty();
 
+    let w = crate::style::emoji("🔧", "[*]");
+    let ww = crate::style::emoji("⚠", "[!]");
+    let ii = crate::style::emoji("⚡", "[i]");
+    let tt = crate::style::emoji("💡", "[i]");
+    let ok = crate::style::emoji("✓", "[*]");
+
     if !auto_created.is_empty() {
-        println!("🔧 auto-created");
+        println!("{} auto-created", crate::style::info(w));
         for a in &auto_created { println!("{}", a); }
         println!();
     }
 
     if !warnings.is_empty() {
-        println!("⚠ warnings (should fix)");
+        println!("{}", crate::style::warning(&format!("{} warnings (should fix)", ww)));
         for w in &warnings { println!("{}", w); }
         println!();
     }
     if !infos.is_empty() {
-        println!("⚡ info");
+        println!("{}", crate::style::info(&format!("{} info", ii)));
         for i in &infos { println!("{}", i); }
         println!();
     }
     if !tips.is_empty() {
-        println!("💡 tips");
+        println!("{}", crate::style::info(&format!("{} tips", tt)));
         for t in &tips { println!("{}", t); }
         println!();
     }
     if healthy > 0 && any_issues {
-        println!("✓ {} healthy session{}", healthy, if healthy == 1 { "" } else { "s" });
+        println!("{} {} healthy session{}", crate::style::success(ok), healthy, if healthy == 1 { "" } else { "s" });
     } else if !any_issues {
-        println!("✓ all {} session{} healthy", healthy, if healthy == 1 { "" } else { "s" });
+        println!("{} all {} session{} healthy", crate::style::success(ok), healthy, if healthy == 1 { "" } else { "s" });
     }
 
     Ok(())
