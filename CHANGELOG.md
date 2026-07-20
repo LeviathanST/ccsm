@@ -5,6 +5,15 @@ All notable changes to ccsm are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 ccsm uses [semantic versioning](https://semver.org/).
 
+## [0.22.0] — 2026-07-20
+
+- add lock staleness detection to `doctor` with PID-based `/proc` check + 5-min threshold (#39)
+- add `ccsm doctor --fix` to auto-remove stale lock files (#39)
+- add hierarchical help: `ccsm help commands` (categorized), `ccsm help <command>` (detailed + examples) (#41)
+- add interactive `ccsm tutorial` — sandbox walkthrough of the full session lifecycle (#42)
+- make docs OpenCode-first: legacy consumer section, swarm removal notice (#43)
+- backfill CHANGELOG for v0.21.0 and v0.21.1 (#40)
+
 ## [0.21.1] — 2026-07-20
 
 - push line coverage from 28% to 82%, add 7,300 lines of unit + integration tests
@@ -268,7 +277,8 @@ ccsm uses [semantic versioning](https://semver.org/).
 
 ---
 
-[unreleased]: https://github.com/LeviathanST/ccsm/compare/v0.21.1...HEAD
+[unreleased]: https://github.com/LeviathanST/ccsm/compare/v0.22.0...HEAD
+[v0.22.0]: https://github.com/LeviathanST/ccsm/releases/tag/v0.22.0
 [v0.21.1]: https://github.com/LeviathanST/ccsm/releases/tag/v0.21.1
 [v0.21.0]: https://github.com/LeviathanST/ccsm/releases/tag/v0.21.0
 [v0.20.0]: https://github.com/LeviathanST/ccsm/releases/tag/v0.20.0
