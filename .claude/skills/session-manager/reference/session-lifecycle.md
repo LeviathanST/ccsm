@@ -10,7 +10,7 @@ NEW → start → (scope → checklist → work → note → ...) → ccsm close
                                                        (must note why)
 
 Complex? → ccsm new -c — embed ## Checklist section. ccsm check to add/toggle items.
-Bloat? → ccsm refresh (retire stale Claude session, spawn fresh — same ccsm session)
+Bloat? → ccsm refresh (retire stale agent session, spawn fresh — same ccsm session)
 ```
 
 ## Refresh (context bloat rescue)
@@ -19,7 +19,7 @@ When the context window fills up and the model gets biased:
 ```bash
 ccsm refresh <name> -r "context at 45%, stuck on auth bug"
 ```
-Moves current session_id to `retired_session_ids`, spawns fresh `claude` without `--resume`. The ccsm session continues — only the Claude session is refreshed.
+Moves current session_id to `retired_session_ids`, spawns fresh agent without `--resume`. The ccsm session continues — only the agent session is refreshed.
 
 ## Close Gate (before complete)
 
@@ -34,12 +34,12 @@ Gate checks: template residue, empty scope/tags, <2 progress notes, hollow Live 
 
 `ccsm resume <name>`:
 
-1. **Spawn**: captures child PID, writes to registry, polls `~/.claude/sessions/<pid>.json` (up to 5s), harvests `sessionId` BEFORE Claude exits
-2. **Wait**: blocks on `child.wait()` — Claude runs interactively
+1. **Spawn**: captures child PID, writes to registry, polls for session_id (up to 5s), harvests BEFORE agent exits
+2. **Wait**: blocks on `child.wait()` — agent runs interactively
 3. **Cleanup**: clears stale pids, saves registry
-4. **Next resume**: finds session_id → `claude --resume <id> -n <name>`
+4. **Next resume**: finds session_id → `opencode -s <id> -n <name>`
 
-Session_id is persisted before Claude exits — Claude v2.1+ deletes the session file on graceful exit, so harvesting must happen while the process is alive.
+Session_id is persisted before the agent exits — most agents delete their session file on graceful exit, so harvesting must happen while the process is alive.
 
 ## Statuses
 

@@ -8,7 +8,7 @@
 - ❌ **Change goal/scope without documenting why** — the 5 Laws require rationale.
 - ❌ **Status ping-pong** — complete↔in_progress without a real reason.
 - ❌ **Read the full detail file blindly** — use `--section` to pull what you need
-- ❌ **Parse JSONL transcripts** — ccsm uses `claude --resume`, not transcript parsing
+- ❌ **Parse transcript files directly** — ccsm uses resume (`-s`/`--resume`), not transcript parsing
 - ❌ **Use `jq`/`cat` for reading** — CLI commands are token-optimized and consistent across agents
 - ❌ **Work in isolation** — ignore other active sessions. You have teammates. Scan before starting related work.
 - ❌ **Hand-roll cross-session note prefixes** — use `ccsm note --cross <source>`. The `CROSS-SESSION [source]:` format must be consistent.

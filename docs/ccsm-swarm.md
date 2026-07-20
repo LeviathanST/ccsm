@@ -1,4 +1,6 @@
-# ccsm-swarm: MCP Tool Reference
+# ccsm-swarm: MCP Tool Reference (Removed in v0.21.0)
+
+> ccsm-swarm was removed in v0.21.0. This document is kept for reference. Use ccsm v0.20.0 if you need swarm functionality.
 
 ## Overview
 

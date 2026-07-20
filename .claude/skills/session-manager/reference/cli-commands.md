@@ -41,9 +41,9 @@ ccsm finds the workspace root in this order:
 | `ccsm pending <name>` | → pending, clears session_id + pids + timestamps |
 | `ccsm scope <name> <text>` | Set scope field |
 | `ccsm tag <name> <tags...>` | Replace tags |
-| `ccsm attach <name>` | Link a session UUID to a ccsm entry. Three modes: **(1)** `ccsm attach <name>` — auto-discover (Claude: reads live `~/.claude/sessions/<pid>.json`; Pi: picks most recently modified `.jsonl` in `~/.pi/agent/sessions/<slug>/`). **(2)** `ccsm attach <name> <uuid>` — explicit UUID. **(3)** `ccsm attach <name> --pid <pid>` — harvest from PID (Claude only) |
-| `ccsm resume <name>` | Spawn agent (claude or pi). `--resume <uuid>` for Claude, `--session <uuid>` for Pi. Harvests session_id on exit |
-| `ccsm refresh <name> [-r]` | Retire current session to retired_session_ids, spawn fresh (no --resume). Spawns `pi --continue` when consumer is Pi |
+| `ccsm attach <name>` | Link a session UUID to a ccsm entry. Three modes: **(1)** `ccsm attach <name>` — auto-discover (OpenCode: queries SQLite DB). **(2)** `ccsm attach <name> <uuid>` — explicit UUID. **(3)** `ccsm attach <name> --pid <pid>` — harvest from PID (legacy consumers only) |
+| `ccsm resume <name>` | Spawn OpenCode with session resume. Harvests session_id on exit |
+| `ccsm refresh <name> [-r]` | Retire current session to retired_session_ids, spawn fresh OpenCode |
 | `ccsm rename <old> <new> [-g] [-s]` | Rename session across registry, detail file, live sessions, transcript |
 | `ccsm close <name>` | Pre-completion gate: hard checks + self-review checklist. Exit non-zero if hollow. Blocks if pending/blocked checklist items exist |
 | `ccsm checklist <name>` | List checklist items from detail file. `--init` adds ## Checklist section to existing session |
@@ -92,25 +92,16 @@ trashed      — soft-deleted, recoverable with `ccsm recover <name>`
 
 ## Consumer (Target Agent)
 
-ccsm supports multiple AI coding agents via the `--consumer` flag:
+ccsm is **OpenCode-first**. The `--consumer` flag supports legacy consumers but only OpenCode receives active development.
 
-| Consumer | Flag | Binary | Sessions / Data |
-|----------|------|--------|----------------|
-| OpenCode (default) | `--consumer opencode` | `opencode` | SQLite `~/.local/share/opencode/opencode.db` |
-| Claude Code | `--consumer claude` | `claude` | `~/.claude/sessions/<pid>.json` |
-| Pi | `--consumer pi` | `pi` | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` |
+| Consumer | Status | Flag | Sessions / Data |
+|----------|--------|------|----------------|
+| **OpenCode** | **Active (default)** | `--consumer opencode` | SQLite `~/.local/share/opencode/opencode.db` |
+| Claude Code | Legacy | `--consumer claude` | `~/.claude/sessions/<pid>.json` |
+| Pi | Legacy | `--consumer pi` | `~/.pi/agent/sessions/<slug>/<ts>_<uuid>.jsonl` |
 
 Detection order: `--consumer` flag → `CCSM_CONSUMER` env var → auto-detect.
 Auto-detect prefers OpenCode if its DB exists, then Pi, then Claude.
-
-### What changes per consumer
-
-| Feature | OpenCode | Claude | Pi |
-|---------|----------|--------|----|
-| `resume` | `opencode -s <uuid>` (resume) / `opencode` (fresh) | `claude --resume <uuid> -n <name>` | `pi --session <uuid> -n <name>` |
-| `refresh` | `opencode` (fresh, no flags) | `claude -n <name>` (fresh) | `pi --continue -n <name>` |
-| `attach` (auto) | Queries SQLite for most recent session in workspace | Reads live `~/.claude/sessions/<pid>.json` | Scans `~/.pi/agent/sessions/<slug>/` for most recently modified `.jsonl` |
-| Session harvesting | SQLite DB polling after fresh spawn | PID-based JSON polling | UUID known from `--session` flag |
 
 ## Miscellaneous
 
