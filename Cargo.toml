@@ -4,7 +4,7 @@ members = ["ccsm-swarm"]
 
 [package]
 name = "ccsm"
-version = "0.20.0"
+version = "0.21.0"
 edition = "2024"
 description = "Context-managed session orchestration for AI coding agents — track, resume, and manage work across sessions"
 license = "MIT"
