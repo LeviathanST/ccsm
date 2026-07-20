@@ -355,3 +355,101 @@ pub fn remove_worktree(workspace: &Path, name: &str, force: bool) -> Result<()> 
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn init_git_repo(dir: &Path) {
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "t@t"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "t"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+    }
+
+    fn init_repo_with_commit(dir: &Path) {
+        init_git_repo(dir);
+        std::fs::write(dir.join("readme"), "hi").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
+        Command::new("git").args(["commit", "-m", "initial"]).current_dir(dir).output().unwrap();
+    }
+
+    #[test]
+    fn worktree_path_for_basic() {
+        let p = worktree_path_for(Path::new("/ws"), "my-session");
+        assert_eq!(p, PathBuf::from("/ws/.claude/worktrees/my-session"));
+    }
+
+    #[test]
+    fn is_git_repo_true_when_in_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        assert!(is_git_repo(dir.path()));
+    }
+
+    #[test]
+    fn is_git_repo_false_when_not_in_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_git_repo(dir.path()));
+    }
+
+    #[test]
+    fn branch_exists_local_main() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        // main should be found via local refs
+        assert!(branch_exists(dir.path(), "main"));
+    }
+
+    #[test]
+    fn branch_exists_nonexistent() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        // The remote check will fail too (no origin), so this should be false
+        assert!(!branch_exists(dir.path(), "nope"));
+    }
+
+    #[test]
+    fn ensure_worktree_gitignore_creates() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_worktree_gitignore(dir.path());
+        let c = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(c.contains("/.claude/worktrees/"));
+    }
+
+    #[test]
+    fn ensure_worktree_gitignore_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "existing\n").unwrap();
+        ensure_worktree_gitignore(dir.path());
+        let c = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(c.contains("existing"));
+        assert!(c.contains("/.claude/worktrees/"));
+    }
+
+    #[test]
+    fn create_worktree_fails_not_a_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = create_worktree(dir.path(), "s", "b").unwrap_err().to_string();
+        assert!(e.contains("git repository"), "{e}");
+    }
+
+    #[test]
+    fn remove_worktree_noop_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        assert!(remove_worktree(dir.path(), "phantom", false).is_ok());
+    }
+}

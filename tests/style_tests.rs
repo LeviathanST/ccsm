@@ -96,3 +96,100 @@ fn list_uses_table_format() {
     );
     assert!(out.contains("pending"), "list should show status:\n{out}");
 }
+
+#[test]
+fn doctor_reports_healthy_workspace() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "test-session", "-g", "This is a long enough goal for testing purposes"]);
+    ws.run_ok(&["start", "test-session"]);
+    ws.run_ok(&["scope", "test-session", "This is a detailed scope description for the session"]);
+    ws.run_ok(&["tag", "test-session", "dev", "testing"]);
+    ws.run_ok(&["note", "test-session", "Did some initial work"]);
+    ws.run_ok(&["note", "test-session", "Completed more work"]);
+    ws.run_ok(&["complete", "test-session"]);
+    // First run auto-creates template, sessions dir, session-group dir
+    ws.run_ok(&["doctor"]);
+    // Second run should be fully healthy
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("[*] 1 healthy session"),
+        "expected healthy count:\n{out}"
+    );
+    assert!(
+        !out.contains("[!]"),
+        "should have no warnings:\n{out}"
+    );
+}
+
+#[test]
+fn doctor_warns_missing_detail_file() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "missing-detail", "-g", "Test goal"]);
+    // Delete the detail file that ccsm new auto-created
+    let identity = ws.read_identity();
+    let id = identity
+        .lines()
+        .find_map(|l| l.strip_prefix("id = \"").and_then(|s| s.strip_suffix('"')))
+        .expect("parse identity id");
+    let detail_path = ws
+        .home()
+        .join(".ccsm")
+        .join(&id)
+        .join("sessions")
+        .join("missing-detail.md");
+    let _ = std::fs::remove_file(&detail_path);
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("no detail file"),
+        "doctor should mention missing detail file:\n{out}"
+    );
+    assert!(
+        out.contains("missing-detail"),
+        "should reference the session name:\n{out}"
+    );
+}
+
+#[test]
+fn doctor_with_corrupt_registry() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    let identity = ws.read_identity();
+    let id = identity
+        .lines()
+        .find_map(|l| l.strip_prefix("id = \"").and_then(|s| s.strip_suffix('"')))
+        .expect("parse identity id");
+    let reg_path = ws
+        .home()
+        .join(".ccsm")
+        .join(&id)
+        .join("sessions.json");
+    std::fs::write(&reg_path, b"not valid json {{{").unwrap();
+    let out = ws.run(&["doctor"]);
+    assert!(
+        out.status.success(),
+        "doctor should not crash on corrupt registry"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("registry file is corrupt"),
+        "doctor should report corrupt registry:\n{stderr}"
+    );
+}
+
+#[test]
+fn doctor_shows_worktree_warnings() {
+    ensure_built();
+    let ws = TempWorkspace::new();
+    ws.run_ok(&["new", "--worktree", "wt-session", "-g", "Test goal for worktree"]);
+    let out = ws.run_ok(&["doctor"]);
+    assert!(
+        out.contains("stale worktree"),
+        "doctor should mention stale worktree:\n{out}"
+    );
+    assert!(
+        out.contains("wt-session"),
+        "should reference the session name:\n{out}"
+    );
+}
