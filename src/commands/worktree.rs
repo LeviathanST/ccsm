@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use crate::ErrorCode;
 
 // ── Path derivation ────────────────────────────────────────────────────
 
@@ -95,16 +96,18 @@ pub fn ensure_worktree_gitignore(workspace: &Path) {
 pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<PathBuf> {
     anyhow::ensure!(
         is_git_repo(workspace),
-        "not a git repository — worktrees require git.\n\
-         Use `git init` or `git clone` first."
+        "{} not a git repository — worktrees require git.\n\
+         Use `git init` or `git clone` first.",
+        ErrorCode::Invalid
     );
 
     let wt_path = worktree_path_for(workspace, name);
 
     anyhow::ensure!(
         !wt_path.exists(),
-        "worktree for session '{}' already exists at {}\n\
+        "{} worktree for session '{}' already exists at {}\n\
          Use `ccsm resume {}` to continue.",
+        ErrorCode::Exists,
         name,
         wt_path.display(),
         name,
@@ -171,7 +174,8 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
 
                     let stashed = if is_dirty {
                         anyhow::bail!(
-                            "branch '{}' has uncommitted changes. Commit or stash first, then run `ccsm start {}` again.",
+                            "{} branch '{}' has uncommitted changes. Commit or stash first, then run `ccsm start {}` again.",
+                            ErrorCode::Invalid,
                             branch,
                             name,
                         );
@@ -199,7 +203,8 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                                 .output();
                         }
                         anyhow::bail!(
-                            "failed to rebase '{}' onto origin/main.\nResolve conflicts manually, then run `ccsm start` again.",
+                            "{} failed to rebase '{}' onto origin/main.\nResolve conflicts manually, then run `ccsm start` again.",
+                            ErrorCode::Gate,
                             branch
                         );
                     }
@@ -225,7 +230,7 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                                 .args(["stash", "pop"])
                                 .current_dir(workspace)
                                 .output();
-                            anyhow::bail!("failed to create worktree after rebase.");
+                            anyhow::bail!("{} failed to create worktree after rebase.", ErrorCode::Gate);
                         }
                         eprintln!("  restoring stashed changes into worktree...");
                         let pop_ok = Command::new("git")
@@ -298,7 +303,8 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
         let stderr = String::from_utf8_lossy(&result.stderr);
         let _ = std::fs::remove_dir_all(&wt_path);
         anyhow::bail!(
-            "git worktree add failed for branch '{}' at {}:\n{}",
+            "{} git worktree add failed for branch '{}' at {}:\n{}",
+            ErrorCode::Gate,
             branch,
             wt_path.display(),
             stderr.trim(),
@@ -339,8 +345,9 @@ pub fn remove_worktree(workspace: &Path, name: &str, force: bool) -> Result<()> 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
         anyhow::bail!(
-            "failed to remove worktree for '{}' at {}:\n{}\n\
+            "{} failed to remove worktree for '{}' at {}:\n{}\n\
              Use `ccsm complete {} --force` to force remove.",
+            ErrorCode::Gate,
             name,
             wt_path.display(),
             stderr.trim(),

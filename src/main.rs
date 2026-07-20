@@ -101,6 +101,27 @@ impl std::fmt::Display for ErrorCode {
     }
 }
 
+/// Emit an anyhow error with a structured error code prefix.
+/// The `[ERR_*]` code is prepended automatically — no way to forget it.
+///
+/// Usage: `bail_err!(ErrorCode::NoSession, "session '{}' not found", name)`
+#[macro_export]
+macro_rules! bail_err {
+    ($code:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
+        anyhow::bail!("{} {}", $code, format!($fmt $(, $arg)*))
+    };
+}
+
+/// Print to stderr with a structured error code prefix.
+///
+/// Usage: `eprint_err!(ErrorCode::Invalid, "bad config: {}", msg)`
+#[macro_export]
+macro_rules! eprint_err {
+    ($code:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
+        eprintln!("{} {}", $code, format!($fmt $(, $arg)*))
+    };
+}
+
 // ── CLI (clap) ──────────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -739,12 +760,14 @@ fn resolve_workspace() -> anyhow::Result<Option<PathBuf>> {
         let path = PathBuf::from(&ws);
         anyhow::ensure!(
             path.is_absolute(),
-            "CCSM_WORKSPACE must be an absolute path, got: {}",
+            "{} CCSM_WORKSPACE must be an absolute path, got: {}",
+            ErrorCode::Invalid,
             ws,
         );
         anyhow::ensure!(
             path.is_dir(),
-            "CCSM_WORKSPACE points to a non-existent directory: {}",
+            "{} CCSM_WORKSPACE points to a non-existent directory: {}",
+            ErrorCode::Invalid,
             ws,
         );
         return Ok(Some(path));
@@ -1406,7 +1429,8 @@ fn run_attach(
         }
         (_, Some(p)) if consumer.is_claude() => crate::registry::harvest_from_pid(home, p)?,
         (_, Some(_p)) => anyhow::bail!(
-            "--pid is not supported for {consumer}. Provide the session UUID directly."
+            "{} --pid is not supported for {consumer}. Provide the session UUID directly.",
+            ErrorCode::Invalid,
         ),
         _ => {
             // Auto-discover
@@ -1416,8 +1440,9 @@ fn run_attach(
                         crate::session::load_all(&consumer.sessions_dir(home), Some(&workspace))?;
                     match sessions.as_slice() {
                         [] => anyhow::bail!(
-                            "no live {} sessions found in this workspace.\n\
+                            "{} no live {} sessions found in this workspace.\n\
                              Is {} running? Start it first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
                             consumer,
                             consumer.binary(),
                             name,
@@ -1425,7 +1450,8 @@ fn run_attach(
                         [s] => {
                             if s.session_id.is_empty() {
                                 anyhow::bail!(
-                                    "session file for PID {} has no sessionId yet — wait for {} to finish starting",
+                                    "{} session file for PID {} has no sessionId yet — wait for {} to finish starting",
+                                    ErrorCode::NoSession,
                                     s.pid,
                                     consumer.binary(),
                                 );
@@ -1459,7 +1485,7 @@ fn run_attach(
                                             &s.session_id[..s.session_id.len().min(8)],
                                         );
                                     }
-                                    anyhow::bail!("pick one with --pid <pid>.");
+                                    anyhow::bail!("{} pick one with --pid <pid>.", ErrorCode::NoSession);
                                 }
                                 _ => {
                                     eprintln!(
@@ -1485,8 +1511,9 @@ fn run_attach(
                     let dir = consumer.projects_dir(home, &slug);
                     if !dir.is_dir() {
                         anyhow::bail!(
-                            "no Pi sessions found in this workspace.\n\
+                            "{} no Pi sessions found in this workspace.\n\
                              Start pi first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
                             name
                         );
                     }
@@ -1506,15 +1533,16 @@ fn run_attach(
                     candidates.sort_by(|a, b| b.0.cmp(&a.0)); // most recent first
                     if candidates.is_empty() {
                         anyhow::bail!(
-                            "no Pi session files found in this workspace.\n\
+                            "{} no Pi session files found in this workspace.\n\
                              Start pi first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
                             name
                         );
                     }
                     let latest = &candidates[0].1;
                     let meta = crate::consumer::read_pi_session_meta(latest)?;
                     if meta.session_id.is_empty() {
-                        anyhow::bail!("could not extract session ID from {}", latest.display());
+                        anyhow::bail!("{} could not extract session ID from {}", ErrorCode::NoSession, latest.display());
                     }
                     eprintln!(
                         "auto-detected session {} from {}",
@@ -1528,7 +1556,8 @@ fn run_attach(
                     let db_path = crate::consumer::opencode_db_path(home);
                     if !db_path.exists() {
                         anyhow::bail!(
-                            "no opencode DB found at {}. Start opencode first, then `ccsm attach {}`.",
+                            "{} no opencode DB found at {}. Start opencode first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
                             db_path.display(),
                             name
                         );
@@ -1545,8 +1574,9 @@ fn run_attach(
                             sid
                         }
                         None => anyhow::bail!(
-                            "no opencode sessions found in this workspace.\n\
+                            "{} no opencode sessions found in this workspace.\n\
                              Start opencode first, then `ccsm attach {}`.",
+                            ErrorCode::NoSession,
                             name
                         ),
                     }
@@ -1602,13 +1632,14 @@ fn run_rename(
             .sessions
             .iter()
             .position(|s| s.name == old)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", old))?;
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, old))?;
         if reg.sessions.iter().any(|s| s.name == new) {
             anyhow::bail!("{} session '{}' already exists", ErrorCode::Exists, new);
         }
         if !crate::registry::is_kebab_case(new) {
             anyhow::bail!(
-                "'{}' is not kebab-case. Session names must be lowercase letters, digits, and hyphens.",
+                "{} '{}' is not kebab-case. Session names must be lowercase letters, digits, and hyphens.",
+                ErrorCode::Invalid,
                 new
             );
         }
@@ -1713,7 +1744,7 @@ fn run_rename(
         .sessions
         .iter()
         .position(|s| s.name == old)
-        .ok_or_else(|| anyhow::anyhow!("session '{}' was removed before rename completed", old))?;
+        .ok_or_else(|| anyhow::anyhow!("{} session '{}' was removed before rename completed", ErrorCode::NoSession, old))?;
     if reg.sessions.iter().any(|s| s.name == new) {
         anyhow::bail!(
             "{} session '{}' was created before rename completed",
@@ -1949,7 +1980,8 @@ fn run_archive(
         && s.status == crate::registry::SessionStatus::InProgress
     {
         anyhow::bail!(
-            "cannot archive active session '{}'. Complete or abandon it first.",
+            "{} cannot archive active session '{}'. Complete or abandon it first.",
+            ErrorCode::BadStatus,
             name
         );
     }
@@ -2025,8 +2057,9 @@ fn run_new(
     if config.branch_tracking == BranchTracking::Required && branch.is_empty() {
         let config_path = crate::registry::global_config_path(&ctx.id);
         anyhow::bail!(
-            "\n{} This project requires branch tracking (branch_tracking=required in {}).\n\
+            "{} \n{} This project requires branch tracking (branch_tracking=required in {}).\n\
              Use `ccsm new {} -b <branch> -g \"...\"` to set a target branch.",
+            ErrorCode::Invalid,
             style::emoji("⚠️", "[!]"),
             config_path.display(),
             name
@@ -2085,7 +2118,8 @@ fn run_new(
             .collect();
         if !similar.is_empty() {
             anyhow::bail!(
-                "session '{}' looks similar to existing: {}. Use --force to create anyway, or `ccsm resume <name>` to continue an existing session.",
+                "{} session '{}' looks similar to existing: {}. Use --force to create anyway, or `ccsm resume <name>` to continue an existing session.",
+                ErrorCode::Exists,
                 name,
                 similar.join(", "),
             );
@@ -2233,13 +2267,15 @@ fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
         if use_wt {
             anyhow::ensure!(
                 !entry.branch.is_empty(),
-                "session '{}' has no target branch. Use `ccsm new {} -b <branch> -g \"...\"` to set one.",
+                "{} session '{}' has no target branch. Use `ccsm new {} -b <branch> -g \"...\"` to set one.",
+                ErrorCode::Invalid,
                 name,
                 name
             );
             anyhow::ensure!(
                 !commands::worktree::worktree_path_for(&workspace, name).exists(),
-                "worktree for session '{}' already exists. Use `ccsm resume {}` to continue, or `ccsm worktree remove {}` to clean up.",
+                "{} worktree for session '{}' already exists. Use `ccsm resume {}` to continue, or `ccsm worktree remove {}` to clean up.",
+                ErrorCode::Exists,
                 name,
                 name,
                 name
@@ -2437,7 +2473,8 @@ fn run_refresh(
 
         if entry.status != crate::registry::SessionStatus::InProgress {
             anyhow::bail!(
-                "session '{}' is {} — only in_progress sessions can be refreshed",
+                "{} session '{}' is {} — only in_progress sessions can be refreshed",
+                ErrorCode::BadStatus,
                 name,
                 entry.status,
             );
@@ -2524,7 +2561,8 @@ fn run_refresh(
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             Some(entry) => entry.pids = vec![child_pid],
             None => anyhow::bail!(
-                "internal error: session '{}' vanished from registry between Phase 1 and Phase 4",
+                "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 4",
+                ErrorCode::NoSession,
                 name
             ),
         }
@@ -2546,8 +2584,9 @@ fn run_refresh(
         }
         if !found {
             anyhow::bail!(
-                "{} did not write a session file at {} within 5s.\n\
+                "{} {} did not write a session file at {} within 5s.\n\
                  {} may have failed to start. Check for errors above.",
+                ErrorCode::NoSession,
                 bin,
                 session_file.display(),
                 bin,
@@ -2560,7 +2599,8 @@ fn run_refresh(
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
-                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                    "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                    ErrorCode::NoSession,
                     name
                 ),
             };
@@ -2610,7 +2650,8 @@ fn run_refresh(
                 let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                     Some(e) => e,
                     None => anyhow::bail!(
-                        "internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                        "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                        ErrorCode::NoSession,
                         name
                     ),
                 };
@@ -2658,7 +2699,7 @@ fn run_refresh(
     }
 
     if !status.success() {
-        anyhow::bail!("{} exited with {status}", bin);
+        anyhow::bail!("{} {} exited with {status}", ErrorCode::Gate, bin);
     }
     Ok(())
 }
@@ -2785,22 +2826,24 @@ fn run_group(
     if roadmap {
         if group.is_some() || clear || goal.is_some() {
             anyhow::bail!(
-                "--roadmap can't be combined with --group, --clear, or --goal. Usage: ccsm group <group-name> --roadmap"
+                "{} --roadmap can't be combined with --group, --clear, or --goal. Usage: ccsm group <group-name> --roadmap",
+                ErrorCode::Invalid
             );
         }
-        let name = name.ok_or_else(|| anyhow::anyhow!("group NAME is required with --roadmap"))?;
+        let name = name.ok_or_else(|| anyhow::anyhow!("{} group NAME is required with --roadmap", ErrorCode::Invalid))?;
         return run_group_roadmap(name);
     }
 
     // All other modes require a name
     let name =
-        name.ok_or_else(|| anyhow::anyhow!("NAME is required (or use --list to list all groups)"))?;
+        name.ok_or_else(|| anyhow::anyhow!("{} NAME is required (or use --list to list all groups)", ErrorCode::Invalid))?;
 
     // --goal: set group goal (name = group name, not session name)
     if let Some(goal_text) = goal {
         if group.is_some() || clear {
             anyhow::bail!(
-                "--goal can't be combined with --group or --clear. Use: ccsm group <group-name> --goal <text>"
+                "{} --goal can't be combined with --group or --clear. Use: ccsm group <group-name> --goal <text>",
+                ErrorCode::Invalid
             );
         }
         set_group_goal(name, goal_text)?;
@@ -2857,7 +2900,7 @@ fn run_group(
             Some(n) => {
                 let num: u32 = n
                     .parse()
-                    .map_err(|_| anyhow::anyhow!("rank must be 'free' or a number, got '{}'", n))?;
+                    .map_err(|_| anyhow::anyhow!("{} rank must be 'free' or a number, got '{}'", ErrorCode::Invalid, n))?;
                 GroupRank::Number(num)
             }
         };
@@ -4703,7 +4746,7 @@ fn run_check(name: &str, item_ref: &str, status: &str) -> anyhow::Result<()> {
             for m in &matches {
                 eprintln!("  {:>3}. {}", m.index, m.text);
             }
-            anyhow::bail!("be more specific (use number or unique text)");
+            anyhow::bail!("{} be more specific (use number or unique text)", ErrorCode::Invalid);
         } else {
             Action::Update(matches[0].index)
         }
@@ -4816,7 +4859,7 @@ fn run_completions(shell: &str) -> anyhow::Result<()> {
         "fish" => generate(Shell::Fish, &mut cmd, bin_name, &mut std::io::stdout()),
         "zsh" => generate(Shell::Zsh, &mut cmd, bin_name, &mut std::io::stdout()),
         other => {
-            anyhow::bail!("unknown shell '{}'. Supported: bash, fish, zsh", other);
+            anyhow::bail!("{} unknown shell '{}'. Supported: bash, fish, zsh", ErrorCode::Invalid, other);
         }
     }
     Ok(())
@@ -4836,7 +4879,7 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
             .sessions
             .iter()
             .find(|s| s.name == n)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, n))?,
         None => {
             // CCSM_SESSION is injected at spawn time — it's the authoritative
             // source of identity. If absent/empty, there's no live session.
@@ -5013,7 +5056,7 @@ fn run_gate_check(name: Option<&str>, strict: bool) -> anyhow::Result<()> {
             .sessions
             .iter()
             .find(|s| s.name == n)
-            .ok_or_else(|| anyhow::anyhow!("no session named '{}'", n))?,
+            .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, n))?,
         None => {
             // CCSM_SESSION env var is injected at spawn time.
             let env_session = std::env::var("CCSM_SESSION").ok();
@@ -5208,7 +5251,7 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("failed to run setup script: {e}"))?;
 
             if !status.success() {
-                anyhow::bail!("setup script exited with {status}");
+                anyhow::bail!("{} setup script exited with {status}", ErrorCode::Gate);
             }
             println!(
                 "  ✓ {} skill{} seeded to ~/.claude/skills/",
@@ -5417,7 +5460,7 @@ fn check_version(cmd: &Commands) -> anyhow::Result<()> {
 fn parse_version(v: &str) -> anyhow::Result<(u32, u32, u32)> {
     let parts: Vec<&str> = v.split('.').collect();
     if parts.len() != 3 {
-        anyhow::bail!("invalid semver: {v}");
+        anyhow::bail!("{} invalid semver: {v}", ErrorCode::Invalid);
     }
     Ok((
         parts[0].parse::<u32>()?,

@@ -10,6 +10,7 @@
 use anyhow::Context;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use crate::ErrorCode;
 
 // ── Consumer enum ─────────────────────────────────────────────────
 
@@ -133,7 +134,7 @@ impl Consumer {
             "claude" => Ok(Self::Claude),
             "pi" => Ok(Self::Pi),
             "opencode" | "open-code" | "oc" => Ok(Self::OpenCode),
-            other => anyhow::bail!("unknown consumer '{other}'. Expected: claude, pi, opencode"),
+            other => anyhow::bail!("{} unknown consumer '{other}'. Expected: claude, pi, opencode", ErrorCode::Invalid),
         }
     }
 
@@ -548,7 +549,7 @@ pub fn opencode_harvest_session(db_path: &Path, directory: &str, before_ts: i64)
 pub fn opencode_update_title(db_path: &Path, session_id: &str, title: &str) -> anyhow::Result<()> {
     use rusqlite::Connection;
     let conn = Connection::open(db_path)
-        .map_err(|e| anyhow::anyhow!("failed to open opencode DB: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("{} failed to open opencode DB: {e}", ErrorCode::Invalid))?;
     conn.execute(
         "UPDATE session SET title = ?1 WHERE id = ?2",
         [title, session_id],

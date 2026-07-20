@@ -1,5 +1,6 @@
 use crate::registry::{SessionStatus, WorkspaceRegistry, WorkspaceSession};
 use anyhow::Result;
+use crate::ErrorCode;
 
 // ── SeqOp: a single batched mutation ────────────────────────────────
 
@@ -65,7 +66,7 @@ impl SeqOp {
     /// `-q` (or end of args).  The first token is the command name.
     pub fn parse(tokens: &[String]) -> Result<Self> {
         if tokens.is_empty() {
-            anyhow::bail!("expected a command after -q");
+            anyhow::bail!("{} expected a command after -q", ErrorCode::Invalid);
         }
 
         let cmd = tokens[0].as_str();
@@ -170,7 +171,7 @@ impl SeqOp {
                             }
                         }
                         "--clear" => clear = true,
-                        other => anyhow::bail!("unknown flag '{}' in group", other),
+                        other => anyhow::bail!("{} unknown flag '{}' in group", ErrorCode::Invalid, other),
                     }
                     i += 1;
                 }
@@ -189,8 +190,9 @@ impl SeqOp {
             }
             unknown => {
                 anyhow::bail!(
-                    "unknown sequence command '{}'. Supported: start, complete, block, abandon, \
+                    "{} unknown sequence command '{}'. Supported: start, complete, block, abandon, \
                      pending, scope, tag, new, trash, recover, attach, group, next",
+                    ErrorCode::Invalid,
                     unknown
                 );
             }
@@ -202,14 +204,14 @@ impl SeqOp {
 
 fn ensure_at_least(args: &[String], min: usize, cmd: &str, usage: &str) -> Result<()> {
     if args.len() < min {
-        anyhow::bail!("'{}' requires {} {}", cmd, usage_quantifier(min), usage);
+        anyhow::bail!("{} '{}' requires {} {}", ErrorCode::Invalid, cmd, usage_quantifier(min), usage);
     }
     Ok(())
 }
 
 fn ensure_exact(args: &[String], count: usize, cmd: &str, usage: &str) -> Result<()> {
     if args.len() != count {
-        anyhow::bail!("'{}' requires {}", cmd, usage);
+        anyhow::bail!("{} '{}' requires {}", ErrorCode::Invalid, cmd, usage);
     }
     Ok(())
 }
@@ -227,7 +229,8 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
             let s = get_mut(&mut reg.sessions, name)?;
             if !SessionStatus::transition_allowed(s.status, SessionStatus::InProgress) {
                 anyhow::bail!(
-                    "cannot transition session '{}' from {} to in_progress",
+                    "{} cannot transition session '{}' from {} to in_progress",
+                    ErrorCode::BadStatus,
                     name,
                     s.status
                 );
@@ -239,7 +242,8 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
             let s = get_mut(&mut reg.sessions, name)?;
             if !SessionStatus::transition_allowed(s.status, SessionStatus::Completed) {
                 anyhow::bail!(
-                    "cannot transition session '{}' from {} to completed",
+                    "{} cannot transition session '{}' from {} to completed",
+                    ErrorCode::BadStatus,
                     name,
                     s.status
                 );
@@ -254,7 +258,8 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
             let s = get_mut(&mut reg.sessions, name)?;
             if !SessionStatus::transition_allowed(s.status, SessionStatus::Blocked) {
                 anyhow::bail!(
-                    "cannot transition session '{}' from {} to blocked",
+                    "{} cannot transition session '{}' from {} to blocked",
+                    ErrorCode::BadStatus,
                     name,
                     s.status
                 );
@@ -266,7 +271,8 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
             let s = get_mut(&mut reg.sessions, name)?;
             if !SessionStatus::transition_allowed(s.status, SessionStatus::Abandoned) {
                 anyhow::bail!(
-                    "cannot transition session '{}' from {} to abandoned",
+                    "{} cannot transition session '{}' from {} to abandoned",
+                    ErrorCode::BadStatus,
                     name,
                     s.status
                 );
@@ -310,12 +316,13 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
         SeqOp::New { name, goal } => {
             if !crate::registry::is_kebab_case(name) {
                 anyhow::bail!(
-                    "session name '{}' must be kebab-case (lowercase, digits, hyphens only)",
+                    "{} session name '{}' must be kebab-case (lowercase, digits, hyphens only)",
+                    ErrorCode::Invalid,
                     name
                 );
             }
             if reg.sessions.iter().any(|s| s.name == *name) {
-                anyhow::bail!("session '{}' already exists", name);
+                anyhow::bail!("{} session '{}' already exists", ErrorCode::Exists, name);
             }
             reg.sessions.push(WorkspaceSession {
                 session_id: String::new(),
@@ -347,7 +354,7 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
         SeqOp::Recover { name } => {
             let s = get_mut(&mut reg.sessions, name)?;
             if !SessionStatus::transition_allowed(s.status, SessionStatus::InProgress) {
-                anyhow::bail!("cannot recover session '{}' from {}", name, s.status);
+                anyhow::bail!("{} cannot recover session '{}' from {}", ErrorCode::BadStatus, name, s.status);
             }
             s.status = SessionStatus::InProgress;
             Ok(vec![format!("recovered   {}  ← in_progress", name)])
@@ -381,7 +388,7 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
                     Some("free") => GroupRank::Free,
                     Some(n) => {
                         let num: u32 = n.parse().map_err(|_| {
-                            anyhow::anyhow!("rank must be 'free' or a number, got '{}'", n)
+                            anyhow::anyhow!("{} rank must be 'free' or a number, got '{}'", ErrorCode::Invalid, n)
                         })?;
                         GroupRank::Number(num)
                     }
@@ -431,7 +438,7 @@ pub(crate) fn apply_op(reg: &mut WorkspaceRegistry, op: &SeqOp, now: &str) -> Re
                 .filter(|s| s.group.as_ref().is_some_and(|g| g.name == *group))
                 .collect();
             if members.is_empty() {
-                anyhow::bail!("no sessions in group '{}'", group);
+                anyhow::bail!("{} no sessions in group '{}'", ErrorCode::NoSession, group);
             }
             members.sort_by(|a, b| {
                 let ra = a.group.as_ref().map(|g| &g.rank);
@@ -495,8 +502,9 @@ fn validate_uuid(s: &str) -> Result<()> {
         Ok(())
     } else {
         anyhow::bail!(
-            "'{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
+            "{} '{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
              Use --pid <pid> instead: ccsm attach <name> --pid <pid>",
+            ErrorCode::Invalid,
             s
         );
     }
@@ -509,7 +517,7 @@ fn get_mut<'a>(
     sessions
         .iter_mut()
         .find(|s| s.name == name)
-        .ok_or_else(|| anyhow::anyhow!("no session named '{}'", name))
+        .ok_or_else(|| anyhow::anyhow!("{} no session named '{}'", ErrorCode::NoSession, name))
 }
 
 /// Format a status line matching the `mutate_session` output in main.rs:

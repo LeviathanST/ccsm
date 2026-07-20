@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::ErrorCode;
+
 // ── ChildGuard — RAII cleanup for spawned processes ─────────────────────
 
 /// Wraps a [`std::process::Child`] and ensures it is cleaned up on drop.
@@ -118,7 +120,8 @@ pub fn run_resume(
                         name
                     );
                     anyhow::bail!(
-                        "switch to {} to resume this session, or `ccsm pending` to start fresh",
+                        "{} switch to {} to resume this session, or `ccsm pending` to start fresh",
+                        ErrorCode::Invalid,
                         entry.consumer
                     );
                 } else if !entry.consumer.is_empty() && entry.consumer != current {
@@ -145,9 +148,10 @@ pub fn run_resume(
                             (Some(entry.session_id.clone()), false)
                         } else {
                             anyhow::bail!(
-                                "session '{}' has session_id '{}' but session file not found.\n\
+                                "{} session '{}' has session_id '{}' but session file not found.\n\
                                  The session may have been deleted or cleaned.\n\
                                  To start fresh: ccsm pending {}  (clears session_id, then resume)",
+                                ErrorCode::NoSession,
                                 name,
                                 &entry.session_id[..entry.session_id.len().min(8)],
                                 name,
@@ -172,13 +176,15 @@ pub fn run_resume(
                     .collect();
                 if similar.is_empty() {
                     anyhow::bail!(
-                        "no session named '{}'. Use `ccsm new {} -g \"...\"` to create one.",
+                        "{} no session named '{}'. Use `ccsm new {} -g \"...\"` to create one.",
+                        ErrorCode::NoSession,
                         name,
                         name
                     );
                 } else {
                     anyhow::bail!(
-                        "no session named '{}'. Did you mean: {}?",
+                        "{} no session named '{}'. Did you mean: {}?",
+                        ErrorCode::NoSession,
                         name,
                         similar.join(", ")
                     );
@@ -230,11 +236,12 @@ pub fn run_resume(
                 .sessions
                 .iter()
                 .find(|s| s.name == name)
-                .ok_or_else(|| anyhow::anyhow!("session '{}' not found", name))?;
+                .ok_or_else(|| anyhow::anyhow!("{} session '{}' not found", ErrorCode::NoSession, name))?;
             let branch = session.branch.clone();
             anyhow::ensure!(
                 !branch.is_empty(),
-                "session '{}' has no target branch. Set one with `ccsm new -b <branch>`.",
+                "{} session '{}' has no target branch. Set one with `ccsm new -b <branch>`.",
+                ErrorCode::Invalid,
                 name,
             );
             // Worktree path is derived deterministically from workspace + name
@@ -422,7 +429,8 @@ pub fn run_resume(
         match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
             Some(entry) => entry.pids = vec![child_pid],
             None => anyhow::bail!(
-                "internal error: session '{}' vanished from registry between Phase 1 and Phase 4",
+                "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 4",
+                ErrorCode::NoSession,
                 name
             ),
         }
@@ -439,7 +447,7 @@ pub fn run_resume(
         // Claude creates a PID-based session file eagerly — poll for it now.
         let session_file = consumer
             .live_session_file(home, child_pid)
-            .ok_or_else(|| anyhow::anyhow!("consumer does not support PID-based session files"))?;
+            .ok_or_else(|| anyhow::anyhow!("{} consumer does not support PID-based session files", ErrorCode::Invalid))?;
         let mut found = false;
         let mut spinner = crate::style::Spinner::new("waiting for agent session file...");
         for _ in 0..50 {
@@ -453,8 +461,9 @@ pub fn run_resume(
         spinner.done();
         if !found {
             anyhow::bail!(
-                "{bin} did not write a session file at {} within 5s.\n\
+                "{} {bin} did not write a session file at {} within 5s.\n\
                  {bin} may have failed to start. Check for errors above.",
+                ErrorCode::NoSession,
                 session_file.display(),
             );
         }
@@ -482,7 +491,8 @@ pub fn run_resume(
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
-                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                    "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 6",
+                    ErrorCode::NoSession,
                     name
                 ),
             };
@@ -556,7 +566,8 @@ pub fn run_resume(
             let entry = match reg.sessions.iter_mut().rev().find(|e| e.name == name) {
                 Some(e) => e,
                 None => anyhow::bail!(
-                    "internal error: session '{}' vanished from registry between Phase 1 and Phase 6b",
+                    "{} internal error: session '{}' vanished from registry between Phase 1 and Phase 6b",
+                    ErrorCode::NoSession,
                     name
                 ),
             };
@@ -614,7 +625,7 @@ pub fn run_resume(
     }
 
     if !status.success() {
-        anyhow::bail!("{bin} exited with {status}");
+        anyhow::bail!("{} {bin} exited with {status}", ErrorCode::Gate);
     }
     Ok(())
 }

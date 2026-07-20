@@ -3,6 +3,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use crate::ErrorCode;
 
 // ── Workspace Identity ────────────────────────────────────────────
 
@@ -145,8 +146,9 @@ pub fn resolve_identity() -> Result<WorkspaceContext> {
     }
 
     anyhow::bail!(
-        "no .ccsm identity file found in this project.\n\
-         Run `ccsm init` to set up session tracking in the current directory."
+        "{} no .ccsm identity file found in this project.\n\
+         Run `ccsm init` to set up session tracking in the current directory.",
+        ErrorCode::NoSession
     );
 }
 
@@ -1167,7 +1169,8 @@ pub(crate) fn harvest_from_pid(home: &std::path::Path, pid: u32) -> anyhow::Resu
         .join(format!("{pid}.json"));
     if !session_file.exists() {
         anyhow::bail!(
-            "no session file at {}\n  Is PID {} running?",
+            "{} no session file at {}\n  Is PID {} running?",
+            ErrorCode::NoSession,
             session_file.display(),
             pid
         );
@@ -1176,7 +1179,7 @@ pub(crate) fn harvest_from_pid(home: &std::path::Path, pid: u32) -> anyhow::Resu
     let s: crate::session::Session =
         serde_json::from_str(&contents).context("parsing session file")?;
     if s.session_id.is_empty() {
-        anyhow::bail!("session file for PID {} has no sessionId yet", pid);
+        anyhow::bail!("{} session file for PID {} has no sessionId yet", ErrorCode::NoSession, pid);
     }
     Ok(s.session_id)
 }
@@ -1204,9 +1207,10 @@ pub(crate) fn validate_session_id(sid: &str) -> anyhow::Result<()> {
         Ok(())
     } else {
         anyhow::bail!(
-            "'{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
+            "{} '{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
              If you renamed the session in the TUI, the name changed but the UUID didn't.\n\
              Use --pid <pid> instead: ccsm attach {} --pid <pid>",
+            ErrorCode::Invalid,
             sid,
             sid
         );
