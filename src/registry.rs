@@ -1243,6 +1243,24 @@ pub(crate) fn parse_sections(md: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run a test with CCSM_DATA_DIR set to a unique temp dir.
+    /// Env var is restored after the closure runs.
+    /// Uses a global mutex so parallel tests don't clobber each other's env vars.
+    fn with_data_dir<F: FnOnce()>(f: F) {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let prev = std::env::var("CCSM_DATA_DIR").ok();
+        unsafe { std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref()); }
+        f();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("CCSM_DATA_DIR", v); },
+            None => unsafe { std::env::remove_var("CCSM_DATA_DIR"); },
+        }
+    }
     use super::*;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1656,5 +1674,117 @@ mod tests {
             p,
             std::path::PathBuf::from("/home/user/project/.claude/worktrees/my-session")
         );
+    }
+
+    // ── project_slug tests ─────────────────────────────────────────
+
+    #[test]
+    fn project_slug_with_full_uuid() {
+        let id = "f493397b-1234-4a5b-8901-4d5f15da0311";
+        let slug = project_slug(id);
+        assert_eq!(slug, "ccsm-f493397b-1234-4a5b-8901-4d5f15da0311");
+    }
+
+    #[test]
+    fn project_slug_with_empty_id() {
+        let slug = project_slug("");
+        assert_eq!(slug, "ccsm-");
+    }
+
+    // ── global_config_path tests ───────────────────────────────────
+
+    #[test]
+    fn global_config_path_within_data_dir() {
+        let path = global_config_path("my-workspace");
+        let expected = global_data_dir("my-workspace").join("config.toml");
+        assert_eq!(path, expected);
+        assert_eq!(path.parent().unwrap(), global_data_dir("my-workspace"));
+    }
+
+    #[test]
+    fn global_config_path_is_predictable() {
+        let a = global_config_path("test-id");
+        let b = global_config_path("test-id");
+        assert_eq!(a, b);
+    }
+
+    // ── global_detail_path tests ───────────────────────────────────
+
+    #[test]
+    fn global_detail_path_under_sessions_subdir() {
+        let path = global_detail_path("wid", "my-session");
+        let expected_parent = global_data_dir("wid").join("sessions");
+        assert_eq!(path.parent().unwrap(), expected_parent);
+    }
+
+    #[test]
+    fn global_detail_path_ends_with_md() {
+        let path = global_detail_path("wid", "my-session");
+        assert!(path.to_string_lossy().ends_with("my-session.md"));
+    }
+
+    #[test]
+    fn global_detail_path_diff_names_differ() {
+        let a = global_detail_path("wid", "session-a");
+        let b = global_detail_path("wid", "session-b");
+        assert_ne!(a, b);
+        assert!(a.to_string_lossy().contains("session-a"));
+        assert!(b.to_string_lossy().contains("session-b"));
+    }
+
+    // ── global_worktree_path tests ─────────────────────────────────
+
+    #[test]
+    fn global_worktree_path_is_deterministic() {
+        let a = global_worktree_path("wid", "session-a");
+        let b = global_worktree_path("wid", "session-a");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn global_worktree_path_under_worktrees_subdir() {
+        let path = global_worktree_path("wid", "session-a");
+        let expected_parent = global_data_dir("wid").join("worktrees");
+        assert_eq!(path.parent().unwrap(), expected_parent);
+    }
+
+    #[test]
+    fn global_worktree_path_diff_ids_differ() {
+        let a = global_worktree_path("workspace-a", "my-session");
+        let b = global_worktree_path("workspace-b", "my-session");
+        assert_ne!(a, b);
+    }
+
+    // ── ensure_data_dir tests ──────────────────────────────────────
+
+    #[test]
+    fn ensure_data_dir_creates_directory_structure() {
+        with_data_dir(|| {
+            ensure_data_dir("ensure-dir-test").unwrap();
+            let base = global_data_dir("ensure-dir-test");
+            assert!(base.join("sessions").is_dir(), "sessions subdir should exist");
+            assert!(base.join("session-group").is_dir(), "session-group subdir should exist");
+            assert!(base.join("worktrees").is_dir(), "worktrees subdir should exist");
+        });
+    }
+
+    #[test]
+    fn ensure_data_dir_is_idempotent() {
+        with_data_dir(|| {
+            ensure_data_dir("idempotent-test").unwrap();
+            ensure_data_dir("idempotent-test").unwrap();
+            let base = global_data_dir("idempotent-test");
+            assert!(base.join("sessions").is_dir());
+        });
+    }
+
+    #[test]
+    fn global_detail_path_uses_ensure_data_dir_sessions() {
+        with_data_dir(|| {
+            ensure_data_dir("int-test").unwrap();
+            let detail = global_detail_path("int-test", "integration-check");
+            assert!(detail.starts_with(global_data_dir("int-test")));
+            assert!(detail.to_string_lossy().contains("/sessions/"));
+        });
     }
 }

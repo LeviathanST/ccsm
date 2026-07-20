@@ -699,4 +699,79 @@ mod tests {
         let missing = opencode_get_title(&db_path, "ses_nonexistent");
         assert!(missing.is_none());
     }
+
+    #[test]
+    fn test_detect_explicit() {
+        let home = Path::new("/tmp");
+        assert_eq!(Consumer::detect(home, Some("claude")), Consumer::Claude);
+        assert_eq!(Consumer::detect(home, Some("pi")), Consumer::Pi);
+        assert_eq!(Consumer::detect(home, Some("opencode")), Consumer::OpenCode);
+        assert_eq!(Consumer::detect(home, Some("open-code")), Consumer::OpenCode);
+        assert_eq!(Consumer::detect(home, Some("oc")), Consumer::OpenCode);
+    }
+
+    #[test]
+    fn test_binary_name_returns_opencode() {
+        assert_eq!(Consumer::OpenCode.binary(), "opencode");
+    }
+
+    #[test]
+    fn test_binary_name_returns_claude() {
+        assert_eq!(Consumer::Claude.binary(), "claude");
+    }
+
+    #[test]
+    fn test_projects_dir_for_different_paths() {
+        let home = Path::new("/home/user");
+        let workspace = Path::new("/home/user/projects/my-app");
+        let claude_path = Consumer::Claude.projects_dir_for(home, workspace);
+        let opencode_path = Consumer::OpenCode.projects_dir_for(home, workspace);
+
+        assert_ne!(claude_path, opencode_path);
+        assert_eq!(
+            claude_path,
+            home.join(".claude")
+                .join("projects")
+                .join("-home-user-projects-my-app")
+        );
+        assert_eq!(
+            opencode_path,
+            home.join(".local").join("share").join("opencode")
+        );
+    }
+
+    #[test]
+    fn test_home_config_dirs_returns_opencode_path() {
+        assert_eq!(Consumer::OpenCode.home_config_dir(), ".config/opencode");
+    }
+
+    #[test]
+    fn test_is_opencode_returns_true_for_opencode() {
+        assert!(Consumer::OpenCode.is_opencode());
+        assert!(!Consumer::Claude.is_opencode());
+        assert!(!Consumer::Pi.is_opencode());
+    }
+
+    #[test]
+    fn test_consumer_clone() {
+        let c = Consumer::OpenCode;
+        let cloned = c;
+        assert_eq!(c, cloned);
+        let cloned2 = c.clone();
+        assert_eq!(c, cloned2);
+    }
+
+    #[test]
+    fn test_consumer_debug() {
+        assert_eq!(format!("{:?}", Consumer::Claude), "Claude");
+        assert_eq!(format!("{:?}", Consumer::Pi), "Pi");
+        assert_eq!(format!("{:?}", Consumer::OpenCode), "OpenCode");
+    }
+
+    #[test]
+    fn test_consumer_display() {
+        assert_eq!(format!("{}", Consumer::Claude), "claude");
+        assert_eq!(format!("{}", Consumer::Pi), "pi");
+        assert_eq!(format!("{}", Consumer::OpenCode), "opencode");
+    }
 }
