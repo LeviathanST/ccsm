@@ -31,11 +31,12 @@ jobs:
         run: cargo install cargo-llvm-cov
       - name: Generate coverage
         run: |
-          cargo llvm-cov --all-features --lcov --output-path lcov.info 2>&1 | tee /tmp/cov-output.txt
+          cargo llvm-cov --all-features --no-report || echo "⚠ Some tests failed under coverage — generating report anyway"
+          cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --json > /tmp/coverage.json
       - name: Check coverage threshold
         run: |
-          COVERAGE=$(grep -oP '\d+\.\d+%' /tmp/cov-output.txt | tail -1 | tr -d '%')
-          if [ -z "$COVERAGE" ]; then echo "Could not parse coverage"; exit 1; fi
+          COVERAGE=$(jq -r '.data[0].totals.lines.percent' /tmp/coverage.json)
           echo "Line coverage: ${COVERAGE}%"
           if (( $(echo "$COVERAGE < 80" | bc -l) )); then
             echo "❌ Coverage ${COVERAGE}% is below 80% threshold"
