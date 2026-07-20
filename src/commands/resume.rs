@@ -86,8 +86,8 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                         format!("stored by {} and not accessible from {}", entry.consumer, current)
                     };
                     eprintln!(
-                        "⚠  session '{}' was created by {} but you are running as {}",
-                        name, entry.consumer, current
+                        "{} session '{}' was created by {} but you are running as {}",
+                        crate::style::emoji("⚠", "[!]"), name, entry.consumer, current
                     );
                     eprintln!("   Session file is {location}.");
                     eprintln!("   To resume: ccsm {}  (use the original agent)", entry.consumer);
@@ -96,8 +96,8 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 } else if !entry.consumer.is_empty() && entry.consumer != current {
                     // No session_id yet but consumer mismatch — warn and continue
                     eprintln!(
-                        "⚠  session '{}' was created by {} but you are running as {}",
-                        name, entry.consumer, current
+                        "{} session '{}' was created by {} but you are running as {}",
+                        crate::style::emoji("⚠", "[!]"), name, entry.consumer, current
                     );
                     eprintln!("   Starting a fresh session for {}.", current);
                     entry.consumer = current;
@@ -173,8 +173,8 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 .any(|l| l.trim_start().to_lowercase().starts_with("## checklist"));
             if !has_checklist {
                 eprintln!(
-                    "💡 multi-step? `ccsm checklist {} --init` to add sub-task tracking",
-                    name,
+                    "{} multi-step? `ccsm checklist {} --init` to add sub-task tracking",
+                    crate::style::emoji("💡", "[i]"), name,
                 );
             }
         }
@@ -207,7 +207,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
 
         let wt_path = match existing_wt {
             Some(path) => {
-                eprintln!("📁 worktree already exists: {}", path.display());
+                eprintln!("{} worktree already exists: {}", crate::style::emoji("📁", "[dir]"), path.display());
                 path
             }
             None => crate::commands::worktree::create_worktree(workspace, name, &branch)?,
@@ -222,7 +222,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
                 reg.save()?;
             }
         }
-        eprintln!("📁 worktree: {}", wt_path.display());
+        eprintln!("{} worktree: {}", crate::style::emoji("📁", "[dir]"), wt_path.display());
     }
 
     // ── Phase 2: Determine worktree directory (no lock) ──────────────
@@ -237,7 +237,7 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
     // This ensures claude's session file records the worktree as cwd, so on
     // subsequent --resume the agent lands in the worktree, not the workspace root.
     let mut cmd = if let Some(ref wt) = worktree_dir {
-        eprintln!("📁 worktree: {}", wt.display());
+        eprintln!("{} worktree: {}", crate::style::emoji("📁", "[dir]"), wt.display());
         let wt_str = wt.to_string_lossy();
         let inner = match consumer {
             crate::consumer::Consumer::Claude => {
@@ -341,13 +341,16 @@ pub fn run_resume(name: &str, workspace: &Path, home: &Path, consumer: crate::co
         let session_file = consumer.live_session_file(home, child_pid)
             .ok_or_else(|| anyhow::anyhow!("consumer does not support PID-based session files"))?;
         let mut found = false;
+        let mut spinner = crate::style::Spinner::new("waiting for agent session file...");
         for _ in 0..50 {
             if session_file.exists() {
                 found = true;
                 break;
             }
+            spinner.advance();
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+        spinner.done();
         if !found {
             anyhow::bail!(
                 "{bin} did not write a session file at {} within 5s.\n\

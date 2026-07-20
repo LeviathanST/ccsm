@@ -11,7 +11,25 @@ mod session;
 #[allow(dead_code)]
 pub(crate) mod commands;
 mod migrate;
+mod style;
+pub(crate) mod table;
 
+/// Embedded OpenCode plugin file — ships inside the binary so `ccsm setup` works
+/// even when installed via `cargo install` (no source tree needed).
+const EMBEDDED_OPENCODE_PLUGIN: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/plugins/opencode/ccsm-plugin.ts"));
+
+/// Embedded setup script for Claude consumer — same rationale.
+const EMBEDDED_SETUP_SCRIPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/setup.sh"));
+
+/// Embedded skill files for offline `seed_skills`.
+const EMBEDDED_SKILLS: &[(&str, Option<&str>, &str)] = &[
+    ("session-manager", Some(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/session-manager/skill.json"))), include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/session-manager/SKILL.md"))),
+    ("seed-session", None, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/seed-session/SKILL.md"))),
+    ("wrap-up", None, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/wrap-up/SKILL.md"))),
+    ("learned-lesson-issue", None, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/.claude/skills/learned-lesson-issue/SKILL.md"))),
+];
+
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -24,7 +42,6 @@ use crate::registry::{parse_sections, now_iso as now_iso_ts};
 /// Error codes for structured error output. Agents grep for `[ERR_*]` to
 /// programmatically distinguish error types.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub(crate) enum ErrorCode {
     NoSession,
     Exists,
@@ -33,8 +50,6 @@ pub(crate) enum ErrorCode {
     Invalid,
     Section,
     Dep,
-    Consumer,
-    Generic,
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -47,8 +62,6 @@ impl std::fmt::Display for ErrorCode {
             Self::Invalid => write!(f, "[ERR_INVALID]"),
             Self::Section => write!(f, "[ERR_SECTION]"),
             Self::Dep => write!(f, "[ERR_DEP]"),
-            Self::Consumer => write!(f, "[ERR_CONSUMER]"),
-            Self::Generic => write!(f, "[ERR_GENERIC]"),
         }
     }
 }
@@ -411,11 +424,33 @@ enum Commands {
         #[arg(num_args = 1..)]
         branch: Vec<String>,
     },
+    /// View or modify project configuration.
+    ///
+    /// `ccsm config` — show current config as formatted TOML.
+    /// `ccsm config set <key> <value>` — update a config key.
+    ///   Keys: branch_tracking (required/optional/disabled), wip_limit (number),
+    ///         worktrees (required/optional/disabled), default_checklist_type (string)
+    /// `ccsm config reset` — restore default config.
+    Config {
+        /// Config sub-action: display (default), set <key> <value>, or reset
+        #[arg(num_args = 1..)]
+        args: Vec<String>,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────
 
-fn main() -> anyhow::Result<()> {
+fn main() {
+    let result = run_main();
+    if let Err(e) = result {
+        let msg = format!("{:#}", e);
+        let colored = style::error_stderr(&msg);
+        eprintln!("{}", colored);
+        std::process::exit(1);
+    }
+}
+
+fn run_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()));
     let consumer = Consumer::detect(&home, cli.consumer.as_deref());
@@ -433,6 +468,11 @@ fn main() -> anyhow::Result<()> {
         if let Some(auto_ws) = resolve_workspace()? {
             std::env::set_current_dir(&auto_ws)?;
         }
+    }
+
+    // First-run welcome: show once per project when identity exists
+    if !matches!(cli.command, Commands::Init | Commands::Setup | Commands::Migrate) {
+        check_first_run().ok();
     }
 
     match cli.command {
@@ -475,9 +515,54 @@ fn main() -> anyhow::Result<()> {
         Commands::Init => run_init(),
         Commands::Setup => run_setup(&std::env::args().next().unwrap_or_else(|| "ccsm".into()), consumer),
         Commands::Migrate => run_migrate(),
+        Commands::Config { args } => run_config(&args),
 
     }
 }
+// ── First-Run Welcome ───────────────────────────────────────────────
+
+/// Show a welcome banner on first use of a project. Prints once per project
+/// (guarded by `~/.ccsm/<id>/.first_run` sentinel). Silent in non-terminal,
+/// JSON output mode, or when no identity exists yet.
+fn check_first_run() -> anyhow::Result<()> {
+    if !std::io::stderr().is_terminal() || output_format_json() {
+        return Ok(());
+    }
+
+    let ctx = match crate::registry::resolve_identity() {
+        Ok(c) => c,
+        Err(_) => return Ok(()), // no identity yet — not the right time
+    };
+
+    let sentinel = crate::registry::global_data_dir(&ctx.id).join(".first_run");
+    if sentinel.exists() {
+        return Ok(());
+    }
+
+    // ── Welcome banner ────────────────────────────────────────────
+    eprintln!();
+    eprintln!("{}", style::primary("╭──────────────────────────────────────────────────────╮"));
+    eprintln!("{}", style::primary("│  ccsm — Context-aware Session Manager              │"));
+    eprintln!("{}", style::primary("│  Track, resume, organize AI agent sessions         │"));
+    eprintln!("{}", style::primary("╰──────────────────────────────────────────────────────╯"));
+    eprintln!();
+    eprintln!("  {}  {}  {}  {}", style::emoji("📄", "[i]"), style::primary("ccsm new <name>"),    style::dim("   Create a session"), " ");
+    eprintln!("  {}  {}  {}",    style::emoji("📋", "[*]"), style::primary("ccsm list"),          style::dim("   View all sessions"));
+    eprintln!("  {}  {}  {}",    style::emoji("🔍", "[?]"), style::primary("ccsm scan"),          style::dim("   Compact overview"));
+    eprintln!("  {}  {}  {}",    style::emoji("🔧", "[*]"), style::primary("ccsm setup"),         style::dim("   Install agent integration"));
+    eprintln!("  {}  {}  {}",    style::emoji("ℹ", "[?]"),  style::primary("ccsm --help"),        style::dim("   Full reference"));
+    eprintln!();
+    eprintln!("  {}", style::dim(&format!("Project: {}", ctx.slug)));
+    eprintln!();
+
+    // Create sentinel (best-effort)
+    if let Some(parent) = sentinel.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&sentinel, "");
+    Ok(())
+}
+
 // ── Workspace Resolution ───────────────────────────────────────────────
 
 /// Resolve the workspace root directory, checking sources in priority order:
@@ -547,8 +632,85 @@ fn action_msg(action: &str, name: &str, detail: &str) {
         });
         println!("{}", msg);
     } else {
-        println!("{:12}  {}  ← {}", action, name, detail);
+        let colored_action = match action {
+            "attached" | "renamed" | "trashed" | "recovered" | "cleaned" | "archived"
+            | "pending" | "refreshing" | "noted" | "grouped" | "ungrouped" => {
+                style::primary(action)
+            }
+            _ => action.to_string(),
+        };
+        let mut action_table = crate::table::Table::new();
+        action_table.col(12).col(0)
+            .add_row(&[&colored_action, &format!("{}  ← {}", name, detail)])
+            .print();
     }
+}
+
+/// `ccsm config` — view or modify project configuration.
+fn run_config(args: &[String]) -> anyhow::Result<()> {
+    let ctx = crate::registry::resolve_identity()?;
+    let config_path = crate::registry::global_config_path(&ctx.id);
+    let use_json = output_format_json();
+
+    match args.first().map(|s| s.as_str()) {
+        Some("set") if args.len() >= 3 => {
+            let key = &args[1];
+            let value = &args[2..].join(" ");
+            let toml_content = if config_path.exists() {
+                std::fs::read_to_string(&config_path)?
+            } else {
+                String::new()
+            };
+            let mut parsed: toml::Table = toml_content.parse().unwrap_or_default();
+            parsed.insert(key.clone(), toml::Value::from(value.as_str()));
+            if let Some(parent) = config_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let out = toml::to_string_pretty(&parsed)
+                .map_err(|e| anyhow::anyhow!("{} failed to serialize config: {e}", ErrorCode::Invalid))?;
+            std::fs::write(&config_path, out)?;
+            action_msg("config-set", key, value);
+        }
+        Some("reset") => {
+            if config_path.exists() {
+                std::fs::remove_file(&config_path)?;
+            }
+            seed_config();
+            eprintln!("  config restored to defaults");
+        }
+        _ => {
+            // Show current config
+            let config = crate::config::Config::load();
+            if use_json {
+                let json = serde_json::json!({
+                    "branch_tracking": format!("{:?}", config.branch_tracking),
+                    "wip_limit": config.wip_limit,
+                    "worktrees": format!("{:?}", config.worktrees),
+                    "default_checklist_type": config.default_checklist_type,
+                    "custom_templates": config.checklist_templates.len(),
+                    "config_path": config_path.display().to_string(),
+                });
+                println!("{}", serde_json::to_string_pretty(&json)?);
+            } else {
+                println!("{} {:?}", style::primary("branch_tracking:"), config.branch_tracking);
+                println!("{} {}", style::primary("wip_limit:"), config.wip_limit);
+                println!("{} {}", style::primary("worktrees:"), format!("{:?}", config.worktrees));
+                if let Some(ref dt) = config.default_checklist_type {
+                    println!("{} {}", style::primary("default_checklist_type:"), dt);
+                }
+                if !config.checklist_templates.is_empty() {
+                    println!("{} {} custom template(s)", style::primary("checklist_templates:"), config.checklist_templates.len());
+                    for (name, tmpl) in &config.checklist_templates {
+                        println!("  {} ({} items)", name, tmpl.items.len());
+                    }
+                }
+                println!("\n{}", style::dim(&format!("config: {}", config_path.display())));
+                println!("{}", style::dim("  ccsm config set <key> <value> to change"));
+                println!("{}", style::dim("  ccsm config reset to restore defaults"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `ccsm scan` — compact scan-friendly output, grouped by group.
@@ -683,7 +845,16 @@ fn run_scan(group_filter: Option<&str>, status_filter: Option<&str>, search: Opt
             } else {
                 format!("  {}", s.tags.join(","))
             };
-            println!("{}  {:<28}  {}{}", icon, s.name, goal, tags_str);
+            let status_str = match s.status {
+                crate::registry::SessionStatus::InProgress => "in_progress",
+                crate::registry::SessionStatus::Completed => "completed",
+                crate::registry::SessionStatus::Blocked => "blocked",
+                crate::registry::SessionStatus::Abandoned => "abandoned",
+                crate::registry::SessionStatus::Pending => "pending",
+                crate::registry::SessionStatus::Trashed => "trashed",
+            };
+            let colored_icon = style::status_icon_styled(icon, status_str);
+            println!("{}  {:<28}  {}{}", colored_icon, s.name, goal, tags_str);
         }
     }
 
@@ -856,6 +1027,8 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
     }
 
     let mut printed = 0;
+    let mut t = crate::table::Table::new();
+    t.col(12).col(30).col(0);
     for s in &sessions {
         if active && !matches!(s.status, SessionStatus::InProgress | SessionStatus::Blocked) {
             continue;
@@ -867,6 +1040,8 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
                 continue;
             }
         let group_tag = s.group.as_ref().map(|grp| format!(" [{}:{}]", grp.name, grp.rank)).unwrap_or_default();
+        let status_str = s.status.to_string();
+        let colored_status = style::status_label(&status_str);
         if verbose {
             // Teammate scan mode: full goal + tags, one line per session
             let goal = if s.goal.is_empty() { "" } else { " — " };
@@ -875,7 +1050,7 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             } else {
                 format!("  [{}]", s.tags.join(", "))
             };
-            println!("{:12}  {:30}  {}{}{}{}", s.status.to_string(), s.name, goal, s.goal, tags, group_tag);
+            t.add_row(&[&colored_status, &s.name, &format!("{}{}{}{}", goal, s.goal, tags, group_tag)]);
         } else {
             let goal = if s.goal.is_empty() { "" } else { " — " };
             let goal_text = if s.goal.len() > 80 {
@@ -883,10 +1058,11 @@ fn run_list(active: bool, summary: bool, verbose: bool, status_filter: Option<&s
             } else {
                 format!("{}{}", goal, &s.goal)
             };
-            println!("{:12}  {:30}  {}{}", s.status.to_string(), s.name, goal_text.trim(), group_tag);
+            t.add_row(&[&colored_status, &s.name, &format!("{}{}", goal_text.trim(), group_tag)]);
         }
         printed += 1;
     }
+    if printed > 0 { t.print(); }
     if printed == 0 {
         println!("(no matching sessions)");
     }
@@ -1427,9 +1603,13 @@ fn run_archive_all(home: &std::path::Path, workspace: &std::path::Path, consumer
     }
 
     let mut total_freed: u64 = 0;
-    for (sid, name) in &candidates {
+    let total = candidates.len();
+    let mut spinner = crate::style::Spinner::new(&format!("archiving 0/{} sessions...", total));
+    for (i, (sid, name)) in candidates.iter().enumerate() {
         total_freed += reg.archive(sid, name, home, workspace, consumer);
+        spinner.set_message(&format!("archiving {}/{} sessions...", i + 1, total));
     }
+    spinner.done();
     reg.updated = crate::registry::now_iso();
     reg.save()?;
 
@@ -1452,9 +1632,9 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
     if config.branch_tracking == BranchTracking::Required && branch.is_empty() {
         let config_path = crate::registry::global_config_path(&ctx.id);
         anyhow::bail!(
-            "\n⚠️  This project requires branch tracking (branch_tracking=required in {}).\n\
+            "\n{} This project requires branch tracking (branch_tracking=required in {}).\n\
              Use `ccsm new {} -b <branch> -g \"...\"` to set a target branch.",
-            config_path.display(),
+            style::emoji("⚠️", "[!]"), config_path.display(),
             name
         );
     }
@@ -1477,8 +1657,8 @@ fn run_new(name: &str, goal: &str, force: bool, checklist: Option<String>, branc
             .count();
         if active_count >= config.wip_limit {
             eprintln!(
-                "⚠️  {} sessions already in_progress (limit: {}). Consider finishing those first.",
-                active_count, config.wip_limit
+                "{} {} sessions already in_progress (limit: {}). Consider finishing those first.",
+                style::emoji("⚠️", "[!]"), active_count, config.wip_limit
             );
         }
     }
@@ -1673,9 +1853,9 @@ fn run_start(name: &str, flag_worktree: bool) -> anyhow::Result<()> {
     crate::registry::sync_status_line(name);
 
     if let Some(ref path) = wt_path {
-        println!("📁 worktree: {}", path.display());
+        println!("{} worktree: {}", style::emoji("📁", "[dir]"), path.display());
     }
-    eprintln!("💡 multi-step? `ccsm checklist {} --init` to add sub-task tracking", name);
+            eprintln!("{} multi-step? `ccsm checklist {} --init` to add sub-task tracking", style::emoji("💡", "[i]"), name);
 
     Ok(())
 }
@@ -1688,23 +1868,24 @@ fn run_complete(name: &str, force: bool) -> anyhow::Result<()> {
     if !force {
         if let Err(e) = run_gate_checks(name) {
             eprintln!(
-                "✗ cannot complete: gate checks failed.\n\
+                "{} cannot complete: gate checks failed.\n\
                  \n  → ccsm close {} to see what's needed\n\
                  → ccsm complete {} --force to bypass\n\
                  \n{e}",
-                name, name,
+                style::emoji("✗", "[x]"), name, name,
             );
             anyhow::bail!("{} gate checks failed — fix issues or use --force", ErrorCode::Gate);
         }
         println!();
         println!(
             "\
-🔍 Self-review:
+{} Self-review:
   [ ] Tests pass?
   [ ] All changes committed and pushed?
   [ ] Scope fulfilled? Anything left undocumented?
   [ ] Dependencies resolved?
-  [ ] Detail file tags and progress log are current?"
+  [ ] Detail file tags and progress log are current?",
+            style::emoji("🔍", "[?]")
         );
     }
 
@@ -1739,11 +1920,11 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
     if action == "complete" && !force {
         if let Err(e) = run_gate_checks(name) {
             eprintln!(
-                "✗ cannot complete: gate checks failed.\n\
+                "{} cannot complete: gate checks failed.\n\
                  \n  → ccsm close {} to see what's needed\n\
                  → ccsm complete {} --force to bypass\n\
                  \n{e}",
-                name, name,
+                style::emoji("✗", "[x]"), name, name,
             );
             anyhow::bail!("{} gate checks failed — fix issues or use --force", ErrorCode::Gate);
         }
@@ -1751,12 +1932,13 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
         println!();
         println!(
             "\
-🔍 Self-review:
+{} Self-review:
   [ ] Tests pass?
   [ ] All changes committed and pushed?
   [ ] Scope fulfilled? Anything left undocumented?
   [ ] Dependencies resolved?
-  [ ] Detail file tags and progress log are current?"
+  [ ] Detail file tags and progress log are current?",
+            style::emoji("🔍", "[?]")
         );
     }
 
@@ -1780,8 +1962,8 @@ fn run_status(name: &str, action: &str, force: bool) -> anyhow::Result<()> {
     // Nudge at session start: agent is about to fill scope — remind about checklist
     if action == "start" {
         eprintln!(
-            "💡 multi-step? `ccsm checklist {} --init` to add sub-task tracking",
-            name,
+            "{} multi-step? `ccsm checklist {} --init` to add sub-task tracking",
+            style::emoji("💡", "[i]"), name,
         );
     }
 
@@ -2274,10 +2456,13 @@ fn run_group(name: Option<&str>, list: bool, group: Option<&str>, rank: Option<&
     }
 
     println!("group '{}':", name);
+    let mut t = crate::table::Table::new();
+    t.indent("  ").col(12).col(30).col(0);
     for m in &members {
         let rank_str = m.group.as_ref().map(|g| g.rank.to_string()).unwrap_or_default();
-        println!("  {:12}  {:30}  rank: {}", m.status.to_string(), m.name, rank_str);
+        t.add_row(&[&m.status.to_string(), &m.name, &format!("rank: {}", rank_str)]);
     }
+    t.print();
     println!("{} member{}", members.len(), if members.len() == 1 { "" } else { "s" });
 
     // Display group detail file if it exists
@@ -3154,82 +3339,87 @@ fn run_show(name: &str, section: Option<&str>, json: bool, consumer: Consumer) -
         return Ok(());
     }
 
+    let warn_icon = style::emoji("⚠", "[!]");
+
     // ── Registry fields ──────────────────────────────────────────
-    println!("name:       {}", session.name);
-    println!("status:     {}", session.status);
+    println!("{} {}", style::primary("name:"), session.name);
+    println!("{} {}", style::primary("status:"), style::status_label(&session.status.to_string()));
     if !session.consumer.is_empty() {
         let current = consumer.to_string();
         let label = if session.consumer == current {
             format!("{} (current)", session.consumer)
         } else {
-            format!("{} ⚠ running as {}", session.consumer, current)
+            format!("{} {} running as {}", session.consumer, style::warning_stderr(warn_icon), current)
         };
-        println!("agent:      {}", label);
+        println!("{} {}", style::primary("agent:"), label);
     }
     let goal = detail_goal.as_deref().unwrap_or(&session.goal);
     if !goal.is_empty() {
-        println!("goal:       {}", goal);
+        println!("{} {}", style::primary("goal:"), goal);
     }
     let scope = detail_scope.as_deref().unwrap_or(&session.scope);
     if !scope.is_empty() {
-        println!("scope:      {}", scope);
+        println!("{} {}", style::primary("scope:"), scope);
     }
     if !session.tags.is_empty() {
-        println!("tags:       {}", session.tags.join(", "));
+        println!("{} {}", style::primary("tags:"), session.tags.join(", "));
     }
     if !session.branch.is_empty() {
-        println!("branch:     {}", session.branch);
+        println!("{} {}", style::primary("branch:"), session.branch);
     }
     if session.use_worktree {
         let wt = crate::commands::worktree::worktree_path_for(&ctx.root, &session.name);
-        println!("worktree:   {}", wt.display());
+        println!("{} {}", style::primary("worktree:"), wt.display());
     }
     if let Some(ref g) = session.group {
-        println!("group:      {} (rank: {})", g.name, g.rank);
+        println!("{} {} (rank: {})", style::primary("group:"), g.name, g.rank);
     }
     if !session.session_id.is_empty() {
-        println!("session_id: {}", session.session_id);
+        println!("{} {}", style::primary("session_id:"), session.session_id);
     }
     if session.pids.is_empty() {
-        println!("pids:       (none)");
+        println!("{} {}", style::primary("pids:"), style::dim("(none)"));
     } else {
-        println!("pids:       {}", session.pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
+        println!("{} {}", style::primary("pids:"), session.pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
     }
     if !session.started.is_empty() {
-        println!("started:    {}", session.started);
+        println!("{} {}", style::primary("started:"), session.started);
     }
     if !session.completed.is_empty() {
-        println!("completed:  {}", session.completed);
+        println!("{} {}", style::primary("completed:"), session.completed);
     }
     if !session.retired_session_ids.is_empty() {
-        println!("retired:    {} session{}", session.retired_session_ids.len(),
+        println!("{} {} session{}", style::primary("retired:"), session.retired_session_ids.len(),
             if session.retired_session_ids.len() == 1 { "" } else { "s" });
         for r in &session.retired_session_ids {
             println!("  {}  {}", r.retired_at, r.reason);
         }
     }
 
+    let file_icon = style::emoji("📄", "[file]");
+    let tip_icon = style::emoji("💡", "[i]");
+
     // ── Detail file sections ─────────────────────────────────────
     if let Some(ref contents) = detail_contents {
         let sections = crate::registry::parse_sections(contents);
         if sections.is_empty() {
-            println!("\n📄 {} (no sections)", detail_path.display());
+            println!("\n{} {} (no sections)", file_icon, detail_path.display());
         } else {
-            println!("\n📄 {}", detail_path.display());
+            println!("\n{} {}", file_icon, detail_path.display());
             for (header, body) in &sections {
-                // Count non-empty lines as a rough size hint
                 let lines = body.lines().filter(|l| !l.trim().is_empty()).count();
                 let hint = if lines > 0 {
                     format!(" ({} lines)", lines)
                 } else {
                     String::new()
                 };
-                println!("   ## {}{}", header, hint);
+                println!("{} {}", style::dim("  ##"), format!("{}{}", header, hint));
             }
             println!("\n   `ccsm show {} --section <name>` to read one section", name);
         }
     } else {
-        println!("\n💡 no detail file — create: cp {} {}",
+        println!("\n{} no detail file — create: cp {} {}",
+            tip_icon,
             crate::registry::global_template_path(&ctx.id).display(),
             detail_path.display(),
         );
@@ -3600,8 +3790,8 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
     // Non-blocking nudge: session with real work but no checklist section
     if !has_checklist_section && note_count >= 2 {
         eprintln!(
-            "💡 {} has {} progress notes but no checklist — `ccsm checklist {} --init` to add",
-            name, note_count, name,
+            "{} {} has {} progress notes but no checklist — `ccsm checklist {} --init` to add",
+            style::emoji("💡", "[i]"), name, note_count, name,
         );
     }
 
@@ -3613,7 +3803,8 @@ fn run_gate_checks(name: &str) -> anyhow::Result<()> {
 }
 
 fn format_err(failures: &[String], name: &str) -> anyhow::Error {
-    let mut msg = String::from("✗ gate failures:\n");
+    let x = style::emoji("✗", "[x]");
+    let mut msg = format!("{} {} gate failures:\n", ErrorCode::Gate, x);
     for f in failures {
         msg.push_str(f);
         msg.push('\n');
@@ -3776,7 +3967,7 @@ fn run_checklist(name: &str, init: bool) -> anyhow::Result<()> {
 }
 
 fn dim_status(status: &str) -> String {
-    format!("\x1b[2m({})\x1b[0m", status)
+    format!("({})", style::dim(status))
 }
 
 /// `ccsm check <name> <item> --status <pending|done|skipped|blocked>` — set item status,
@@ -4062,11 +4253,11 @@ fn run_inject_scope(name: Option<&str>, consumer: Consumer) -> anyhow::Result<()
                 if current.is_empty() {
                     format!("BRANCH: {} (detached HEAD — no active branch)", session.branch)
                 } else if current == session.branch {
-                    format!("BRANCH: {} ✓", session.branch)
+                    format!("BRANCH: {} {}", session.branch, style::emoji("✓", "[ok]"))
                 } else {
                     format!(
-                        "BRANCH: {} (current: {}) ⚠️ MISMATCH — this session targets '{}'",
-                        session.branch, current, session.branch
+                        "BRANCH: {} (current: {}) {} MISMATCH — this session targets '{}'",
+                        session.branch, current, style::emoji("⚠️", "[!]"), session.branch
                     )
                 }
             }
@@ -4286,41 +4477,36 @@ fn run_init() -> anyhow::Result<()> {
 // ── Setup subcommand ──────────────────────────────────────────────────
 
 fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
-    // ── 0. Seed ~/.ccsm/<id>/config.toml if missing ───────────────
     seed_config();
-
     let copied = seed_skills(consumer);
 
     match consumer {
         Consumer::Pi => {
             println!("ccsm setup for Pi.");
             println!();
-            println!("  ✓ .pi/extensions/ccsm/ — auto-discovered by Pi");
-            println!("  ✓ 22 custom tools registered (ccsm_list, ccsm_new, ...)");
-            println!("  ✓ Auto-injects active session scope into system prompt");
-            println!("  ✓ Consumer auto-detection (--consumer pi or CCSM_CONSUMER=pi)");
-            println!("  ✓ {} skill{} seeded to ~/.pi/agent/skills/", copied, if copied == 1 { "" } else { "s" });
+            let ok = style::emoji("✓", "[*]");
+            println!("  {} .pi/extensions/ccsm/ — auto-discovered by Pi", ok);
+            println!("  {} 22 custom tools registered (ccsm_list, ccsm_new, ...)", ok);
+            println!("  {} Auto-injects active session scope into system prompt", ok);
+            println!("  {} Consumer auto-detection (--consumer pi or CCSM_CONSUMER=pi)", ok);
+            println!("  {} {} skill{} seeded to ~/.pi/agent/skills/", ok, copied, if copied == 1 { "" } else { "s" });
             println!();
             println!("Usage: pi (tools auto-available) or ccsm --consumer pi <command>");
             Ok(())
         }
         Consumer::Claude => {
             use std::process::Command;
-            let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("scripts")
-                .join("setup.sh");
 
-            if !script.exists() {
-                anyhow::bail!(
-                    "setup script not found at {}\n\
-                     (ccsm must be run from its source tree)",
-                    script.display()
-                );
-            }
+            // Write embedded setup script to a temp location
+            let script_dir = std::env::temp_dir().join("ccsm-setup");
+            std::fs::create_dir_all(&script_dir)?;
+            let script_path = script_dir.join("setup.sh");
+            std::fs::write(&script_path, EMBEDDED_SETUP_SCRIPT)?;
+            std::fs::set_permissions(&script_path, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
 
             println!("ccsm setup ({})\n", bin_path);
             let status = Command::new("bash")
-                .arg(&script)
+                .arg(&script_path)
                 .status()
                 .map_err(|e| anyhow::anyhow!("failed to run setup script: {e}"))?;
 
@@ -4331,7 +4517,6 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             Ok(())
         }
         Consumer::OpenCode => {
-            // Install ccsm plugin to opencode's global plugins directory
             let plugins_dir = std::path::PathBuf::from(
                 std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
             )
@@ -4342,22 +4527,9 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
             std::fs::create_dir_all(&plugins_dir)
                 .context("creating opencode plugins directory")?;
 
-            let plugin_src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("plugins")
-                .join("opencode")
-                .join("ccsm-plugin.ts");
-
-            if !plugin_src.exists() {
-                anyhow::bail!(
-                    "plugin file not found at {}\n\
-                     (ccsm must be run from its source tree)",
-                    plugin_src.display()
-                );
-            }
-
             let plugin_dst = plugins_dir.join("ccsm-plugin.ts");
-            std::fs::copy(&plugin_src, &plugin_dst)
-                .with_context(|| format!("copying plugin to {}", plugin_dst.display()))?;
+            std::fs::write(&plugin_dst, EMBEDDED_OPENCODE_PLUGIN)
+                .with_context(|| format!("writing plugin to {}", plugin_dst.display()))?;
 
             println!("ccsm setup for OpenCode.");
             println!();
@@ -4374,15 +4546,9 @@ fn run_setup(bin_path: &str, consumer: Consumer) -> anyhow::Result<()> {
     }
 }
 
-/// Seed project skills from `.claude/skills/` to the consumer's global skills directory.
-/// Returns count of skills seeded.
+/// Seed skills from embedded content (or filesystem fallback) to the consumer's
+/// global skills directory. Returns count of skills seeded.
 fn seed_skills(consumer: Consumer) -> u32 {
-    let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let src_skills = project_root.join(".claude").join("skills");
-    if !src_skills.is_dir() {
-        return 0;
-    }
-
     let dst_skills = match consumer {
         Consumer::Claude => {
             std::path::PathBuf::from(
@@ -4400,7 +4566,6 @@ fn seed_skills(consumer: Consumer) -> u32 {
             .join("skills")
         }
         Consumer::OpenCode => {
-            // OpenCode discovers skills at ~/.config/opencode/skills/<name>/SKILL.md
             std::path::PathBuf::from(
                 std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
             )
@@ -4411,19 +4576,38 @@ fn seed_skills(consumer: Consumer) -> u32 {
     };
 
     let mut copied = 0u32;
-    if let Ok(entries) = std::fs::read_dir(&src_skills) {
-        for entry in entries.flatten() {
-            let src = entry.path();
-            let name = src.file_name().unwrap_or_default();
-            let dst = dst_skills.join(&name);
-            if src.is_dir() && src.join("SKILL.md").exists() {
-                std::fs::create_dir_all(&dst).ok();
-                if std::fs::copy(src.join("SKILL.md"), dst.join("SKILL.md")).is_ok() {
-                    copied += 1;
+
+    // Try embedded skills first (always available in the binary)
+    for (name, skill_json, skill_md) in EMBEDDED_SKILLS {
+        let dst = dst_skills.join(name);
+        std::fs::create_dir_all(&dst).ok();
+        if std::fs::write(dst.join("SKILL.md"), skill_md).is_ok() {
+            copied += 1;
+        }
+        if let Some(json) = skill_json {
+            let _ = std::fs::write(dst.join("skill.json"), json);
+        }
+    }
+
+    // Fallback: try filesystem (for dev builds with local source tree)
+    if copied == 0 {
+        let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let src_skills = project_root.join(".claude").join("skills");
+        if let Ok(entries) = std::fs::read_dir(&src_skills) {
+            for entry in entries.flatten() {
+                let src = entry.path();
+                let name = src.file_name().unwrap_or_default();
+                let dst = dst_skills.join(&name);
+                if src.is_dir() && src.join("SKILL.md").exists() {
+                    std::fs::create_dir_all(&dst).ok();
+                    if std::fs::copy(src.join("SKILL.md"), dst.join("SKILL.md")).is_ok() {
+                        copied += 1;
+                    }
                 }
             }
         }
     }
+
     copied
 }
 
@@ -4469,8 +4653,8 @@ wip_limit = 0
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(&config_path, default_config) {
-        Ok(()) => eprintln!("  ✓ {} created", config_path.display()),
-        Err(e) => eprintln!("  ⚠ could not create {}: {e}", config_path.display()),
+        Ok(()) => eprintln!("  {} {} created", style::emoji("✓", "[*]"), config_path.display()),
+        Err(e) => eprintln!("  {} could not create {}: {e}", style::emoji("⚠", "[!]"), config_path.display()),
     }
 }
 
