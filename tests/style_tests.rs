@@ -101,9 +101,18 @@ fn list_uses_table_format() {
 fn doctor_reports_healthy_workspace() {
     ensure_built();
     let ws = TempWorkspace::new();
-    ws.run_ok(&["new", "test-session", "-g", "This is a long enough goal for testing purposes"]);
+    ws.run_ok(&[
+        "new",
+        "test-session",
+        "-g",
+        "This is a long enough goal for testing purposes",
+    ]);
     ws.run_ok(&["start", "test-session"]);
-    ws.run_ok(&["scope", "test-session", "This is a detailed scope description for the session"]);
+    ws.run_ok(&[
+        "scope",
+        "test-session",
+        "This is a detailed scope description for the session",
+    ]);
     ws.run_ok(&["tag", "test-session", "dev", "testing"]);
     ws.run_ok(&["note", "test-session", "Did some initial work"]);
     ws.run_ok(&["note", "test-session", "Completed more work"]);
@@ -116,10 +125,7 @@ fn doctor_reports_healthy_workspace() {
         out.contains("[*] 1 healthy session"),
         "expected healthy count:\n{out}"
     );
-    assert!(
-        !out.contains("[!]"),
-        "should have no warnings:\n{out}"
-    );
+    assert!(!out.contains("[!]"), "should have no warnings:\n{out}");
 }
 
 #[test]
@@ -160,11 +166,7 @@ fn doctor_with_corrupt_registry() {
         .lines()
         .find_map(|l| l.strip_prefix("id = \"").and_then(|s| s.strip_suffix('"')))
         .expect("parse identity id");
-    let reg_path = ws
-        .home()
-        .join(".ccsm")
-        .join(&id)
-        .join("sessions.json");
+    let reg_path = ws.home().join(".ccsm").join(&id).join("sessions.json");
     std::fs::write(&reg_path, b"not valid json {{{").unwrap();
     let out = ws.run(&["doctor"]);
     assert!(
@@ -182,7 +184,13 @@ fn doctor_with_corrupt_registry() {
 fn doctor_shows_worktree_warnings() {
     ensure_built();
     let ws = TempWorkspace::new();
-    ws.run_ok(&["new", "--worktree", "wt-session", "-g", "Test goal for worktree"]);
+    ws.run_ok(&[
+        "new",
+        "--worktree",
+        "wt-session",
+        "-g",
+        "Test goal for worktree",
+    ]);
     let out = ws.run_ok(&["doctor"]);
     assert!(
         out.contains("stale worktree"),

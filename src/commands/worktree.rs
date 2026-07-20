@@ -382,8 +382,16 @@ mod tests {
     fn init_repo_with_commit(dir: &Path) {
         init_git_repo(dir);
         std::fs::write(dir.join("readme"), "hi").unwrap();
-        Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
-        Command::new("git").args(["commit", "-m", "initial"]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "initial"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
     }
 
     #[test]
@@ -442,7 +450,9 @@ mod tests {
     #[test]
     fn create_worktree_fails_not_a_repo() {
         let dir = tempfile::tempdir().unwrap();
-        let e = create_worktree(dir.path(), "s", "b").unwrap_err().to_string();
+        let e = create_worktree(dir.path(), "s", "b")
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("git repository"), "{e}");
     }
 

@@ -210,7 +210,6 @@ pids: none
     assert!(out.contains("archived"), "archive output: {}", out);
 }
 
-
 #[test]
 fn misc_depend_clear() {
     ensure_built();
@@ -312,6 +311,9 @@ fn misc_note_check_succeeds() {
     ws.run_ok(&["start", "nc-session"]);
     ws.run_ok(&["note", "nc-session", "test note"]);
     let out = ws.run(&["note-check"]);
-    assert!(out.status.success(), "note-check should pass: {}",
-        String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "note-check should pass: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

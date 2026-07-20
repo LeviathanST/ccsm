@@ -443,7 +443,15 @@ fn show_json_includes_worktree_field() {
     ensure_built();
     let ws = TempWorkspace::new();
 
-    ws.run_ok(&["new", "json-wt", "-b", "main", "--worktree", "-g", "json test"]);
+    ws.run_ok(&[
+        "new",
+        "json-wt",
+        "-b",
+        "main",
+        "--worktree",
+        "-g",
+        "json test",
+    ]);
     let out = ws.run_ok(&["show", "--json", "json-wt"]);
     let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
     let expected_path = ws
@@ -459,7 +467,10 @@ fn show_json_includes_worktree_field() {
     ws.run_ok(&["new", "json-plain", "-g", "plain"]);
     let out2 = ws.run_ok(&["show", "--json", "json-plain"]);
     let parsed2: serde_json::Value = serde_json::from_str(&out2).expect("valid JSON");
-    assert_eq!(parsed2["worktree"], "", "plain session should have empty worktree");
+    assert_eq!(
+        parsed2["worktree"], "",
+        "plain session should have empty worktree"
+    );
 }
 
 // ── list --json includes branch ─────────────────────────────────────────
@@ -498,7 +509,10 @@ fn list_json_includes_branch() {
         .iter()
         .find(|s| s["name"] == "list-no-branch")
         .expect("session in list");
-    assert_eq!(entry2["branch"], "", "session without branch should have empty branch");
+    assert_eq!(
+        entry2["branch"], "",
+        "session without branch should have empty branch"
+    );
 }
 
 // ── abandon preserves worktree path ─────────────────────────────────────
@@ -557,7 +571,15 @@ fn clean_removes_worktree_session() {
     ensure_built();
     let ws = TempWorkspace::new();
 
-    ws.run_ok(&["new", "wt-clean", "-b", "main", "--worktree", "-g", "clean test"]);
+    ws.run_ok(&[
+        "new",
+        "wt-clean",
+        "-b",
+        "main",
+        "--worktree",
+        "-g",
+        "clean test",
+    ]);
     ws.run_ok(&["start", "wt-clean"]);
 
     let out = ws.run_ok(&["clean", "wt-clean"]);
