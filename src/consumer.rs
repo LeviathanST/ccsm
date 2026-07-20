@@ -706,7 +706,10 @@ mod tests {
         assert_eq!(Consumer::detect(home, Some("claude")), Consumer::Claude);
         assert_eq!(Consumer::detect(home, Some("pi")), Consumer::Pi);
         assert_eq!(Consumer::detect(home, Some("opencode")), Consumer::OpenCode);
-        assert_eq!(Consumer::detect(home, Some("open-code")), Consumer::OpenCode);
+        assert_eq!(
+            Consumer::detect(home, Some("open-code")),
+            Consumer::OpenCode
+        );
         assert_eq!(Consumer::detect(home, Some("oc")), Consumer::OpenCode);
     }
 

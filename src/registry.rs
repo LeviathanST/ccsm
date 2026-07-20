@@ -1254,11 +1254,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let data_dir = dir.path().join("data");
         let prev = std::env::var("CCSM_DATA_DIR").ok();
-        unsafe { std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref()); }
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref());
+        }
         f();
         match prev {
-            Some(v) => unsafe { std::env::set_var("CCSM_DATA_DIR", v); },
-            None => unsafe { std::env::remove_var("CCSM_DATA_DIR"); },
+            Some(v) => unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            },
+            None => unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            },
         }
     }
     use super::*;
@@ -1762,9 +1768,18 @@ mod tests {
         with_data_dir(|| {
             ensure_data_dir("ensure-dir-test").unwrap();
             let base = global_data_dir("ensure-dir-test");
-            assert!(base.join("sessions").is_dir(), "sessions subdir should exist");
-            assert!(base.join("session-group").is_dir(), "session-group subdir should exist");
-            assert!(base.join("worktrees").is_dir(), "worktrees subdir should exist");
+            assert!(
+                base.join("sessions").is_dir(),
+                "sessions subdir should exist"
+            );
+            assert!(
+                base.join("session-group").is_dir(),
+                "session-group subdir should exist"
+            );
+            assert!(
+                base.join("worktrees").is_dir(),
+                "worktrees subdir should exist"
+            );
         });
     }
 

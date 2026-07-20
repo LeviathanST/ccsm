@@ -351,8 +351,14 @@ unknown_key = "value"
         assert_eq!(cfg.branch_tracking, deserialized.branch_tracking);
         assert_eq!(cfg.wip_limit, deserialized.wip_limit);
         assert_eq!(cfg.worktrees, deserialized.worktrees);
-        assert_eq!(cfg.default_checklist_type, deserialized.default_checklist_type);
-        assert_eq!(cfg.checklist_templates.len(), deserialized.checklist_templates.len());
+        assert_eq!(
+            cfg.default_checklist_type,
+            deserialized.default_checklist_type
+        );
+        assert_eq!(
+            cfg.checklist_templates.len(),
+            deserialized.checklist_templates.len()
+        );
         assert_eq!(
             cfg.checklist_templates.get("test").unwrap().items,
             deserialized.checklist_templates.get("test").unwrap().items

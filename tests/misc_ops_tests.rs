@@ -108,8 +108,16 @@ fn misc_checklist_with_feat_template() {
     ws.run_ok(&["new", "feat-session", "-c", "feat", "-g", "feature work"]);
 
     let out = ws.run_ok(&["checklist", "feat-session"]);
-    assert!(out.contains("pending"), "checklist should have pending items: {}", out);
-    assert!(out.contains("4 items"), "checklist should have 4 items: {}", out);
+    assert!(
+        out.contains("pending"),
+        "checklist should have pending items: {}",
+        out
+    );
+    assert!(
+        out.contains("4 items"),
+        "checklist should have 4 items: {}",
+        out
+    );
 }
 
 #[test]
@@ -135,8 +143,16 @@ fn misc_completions() {
     let ws = TempWorkspace::new();
 
     let out = ws.run_ok(&["completions", "bash"]);
-    assert!(out.contains("ccsm"), "completions should contain 'ccsm': {}", out);
-    assert!(out.contains("complete"), "completions should contain 'complete': {}", out);
+    assert!(
+        out.contains("ccsm"),
+        "completions should contain 'ccsm': {}",
+        out
+    );
+    assert!(
+        out.contains("complete"),
+        "completions should contain 'complete': {}",
+        out
+    );
 }
 
 #[test]
@@ -201,7 +217,11 @@ fn misc_doctor_healthy() {
 
     ws.run_ok(&["new", "healthy-session", "-g", "test"]);
     let out = ws.run_ok(&["doctor"]);
-    assert!(out.contains("ccsm"), "doctor should produce output: {}", out);
+    assert!(
+        out.contains("ccsm"),
+        "doctor should produce output: {}",
+        out
+    );
 }
 
 #[test]
@@ -214,15 +234,23 @@ fn misc_depend_clear() {
     ws.run_ok(&["depend", "clear-b", "--on", "clear-a"]);
 
     let reg = ws.read_registry();
-    let entry = reg["sessions"].as_array().unwrap().iter()
-        .find(|s| s["name"] == "clear-b").unwrap();
+    let entry = reg["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "clear-b")
+        .unwrap();
     assert_eq!(entry["depends_on"].as_array().unwrap().len(), 1);
 
     ws.run_ok(&["depend", "clear-b", "--clear"]);
 
     let reg = ws.read_registry();
-    let entry = reg["sessions"].as_array().unwrap().iter()
-        .find(|s| s["name"] == "clear-b").unwrap();
+    let entry = reg["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "clear-b")
+        .unwrap();
     let deps = entry["depends_on"].as_array().unwrap();
     assert!(deps.is_empty(), "deps should be cleared after --clear");
 }
@@ -240,8 +268,11 @@ fn misc_clean_all_clears_trashed() {
     assert!(out.contains("cleaned"), "clean-all output: {}", out);
 
     let reg = ws.read_registry();
-    let all: Vec<_> = reg["sessions"].as_array().unwrap().iter()
-        .filter(|s| s["status"] == "trashed").collect();
+    let all: Vec<_> = reg["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["status"] == "trashed")
+        .collect();
     assert!(all.is_empty(), "all trashed sessions should be removed");
 }
-

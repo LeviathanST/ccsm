@@ -111,7 +111,14 @@ fn load_all_unfiltered(sessions_dir: &std::path::Path) -> Result<Vec<Session>> {
 mod tests {
     use super::*;
 
-    fn make_session(pid: u32, session_id: &str, cwd: &str, name: &str, started_at: u64, updated_at: Option<u64>) -> Session {
+    fn make_session(
+        pid: u32,
+        session_id: &str,
+        cwd: &str,
+        name: &str,
+        started_at: u64,
+        updated_at: Option<u64>,
+    ) -> Session {
         Session {
             pid,
             session_id: session_id.to_string(),
@@ -125,7 +132,14 @@ mod tests {
         }
     }
 
-    fn session_json(pid: u32, session_id: &str, cwd: &str, name: &str, started_at: u64, updated_at: Option<u64>) -> String {
+    fn session_json(
+        pid: u32,
+        session_id: &str,
+        cwd: &str,
+        name: &str,
+        started_at: u64,
+        updated_at: Option<u64>,
+    ) -> String {
         let mut map = serde_json::Map::new();
         map.insert("pid".into(), serde_json::json!(pid));
         map.insert("sessionId".into(), serde_json::json!(session_id));

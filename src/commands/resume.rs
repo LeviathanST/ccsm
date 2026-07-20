@@ -642,7 +642,10 @@ mod tests {
 
     #[test]
     fn test_drop_kills_child_if_not_waited() {
-        let child = std::process::Command::new("sleep").arg("10").spawn().unwrap();
+        let child = std::process::Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .unwrap();
         let pid = child.id();
         {
             let _guard = ChildGuard::new(child);

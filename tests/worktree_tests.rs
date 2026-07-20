@@ -31,7 +31,10 @@ fn new_with_worktree_flag() {
 
     // show should display worktree line
     let out = ws.run_ok(&["show", "my-session"]);
-    assert!(out.contains("worktree:"), "show should have worktree:\n{out}");
+    assert!(
+        out.contains("worktree:"),
+        "show should have worktree:\n{out}"
+    );
 }
 
 #[test]
@@ -39,7 +42,15 @@ fn new_with_branch_and_worktree() {
     ensure_built();
     let ws = TempWorkspace::new();
 
-    ws.run_ok(&["new", "branch-session", "-b", "main", "--worktree", "-g", "branch test"]);
+    ws.run_ok(&[
+        "new",
+        "branch-session",
+        "-b",
+        "main",
+        "--worktree",
+        "-g",
+        "branch test",
+    ]);
 
     let reg = ws.read_registry();
     let entry = reg["sessions"]
@@ -109,7 +120,15 @@ fn start_with_worktree() {
     ensure_built();
     let ws = TempWorkspace::new();
 
-    ws.run_ok(&["new", "wt-session", "-b", "main", "--worktree", "-g", "worktree test"]);
+    ws.run_ok(&[
+        "new",
+        "wt-session",
+        "-b",
+        "main",
+        "--worktree",
+        "-g",
+        "worktree test",
+    ]);
     let out = ws.run_ok(&["start", "wt-session"]);
     assert!(out.contains("start"), "start should succeed: {out}");
 

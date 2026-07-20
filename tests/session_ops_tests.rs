@@ -11,9 +11,18 @@ fn show_displays_session_fields() {
     ws.run_ok(&["new", "my-session", "-g", "test goal"]);
     let out = ws.run_ok(&["show", "my-session"]);
 
-    assert!(out.contains("my-session"), "show should contain name:\n{out}");
-    assert!(out.contains("test goal"), "show should contain goal:\n{out}");
-    assert!(out.contains("pending"), "show should contain status:\n{out}");
+    assert!(
+        out.contains("my-session"),
+        "show should contain name:\n{out}"
+    );
+    assert!(
+        out.contains("test goal"),
+        "show should contain goal:\n{out}"
+    );
+    assert!(
+        out.contains("pending"),
+        "show should contain status:\n{out}"
+    );
 }
 
 #[test]
@@ -33,7 +42,10 @@ fn scan_shows_tabular_output() {
     ws.run_ok(&["new", "scan-test", "-g", "scan goal"]);
     let out = ws.run_ok(&["scan"]);
 
-    assert!(out.contains("scan-test"), "scan should show session:\n{out}");
+    assert!(
+        out.contains("scan-test"),
+        "scan should show session:\n{out}"
+    );
     assert!(
         out.contains("scan goal") || out.contains("pending"),
         "scan should show fields:\n{out}"
@@ -56,11 +68,17 @@ fn scan_json_output() {
         out.contains("pending"),
         "json scan should contain status:\n{out}"
     );
-    assert!(out.contains("goal"), "json scan should have goal field:\n{out}");
+    assert!(
+        out.contains("goal"),
+        "json scan should have goal field:\n{out}"
+    );
 
     let parsed: serde_json::Value =
         serde_json::from_str(&out).expect("scan --json should be valid JSON");
-    assert!(parsed.is_array(), "scan --json should be an array:\n{parsed}");
+    assert!(
+        parsed.is_array(),
+        "scan --json should be an array:\n{parsed}"
+    );
 }
 
 #[test]
@@ -82,7 +100,10 @@ fn tag_sets_and_replaces() {
         out.contains("testing"),
         "show should contain replacement tag:\n{out}"
     );
-    assert!(!out.contains("rust"), "old tag 'rust' should be gone:\n{out}");
+    assert!(
+        !out.contains("rust"),
+        "old tag 'rust' should be gone:\n{out}"
+    );
 }
 
 #[test]
