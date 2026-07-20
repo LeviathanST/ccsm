@@ -6,7 +6,6 @@
 ///
 /// This ensures incremental transformations even when jumping many versions:
 ///   v0.0.0 → v0.1.0 → v0.15.0 → v0.16.0 → v0.17.0
-
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -92,8 +91,7 @@ fn step_strip_worktree(ctx: &MigrationContext) -> Result<()> {
         .context("parsing sessions.json to strip stale worktree fields")?;
     reg.updated = crate::registry::now_iso();
     let new_contents = serde_json::to_string_pretty(&reg)?;
-    std::fs::write(&reg_path, new_contents)
-        .context("writing cleaned sessions.json")?;
+    std::fs::write(&reg_path, new_contents).context("writing cleaned sessions.json")?;
     Ok(())
 }
 
@@ -143,8 +141,8 @@ fn read_identity(root: &Path) -> Result<Option<crate::registry::WorkspaceIdentit
     }
     let content = std::fs::read_to_string(&ccsm_path)
         .with_context(|| format!("reading {}", ccsm_path.display()))?;
-    let identity: crate::registry::WorkspaceIdentity = toml::from_str(&content)
-        .with_context(|| format!("parsing {}", ccsm_path.display()))?;
+    let identity: crate::registry::WorkspaceIdentity =
+        toml::from_str(&content).with_context(|| format!("parsing {}", ccsm_path.display()))?;
     Ok(Some(identity))
 }
 
@@ -168,7 +166,10 @@ fn bootstrap_identity(root: &Path) -> Result<String> {
         id: id.clone(),
     };
     write_identity(root, &identity)?;
-    eprintln!("  {} created .ccsm identity (starting from v1)", crate::style::emoji("✓", "[*]"));
+    eprintln!(
+        "  {} created .ccsm identity (starting from v1)",
+        crate::style::emoji("✓", "[*]")
+    );
     Ok(id)
 }
 
@@ -251,7 +252,11 @@ fn migrate_claude_legacy(root: &Path, id: &str) -> Result<bool> {
         copied += 1;
     }
 
-    eprintln!("  {} migrated {} items from .claude/", crate::style::emoji("✓", "[*]"), copied);
+    eprintln!(
+        "  {} migrated {} items from .claude/",
+        crate::style::emoji("✓", "[*]"),
+        copied
+    );
     Ok(true)
 }
 
@@ -266,10 +271,7 @@ pub fn run_migrate() -> Result<MigrationReport> {
 
     let mut report = MigrationReport::default();
 
-    eprintln!(
-        "ccsm: auto-chain migration → v{}",
-        target
-    );
+    eprintln!("ccsm: auto-chain migration → v{}", target);
     eprintln!("  workspace root: {}", root.display());
     eprintln!();
 
@@ -318,10 +320,19 @@ pub fn run_migrate() -> Result<MigrationReport> {
     }
 
     if !ran_any {
-        eprintln!("  {} already at v{} — nothing to migrate", crate::style::emoji("✓", "[*]"), first_version);
+        eprintln!(
+            "  {} already at v{} — nothing to migrate",
+            crate::style::emoji("✓", "[*]"),
+            first_version
+        );
     } else {
         eprintln!();
-        eprintln!("  {} migrated from v{} → v{}", crate::style::emoji("✓", "[*]"), first_version, target);
+        eprintln!(
+            "  {} migrated from v{} → v{}",
+            crate::style::emoji("✓", "[*]"),
+            first_version,
+            target
+        );
     }
 
     Ok(report)

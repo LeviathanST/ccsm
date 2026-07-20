@@ -35,9 +35,13 @@ fn rename_with_goal_and_scope() {
     ws.run_ok(&["start", "topic-old"]);
 
     let out = ws.run_ok(&[
-        "rename", "topic-old", "topic-new",
-        "-g", "rewritten goal",
-        "-s", "rewritten plan",
+        "rename",
+        "topic-old",
+        "topic-new",
+        "-g",
+        "rewritten goal",
+        "-s",
+        "rewritten plan",
     ]);
     assert!(out.contains("renamed"), "rename: {}", out);
 
@@ -132,13 +136,23 @@ fn rename_opencode_updates_title() {
     // Create ccsm session with explicit OpenCode consumer
     ws.run_ok(&["--consumer", "opencode", "new", "old-name", "-g", "test"]);
     // Link the session_id from the fake OpenCode DB
-    ws.run_ok(&["--consumer", "opencode", "attach", "old-name", "ses_test123"]);
+    ws.run_ok(&[
+        "--consumer",
+        "opencode",
+        "attach",
+        "old-name",
+        "ses_test123",
+    ]);
     // Rename
     ws.run_ok(&["--consumer", "opencode", "rename", "old-name", "new-name"]);
 
     // Verify title was updated in OpenCode DB
     let title: String = conn
-        .query_row("SELECT title FROM session WHERE id = 'ses_test123'", [], |r| r.get(0))
+        .query_row(
+            "SELECT title FROM session WHERE id = 'ses_test123'",
+            [],
+            |r| r.get(0),
+        )
         .expect("query title");
     assert_eq!(title, "new-name", "OpenCode DB title should be updated");
 
@@ -151,5 +165,8 @@ fn rename_opencode_updates_title() {
         .map(|s| s["name"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"new-name"), "registry should have new name");
-    assert!(!names.contains(&"old-name"), "registry should not have old name");
+    assert!(
+        !names.contains(&"old-name"),
+        "registry should not have old name"
+    );
 }

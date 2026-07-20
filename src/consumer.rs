@@ -7,7 +7,6 @@
 ///   1. `--consumer`/`-C` CLI flag (explicit)
 ///   2. `CCSM_CONSUMER` env var (`"claude"` or `"pi"`)
 ///   3. Auto-detect: prefer Pi if its config dir is more recent
-
 use anyhow::Context;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -53,9 +52,17 @@ impl Consumer {
         let pi_dir = home.join(".pi").join("agent");
         let claude_dir = home.join(".claude");
         // OpenCode check: look for the SQLite DB
-        let opencode_db = home.join(".local").join("share").join("opencode").join("opencode.db");
+        let opencode_db = home
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("opencode.db");
 
-        let candidates: [(Self, &Path); 3] = [(Self::OpenCode, &opencode_db), (Self::Pi, &pi_dir), (Self::Claude, &claude_dir)];
+        let candidates: [(Self, &Path); 3] = [
+            (Self::OpenCode, &opencode_db),
+            (Self::Pi, &pi_dir),
+            (Self::Claude, &claude_dir),
+        ];
 
         let mut found: Vec<(Self, std::time::SystemTime)> = candidates
             .iter()
@@ -64,7 +71,9 @@ impl Consumer {
                 let mtime = if path.is_dir() {
                     Self::recent_file(path)
                 } else {
-                    path.metadata().and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH)
+                    path.metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH)
                 };
                 (*consumer, mtime)
             })
@@ -95,24 +104,22 @@ impl Consumer {
         let mut latest = std::time::UNIX_EPOCH;
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
-                if let Ok(meta) = entry.metadata() {
-                    if let Ok(mtime) = meta.modified() {
-                        if mtime > latest {
-                            latest = mtime;
-                        }
-                    }
+                if let Ok(meta) = entry.metadata()
+                    && let Ok(mtime) = meta.modified()
+                    && mtime > latest
+                {
+                    latest = mtime;
                 }
                 // Check one level deeper for session dirs
-                if entry.path().is_dir() {
-                    if let Ok(sub) = std::fs::read_dir(entry.path()) {
-                        for sub_entry in sub.flatten() {
-                            if let Ok(meta) = sub_entry.metadata() {
-                                if let Ok(mtime) = meta.modified() {
-                                    if mtime > latest {
-                                        latest = mtime;
-                                    }
-                                }
-                            }
+                if entry.path().is_dir()
+                    && let Ok(sub) = std::fs::read_dir(entry.path())
+                {
+                    for sub_entry in sub.flatten() {
+                        if let Ok(meta) = sub_entry.metadata()
+                            && let Ok(mtime) = meta.modified()
+                            && mtime > latest
+                        {
+                            latest = mtime;
                         }
                     }
                 }
@@ -178,13 +185,11 @@ impl Consumer {
     /// Pi:     collapsed, stripped, wrapped in `--...--`, e.g. `--home-user-my-project--`
     pub fn project_slug(self, workspace: &Path) -> String {
         match self {
-            Self::Claude => {
-                workspace
-                    .to_string_lossy()
-                    .chars()
-                    .map(|c| if c.is_alphanumeric() { c } else { '-' })
-                    .collect()
-            }
+            Self::Claude => workspace
+                .to_string_lossy()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                .collect(),
             Self::Pi => {
                 let base = slugify_path(workspace);
                 format!("--{}--", base)
@@ -228,9 +233,11 @@ impl Consumer {
     /// Path to a live session file for a given PID (Claude only; Pi doesn't use PID files).
     pub fn live_session_file(self, home: &Path, pid: u32) -> Option<PathBuf> {
         match self {
-            Self::Claude => {
-                Some(home.join(self.home_config_dir()).join("sessions").join(format!("{pid}.json")))
-            }
+            Self::Claude => Some(
+                home.join(self.home_config_dir())
+                    .join("sessions")
+                    .join(format!("{pid}.json")),
+            ),
             Self::Pi | Self::OpenCode => None,
         }
     }
@@ -240,7 +247,9 @@ impl Consumer {
     pub fn find_session_file(self, home: &Path, slug: &str, session_id: &str) -> Option<PathBuf> {
         match self {
             Self::Claude => {
-                let path = self.projects_dir(home, slug).join(format!("{session_id}.jsonl"));
+                let path = self
+                    .projects_dir(home, slug)
+                    .join(format!("{session_id}.jsonl"));
                 if path.exists() { Some(path) } else { None }
             }
             Self::Pi => {
@@ -252,10 +261,11 @@ impl Consumer {
                 if let Ok(entries) = std::fs::read_dir(&dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            if name.contains(session_id) && name.ends_with(".jsonl") {
-                                return Some(path);
-                            }
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                            && name.contains(session_id)
+                            && name.ends_with(".jsonl")
+                        {
+                            return Some(path);
                         }
                     }
                 }
@@ -273,7 +283,12 @@ impl Consumer {
     }
 
     /// Like `find_session_file` but computes the correct slug from the workspace path.
-    pub fn find_session_file_for(self, home: &Path, workspace: &Path, session_id: &str) -> Option<PathBuf> {
+    pub fn find_session_file_for(
+        self,
+        home: &Path,
+        workspace: &Path,
+        session_id: &str,
+    ) -> Option<PathBuf> {
         self.find_session_file(home, &self.project_slug(workspace), session_id)
     }
 
@@ -378,31 +393,27 @@ pub fn read_pi_session_meta(path: &Path) -> anyhow::Result<PiSessionMeta> {
     let mut meta = PiSessionMeta::default();
 
     // Extract UUID from filename: <timestamp>_<uuid>.jsonl
-    if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
-        if let Some(uuid_part) = name.split('_').nth(1) {
-            meta.session_id = uuid_part.to_string();
-        }
+    if let Some(name) = path.file_stem().and_then(|n| n.to_str())
+        && let Some(uuid_part) = name.split('_').nth(1)
+    {
+        meta.session_id = uuid_part.to_string();
     }
 
     // Read lines to find user messages that might reveal the session name
     for line in reader.lines().flatten().take(200) {
-        if let Ok(entry) = serde_json::from_str::<PiSessionEntry>(&line) {
-            if let PiSessionEntry::Message {
+        if let Ok(entry) = serde_json::from_str::<PiSessionEntry>(&line)
+            && let PiSessionEntry::Message {
                 message: Some(msg), ..
             } = entry
-            {
-                if msg.role.as_deref() == Some("user") {
-                    if let Some(blocks) = &msg.content {
-                        for block in blocks {
-                            if let PiContentBlock::Text { text } = block {
-                                if meta.name.is_empty() {
-                                    if let Some(n) = extract_session_name(text) {
-                                        meta.name = n;
-                                    }
-                                }
-                            }
-                        }
-                    }
+            && msg.role.as_deref() == Some("user")
+            && let Some(blocks) = &msg.content
+        {
+            for block in blocks {
+                if let PiContentBlock::Text { text } = block
+                    && meta.name.is_empty()
+                    && let Some(n) = extract_session_name(text)
+                {
+                    meta.name = n;
                 }
             }
         }
@@ -441,13 +452,20 @@ fn slugify_path(path: &Path) -> String {
 
 /// Crude extraction of session name from a user prompt.
 fn extract_session_name(text: &str) -> Option<String> {
-    let triggers = ["work on ", "implement ", "fix ", "add ", "refactor ", "build "];
+    let triggers = [
+        "work on ",
+        "implement ",
+        "fix ",
+        "add ",
+        "refactor ",
+        "build ",
+    ];
     let lower = text.to_lowercase();
     for trigger in &triggers {
         if let Some(pos) = lower.find(trigger) {
             let after = &text[pos + trigger.len()..];
             let name = after
-                .split(|c: char| c == '.' || c == '!' || c == '?' || c == '\n')
+                .split(['.', '!', '?', '\n'])
                 .next()
                 .unwrap_or(after)
                 .trim()
@@ -466,7 +484,10 @@ fn extract_session_name(text: &str) -> Option<String> {
 
 /// Path to opencode's SQLite session database.
 pub fn opencode_db_path(home: &Path) -> PathBuf {
-    home.join(".local").join("share").join("opencode").join("opencode.db")
+    home.join(".local")
+        .join("share")
+        .join("opencode")
+        .join("opencode.db")
 }
 
 /// Check if a session exists in opencode's database.
@@ -476,11 +497,9 @@ pub fn opencode_session_exists(db_path: &Path, session_id: &str) -> bool {
         Ok(c) => c,
         Err(_) => return false,
     };
-    conn.query_row(
-        "SELECT 1 FROM session WHERE id = ?1",
-        [session_id],
-        |_| Ok(()),
-    )
+    conn.query_row("SELECT 1 FROM session WHERE id = ?1", [session_id], |_| {
+        Ok(())
+    })
     .is_ok()
 }
 
@@ -545,13 +564,18 @@ pub fn opencode_get_title(db_path: &Path, session_id: &str) -> Option<String> {
         "SELECT title FROM session WHERE id = ?1",
         [session_id],
         |row| row.get(0),
-    ).ok()
+    )
+    .ok()
 }
 
 /// Find a session for a directory created after a timestamp (single query, no polling).
 /// Unlike `opencode_harvest_session`, this does NOT loop — call when the session
 /// is expected to already exist (e.g. after the agent child has exited).
-pub fn opencode_find_session_since(db_path: &Path, directory: &str, since_ts: i64) -> Option<String> {
+pub fn opencode_find_session_since(
+    db_path: &Path,
+    directory: &str,
+    since_ts: i64,
+) -> Option<String> {
     use rusqlite::Connection;
     let conn = Connection::open(db_path).ok()?;
     let mut stmt = conn
@@ -634,7 +658,11 @@ mod tests {
         opencode_update_title(&db_path, "ses_test123", "swarm-mcp").unwrap();
 
         let title: String = conn
-            .query_row("SELECT title FROM session WHERE id = 'ses_test123'", [], |r| r.get(0))
+            .query_row(
+                "SELECT title FROM session WHERE id = 'ses_test123'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(title, "swarm-mcp");
     }

@@ -12,13 +12,21 @@ fn migrate_from_v1_to_current() {
 
     // Identity was created with version "1" by TempWorkspace
     let stderr = ws.run_stderr(&["migrate"]);
-    assert!(stderr.contains("normalize pre-semver"), "should run identity normalize: {stderr}");
-    assert!(stderr.contains("migrated from v1"), "should report migration: {stderr}");
+    assert!(
+        stderr.contains("normalize pre-semver"),
+        "should run identity normalize: {stderr}"
+    );
+    assert!(
+        stderr.contains("migrated from v1"),
+        "should report migration: {stderr}"
+    );
 
     // Identity file should now be at current version
     let identity = ws.read_identity();
-    assert!(identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
-        "identity should be at current version, got: {identity}");
+    assert!(
+        identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
+        "identity should be at current version, got: {identity}"
+    );
 }
 
 /// Running migrate when already at current version is a no-op.
@@ -32,7 +40,10 @@ fn migrate_noop_when_current() {
 
     // Run again — should be no-op
     let stderr = ws.run_stderr(&["migrate"]);
-    assert!(stderr.contains("nothing to migrate"), "second run should be no-op: {stderr}");
+    assert!(
+        stderr.contains("nothing to migrate"),
+        "second run should be no-op: {stderr}"
+    );
 }
 
 /// Unknown version in non-interactive mode warns and leaves identity untouched.
@@ -46,12 +57,17 @@ fn migrate_unknown_version_warns() {
 
     let stderr = ws.run_stderr(&["migrate"]);
     // The chain runner hits the unknown version and fast-forwards
-    assert!(stderr.contains("no data changes"), "should fast-forward: {stderr}");
+    assert!(
+        stderr.contains("no data changes"),
+        "should fast-forward: {stderr}"
+    );
 
     // Identity should now be at current (fast-forward bumps it)
     let identity = ws.read_identity();
-    assert!(identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
-        "should fast-forward to current: {identity}");
+    assert!(
+        identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
+        "should fast-forward to current: {identity}"
+    );
 }
 
 /// Version gap with no chain entry fast-forwards.
@@ -65,11 +81,16 @@ fn migrate_fast_forwards_gap() {
     ws.set_identity_version("0.17.5");
 
     let stderr = ws.run_stderr(&["migrate"]);
-    assert!(stderr.contains("fast-forward"), "should fast-forward: {stderr}");
+    assert!(
+        stderr.contains("fast-forward"),
+        "should fast-forward: {stderr}"
+    );
 
     let identity = ws.read_identity();
-    assert!(identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
-        "identity at current after fast-forward: {identity}");
+    assert!(
+        identity.contains(&format!(r#"version = "{}""#, env!("CARGO_PKG_VERSION"))),
+        "identity at current after fast-forward: {identity}"
+    );
 }
 
 /// Full chain from v1 runs all expected steps and ends at current.

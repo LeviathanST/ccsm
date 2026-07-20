@@ -48,13 +48,19 @@ impl Table {
 
     /// Add a column with the given width (0 = auto/remaining).
     pub fn col(&mut self, width: usize) -> &mut Self {
-        self.cols.push(Column { width, align: Alignment::Left });
+        self.cols.push(Column {
+            width,
+            align: Alignment::Left,
+        });
         self
     }
 
     /// Add a right-aligned column.
     pub fn col_right(&mut self, width: usize) -> &mut Self {
-        self.cols.push(Column { width, align: Alignment::Right });
+        self.cols.push(Column {
+            width,
+            align: Alignment::Right,
+        });
         self
     }
 
@@ -107,7 +113,9 @@ impl Table {
                         let pad = col.width - display_w;
                         match col.align {
                             Alignment::Left => write!(line, "{}{}", cell, " ".repeat(pad)).unwrap(),
-                            Alignment::Right => write!(line, "{}{}", " ".repeat(pad), cell).unwrap(),
+                            Alignment::Right => {
+                                write!(line, "{}{}", " ".repeat(pad), cell).unwrap()
+                            }
                         }
                     }
                 } else {
@@ -143,7 +151,9 @@ impl Table {
                         let pad = col.width - display_w;
                         match col.align {
                             Alignment::Left => write!(line, "{}{}", cell, " ".repeat(pad)).unwrap(),
-                            Alignment::Right => write!(line, "{}{}", " ".repeat(pad), cell).unwrap(),
+                            Alignment::Right => {
+                                write!(line, "{}{}", " ".repeat(pad), cell).unwrap()
+                            }
                         }
                     }
                 } else {
@@ -184,4 +194,90 @@ fn strip_ansi(s: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_ansi_removes_simple_escape() {
+        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
+    }
+
+    #[test]
+    fn strip_ansi_passes_plain_text() {
+        assert_eq!(strip_ansi("hello world"), "hello world");
+    }
+
+    #[test]
+    fn strip_ansi_handles_empty() {
+        assert_eq!(strip_ansi(""), "");
+    }
+
+    #[test]
+    fn strip_ansi_handles_multiple_escapes() {
+        assert_eq!(strip_ansi("\x1b[1m\x1b[32mbold green\x1b[0m"), "bold green");
+    }
+
+    #[test]
+    fn display_width_strips_ansi() {
+        let colored = "\x1b[34mhello\x1b[0m";
+        assert_eq!(display_width(colored), 5);
+    }
+
+    #[test]
+    fn display_width_plain_text() {
+        assert_eq!(display_width("hello"), 5);
+    }
+
+    #[test]
+    fn table_one_column() {
+        let mut t = Table::new();
+        t.col(10).add_row(&["hello"]);
+        // Just verify it doesn't panic — output goes to stdout
+        t.print();
+    }
+
+    #[test]
+    fn table_two_columns_auto_width() {
+        let mut t = Table::new();
+        t.col(5).col(0).add_row(&["left", "right content"]);
+        t.print();
+    }
+
+    #[test]
+    fn table_ansi_in_cell() {
+        let mut t = Table::new();
+        t.col(10).col(0).add_row(&["\x1b[31mred\x1b[0m", "text"]);
+        // Display width of "red" = 3, padded to 10 → "red       "
+        t.print();
+    }
+
+    #[test]
+    fn table_indent_and_separator() {
+        let mut t = Table::new();
+        t.indent("> ")
+            .separator(" | ")
+            .col(5)
+            .col(0)
+            .add_row(&["a", "b"]);
+        t.print();
+    }
+
+    #[test]
+    fn table_multiple_rows_same_widths() {
+        let mut t = Table::new();
+        t.col(8).col(8).col(0);
+        t.add_row(&["col1", "col2", "col3"]);
+        t.add_row(&["a", "b", "c"]);
+        t.print();
+    }
+
+    #[test]
+    fn eprint_does_not_panic() {
+        let mut t = Table::new();
+        t.col(5).col(0).add_row(&["hello", "world"]);
+        t.eprint();
+    }
 }

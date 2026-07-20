@@ -22,7 +22,9 @@ fn lifecycle_new_start_complete() {
     assert!(out.contains("in_progress"), "active list: {}", out);
 
     // Populate detail file to satisfy gate checks
-    ws.write_detail("my-session", "\
+    ws.write_detail(
+        "my-session",
+        "\
 ## Scope / Plan
 
 Test scope — verify lifecycle.
@@ -40,7 +42,8 @@ pids: none
 ## Progress Log
 
 - [2026-06-18 10:00Z] Session created
-");
+",
+    );
     let out = ws.run_ok(&["note", "my-session", "implemented the thing"]);
     assert!(out.contains("noted"), "note: {}", out);
 
@@ -124,7 +127,10 @@ fn lifecycle_pending_clears_identity() {
         .find(|s| s["name"] == "reset-me")
         .unwrap();
     assert_eq!(entry["session_id"], "", "session_id should be cleared");
-    assert!(entry["pids"].as_array().unwrap().is_empty(), "pids should be cleared");
+    assert!(
+        entry["pids"].as_array().unwrap().is_empty(),
+        "pids should be cleared"
+    );
     assert_eq!(entry["status"], "pending");
 }
 
@@ -170,7 +176,11 @@ fn list_summary_and_status_filter() {
     // --status filter with invalid status (writes to stderr, exits 0)
     let out = ws.run(&["list", "--status", "bogus"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("unknown status"), "invalid status: {}", stderr);
+    assert!(
+        stderr.contains("unknown status"),
+        "invalid status: {}",
+        stderr
+    );
 
     // --status help (writes to stderr)
     let out = ws.run(&["list", "--status", "help"]);

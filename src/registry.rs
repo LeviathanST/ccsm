@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-
 // ── Workspace Identity ────────────────────────────────────────────
 
 /// Workspace identity loaded from the `.ccsm` TOML file at project root.
@@ -53,7 +52,9 @@ pub fn global_lock_path(id: &str) -> PathBuf {
 
 /// Path to a session detail file: `~/.ccsm/<id>/sessions/<name>.md`
 pub fn global_detail_path(id: &str, name: &str) -> PathBuf {
-    global_data_dir(id).join("sessions").join(format!("{name}.md"))
+    global_data_dir(id)
+        .join("sessions")
+        .join(format!("{name}.md"))
 }
 
 /// Path to the session detail template: `~/.ccsm/<id>/session-detail-template.md`
@@ -63,7 +64,9 @@ pub fn global_template_path(id: &str) -> PathBuf {
 
 /// Path to a group detail file: `~/.ccsm/<id>/session-group/<name>.md`
 pub fn global_group_path(id: &str, name: &str) -> PathBuf {
-    global_data_dir(id).join("session-group").join(format!("{name}.md"))
+    global_data_dir(id)
+        .join("session-group")
+        .join(format!("{name}.md"))
 }
 
 /// Path to a worktree: `~/.ccsm/<id>/worktrees/<name>/`
@@ -85,8 +88,12 @@ pub fn find_project_root(start: &Path) -> Result<Option<(PathBuf, WorkspaceIdent
         if ccsm_file.is_file() {
             let content = std::fs::read_to_string(&ccsm_file)
                 .with_context(|| format!("reading {}", ccsm_file.display()))?;
-            let identity: WorkspaceIdentity = toml::from_str(&content)
-                .with_context(|| format!("parsing {} — expected `version` and `id` fields", ccsm_file.display()))?;
+            let identity: WorkspaceIdentity = toml::from_str(&content).with_context(|| {
+                format!(
+                    "parsing {} — expected `version` and `id` fields",
+                    ccsm_file.display()
+                )
+            })?;
             return Ok(Some((dir.to_path_buf(), identity)));
         }
         current = dir.parent();
@@ -117,15 +124,20 @@ pub fn resolve_identity() -> Result<WorkspaceContext> {
         if dir.join(".ccsm").join("sessions.json").exists() {
             let root = dir.to_path_buf();
             let id = uuid_v4();
-            eprintln!("ccsm: migrating from {}/.ccsm/ to ~/.ccsm/{id}/", root.display());
+            eprintln!(
+                "ccsm: migrating from {}/.ccsm/ to ~/.ccsm/{id}/",
+                root.display()
+            );
             let ccsm_path = root.join(".ccsm");
             migrate_legacy_data(&root, &id)?;
             if ccsm_path.is_dir() {
                 std::fs::remove_dir_all(&ccsm_path)?;
             }
-            let content = format!("version = \"{}\"\nid = \"{id}\"\n", env!("CARGO_PKG_VERSION"));
-            std::fs::write(&ccsm_path, &content)
-                .context("writing .ccsm identity file")?;
+            let content = format!(
+                "version = \"{}\"\nid = \"{id}\"\n",
+                env!("CARGO_PKG_VERSION")
+            );
+            std::fs::write(&ccsm_path, &content).context("writing .ccsm identity file")?;
             let slug = project_slug(&id);
             return Ok(WorkspaceContext { id, root, slug });
         }
@@ -147,7 +159,11 @@ pub fn init_identity() -> Result<WorkspaceContext> {
     if let Some((root, identity)) = find_project_root(&cwd)? {
         eprintln!("ccsm: .ccsm identity already exists at {}", root.display());
         let slug = project_slug(&identity.id);
-        return Ok(WorkspaceContext { id: identity.id, root, slug });
+        return Ok(WorkspaceContext {
+            id: identity.id,
+            root,
+            slug,
+        });
     }
 
     let root = find_nearest_git_root(&cwd).unwrap_or(cwd);
@@ -157,9 +173,11 @@ pub fn init_identity() -> Result<WorkspaceContext> {
         std::fs::remove_dir_all(&ccsm_path)?;
     }
     if !ccsm_path.exists() {
-        let content = format!("version = \"{}\"\nid = \"{id}\"\n", env!("CARGO_PKG_VERSION"));
-        std::fs::write(&ccsm_path, &content)
-            .context("writing .ccsm identity file")?;
+        let content = format!(
+            "version = \"{}\"\nid = \"{id}\"\n",
+            env!("CARGO_PKG_VERSION")
+        );
+        std::fs::write(&ccsm_path, &content).context("writing .ccsm identity file")?;
     }
     let slug = project_slug(&id);
     ensure_data_dir(&id)?;
@@ -188,7 +206,10 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
             let content = format!("version = \"{current}\"\nid = \"{}\"\n", identity.id);
             std::fs::write(root.join(".ccsm"), &content)
                 .context("rewriting .ccsm identity with current version")?;
-            eprintln!("ccsm: migrated .ccsm identity from v{} to v{}", identity.version, current);
+            eprintln!(
+                "ccsm: migrated .ccsm identity from v{} to v{}",
+                identity.version, current
+            );
         }
         "0.15.0" => {
             // Strip stale worktree field from registry (field removed in 0.16.0)
@@ -198,7 +219,10 @@ fn run_identity_migrations(identity: &WorkspaceIdentity, root: &Path) -> Result<
             let content = format!("version = \"{current}\"\nid = \"{}\"\n", identity.id);
             std::fs::write(root.join(".ccsm"), &content)
                 .context("rewriting .ccsm identity with current version")?;
-            eprintln!("ccsm: migrated .ccsm identity from v{} to v{} (stale worktree fields stripped)", identity.version, current);
+            eprintln!(
+                "ccsm: migrated .ccsm identity from v{} to v{} (stale worktree fields stripped)",
+                identity.version, current
+            );
         }
         _ => {
             // Unknown version — warn, don't block. The hard safety guard
@@ -222,16 +246,14 @@ pub fn migrate_legacy_data(root: &Path, id: &str) -> Result<()> {
     let src_json = src.join("sessions.json");
     let dst_json = global_registry_path(id);
     if src_json.exists() {
-        std::fs::copy(&src_json, &dst_json)
-            .context("copying legacy sessions.json")?;
+        std::fs::copy(&src_json, &dst_json).context("copying legacy sessions.json")?;
     }
 
     // sessions/ detail files
     let src_sessions = src.join("sessions");
     let dst_sessions = global_data_dir(id).join("sessions");
     if src_sessions.is_dir() {
-        std::fs::create_dir_all(&dst_sessions)
-            .context("creating global sessions dir")?;
+        std::fs::create_dir_all(&dst_sessions).context("creating global sessions dir")?;
         if let Ok(entries) = std::fs::read_dir(&src_sessions) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -249,8 +271,7 @@ pub fn migrate_legacy_data(root: &Path, id: &str) -> Result<()> {
     let src_group = src.join("session-group");
     let dst_group = global_data_dir(id).join("session-group");
     if src_group.is_dir() {
-        std::fs::create_dir_all(&dst_group)
-            .context("creating global session-group dir")?;
+        std::fs::create_dir_all(&dst_group).context("creating global session-group dir")?;
         if let Ok(entries) = std::fs::read_dir(&src_group) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -267,15 +288,13 @@ pub fn migrate_legacy_data(root: &Path, id: &str) -> Result<()> {
     // session-detail-template.md
     let src_tpl = src.join("session-detail-template.md");
     if src_tpl.exists() {
-        std::fs::copy(&src_tpl, global_template_path(id))
-            .context("copying template file")?;
+        std::fs::copy(&src_tpl, global_template_path(id)).context("copying template file")?;
     }
 
     // config.toml
     let src_config = src.join("config.toml");
     if src_config.exists() {
-        std::fs::copy(&src_config, global_config_path(id))
-            .context("copying config.toml")?;
+        std::fs::copy(&src_config, global_config_path(id)).context("copying config.toml")?;
     }
 
     // Delete old .ccsm/ directory (non-critical cleanup)
@@ -299,20 +318,17 @@ pub(crate) fn strip_stale_worktree(identity: &WorkspaceIdentity) -> Result<()> {
 
     // Re-save — serde automatically omits the removed `worktree` field
     let new_contents = serde_json::to_string_pretty(&reg)?;
-    std::fs::write(&reg_path, new_contents)
-        .context("writing cleaned sessions.json")?;
+    std::fs::write(&reg_path, new_contents).context("writing cleaned sessions.json")?;
     Ok(())
 }
 
 /// Ensure the global data directory structure exists for a workspace.
 pub fn ensure_data_dir(id: &str) -> Result<()> {
     let dir = global_data_dir(id);
-    std::fs::create_dir_all(dir.join("sessions"))
-        .context("creating global sessions dir")?;
+    std::fs::create_dir_all(dir.join("sessions")).context("creating global sessions dir")?;
     std::fs::create_dir_all(dir.join("session-group"))
         .context("creating global session-group dir")?;
-    std::fs::create_dir_all(dir.join("worktrees"))
-        .context("creating global worktrees dir")?;
+    std::fs::create_dir_all(dir.join("worktrees")).context("creating global worktrees dir")?;
     Ok(())
 }
 
@@ -615,7 +631,8 @@ impl WorkspaceRegistry {
                 let proj_dir = consumer.projects_dir_for(home, workspace);
                 let slug = consumer.project_slug(workspace);
                 let transcript = if consumer.is_pi() {
-                    consumer.find_session_file(home, &slug, session_id)
+                    consumer
+                        .find_session_file(home, &slug, session_id)
                         .unwrap_or_else(|| proj_dir.join(format!("_{session_id}.jsonl")))
                 } else {
                     proj_dir.join(format!("{session_id}.jsonl"))
@@ -631,9 +648,10 @@ impl WorkspaceRegistry {
                         continue;
                     }
                     if let Ok(contents) = std::fs::read_to_string(&path)
-                        && contents.contains(session_id) {
-                            let _ = std::fs::remove_file(&path);
-                        }
+                        && contents.contains(session_id)
+                    {
+                        let _ = std::fs::remove_file(&path);
+                    }
                 }
             }
         }
@@ -666,9 +684,12 @@ impl WorkspaceRegistry {
         if !session_id.is_empty() {
             if !consumer.is_opencode() {
                 let slug = consumer.project_slug(workspace);
-                let transcript = consumer.find_session_file(home, &slug, session_id)
+                let transcript = consumer
+                    .find_session_file(home, &slug, session_id)
                     .unwrap_or_else(|| {
-                        consumer.projects_dir(home, &slug).join(format!("{session_id}.jsonl"))
+                        consumer
+                            .projects_dir(home, &slug)
+                            .join(format!("{session_id}.jsonl"))
                     });
                 if transcript.exists() {
                     if let Ok(meta) = std::fs::metadata(&transcript) {
@@ -686,12 +707,13 @@ impl WorkspaceRegistry {
                         continue;
                     }
                     if let Ok(contents) = std::fs::read_to_string(&path)
-                        && contents.contains(session_id) {
-                            if let Ok(meta) = std::fs::metadata(&path) {
-                                freed += meta.len();
-                            }
-                            let _ = std::fs::remove_file(&path);
+                        && contents.contains(session_id)
+                    {
+                        if let Ok(meta) = std::fs::metadata(&path) {
+                            freed += meta.len();
                         }
+                        let _ = std::fs::remove_file(&path);
+                    }
                 }
             }
         }
@@ -710,7 +732,12 @@ impl WorkspaceRegistry {
     }
 
     /// Permanently clean every trashed session at once.
-    pub fn clean_all_trashed(&mut self, home: &std::path::Path, workspace: &std::path::Path, consumer: crate::consumer::Consumer) {
+    pub fn clean_all_trashed(
+        &mut self,
+        home: &std::path::Path,
+        workspace: &std::path::Path,
+        consumer: crate::consumer::Consumer,
+    ) {
         let trashed: Vec<(String, String)> = self
             .sessions
             .iter()
@@ -885,9 +912,9 @@ pub fn session_age_days(ts: &str) -> u64 {
         / 86400;
 
     // Parse "day<number>..."
-    let stripped = ts.strip_prefix("day").and_then(|s| {
-        s.split('T').next().and_then(|n| n.parse::<u64>().ok())
-    });
+    let stripped = ts
+        .strip_prefix("day")
+        .and_then(|s| s.split('T').next().and_then(|n| n.parse::<u64>().ok()));
 
     match stripped {
         Some(days) => now_days.saturating_sub(days),
@@ -940,7 +967,9 @@ fn days_to_date(mut days: u64) -> (u32, u32, u32) {
     let mut year: u32 = 1970;
     loop {
         let diy: u64 = if is_leap(year) { 366 } else { 365 };
-        if days < diy { break; }
+        if days < diy {
+            break;
+        }
         days -= diy;
         year += 1;
     }
@@ -951,7 +980,9 @@ fn days_to_date(mut days: u64) -> (u32, u32, u32) {
     };
     let mut month: u32 = 1;
     for &md in &mdays {
-        if days < md { break; }
+        if days < md {
+            break;
+        }
         days -= md;
         month += 1;
     }
@@ -994,7 +1025,9 @@ pub(crate) fn insert_note(contents: &str, new_entry: &str) -> String {
             out.push('\n');
         }
         out.push_str(new_entry);
-        if ins < lines.len() { out.push('\n'); }
+        if ins < lines.len() {
+            out.push('\n');
+        }
         for line in &lines[ins..] {
             out.push_str(line);
             out.push('\n');
@@ -1002,7 +1035,9 @@ pub(crate) fn insert_note(contents: &str, new_entry: &str) -> String {
         out
     } else {
         let mut out = contents.to_string();
-        if !out.ends_with('\n') { out.push('\n'); }
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
         out.push('\n');
         out.push_str("## Progress Log\n\n");
         out.push_str(new_entry);
@@ -1083,14 +1118,24 @@ pub fn sync_status_line(name: &str) {
         return;
     };
 
-    let started = if session.started.is_empty() { "" } else { &session.started };
-    let completed = if session.completed.is_empty() { "" } else { &session.completed };
+    let started = if session.started.is_empty() {
+        ""
+    } else {
+        &session.started
+    };
+    let completed = if session.completed.is_empty() {
+        ""
+    } else {
+        &session.completed
+    };
     let new_line = format!(
         "> **{}** | started {} | completed {}",
         session.status, started, completed,
     );
 
-    let Ok(contents) = std::fs::read_to_string(&detail_path) else { return };
+    let Ok(contents) = std::fs::read_to_string(&detail_path) else {
+        return;
+    };
     let mut updated = String::new();
     let mut found = false;
     for line in contents.lines() {
@@ -1116,17 +1161,20 @@ pub(crate) fn is_kebab_case(s: &str) -> bool {
 }
 
 pub(crate) fn harvest_from_pid(home: &std::path::Path, pid: u32) -> anyhow::Result<String> {
-    let session_file = home.join(".claude").join("sessions").join(format!("{pid}.json"));
+    let session_file = home
+        .join(".claude")
+        .join("sessions")
+        .join(format!("{pid}.json"));
     if !session_file.exists() {
         anyhow::bail!(
             "no session file at {}\n  Is PID {} running?",
-            session_file.display(), pid
+            session_file.display(),
+            pid
         );
     }
-    let contents = std::fs::read_to_string(&session_file)
-        .context("reading session file")?;
-    let s: crate::session::Session = serde_json::from_str(&contents)
-        .context("parsing session file")?;
+    let contents = std::fs::read_to_string(&session_file).context("reading session file")?;
+    let s: crate::session::Session =
+        serde_json::from_str(&contents).context("parsing session file")?;
     if s.session_id.is_empty() {
         anyhow::bail!("session file for PID {} has no sessionId yet", pid);
     }
@@ -1135,8 +1183,11 @@ pub(crate) fn harvest_from_pid(home: &std::path::Path, pid: u32) -> anyhow::Resu
 
 pub(crate) fn validate_session_id(sid: &str) -> anyhow::Result<()> {
     // Accept OpenCode ses_* format (e.g. ses_abc123...)
-    if sid.starts_with("ses_") && sid.len() > 4
-        && sid[4..].chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    if sid.starts_with("ses_")
+        && sid.len() > 4
+        && sid[4..]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Ok(());
     }
@@ -1156,7 +1207,8 @@ pub(crate) fn validate_session_id(sid: &str) -> anyhow::Result<()> {
             "'{}' does not look like a session UUID (e.g. f493397b-...-4d5f15da0311).\n\
              If you renamed the session in the TUI, the name changed but the UUID didn't.\n\
              Use --pid <pid> instead: ccsm attach {} --pid <pid>",
-            sid, sid
+            sid,
+            sid
         );
     }
 }
@@ -1180,9 +1232,10 @@ pub(crate) fn parse_sections(md: &str) -> Vec<(String, String)> {
         }
     }
     if let Some(h) = current_header
-        && (!current_body.trim().is_empty() || sections.iter().any(|(_, b)| !b.trim().is_empty())) {
-            sections.push((h, current_body));
-        }
+        && (!current_body.trim().is_empty() || sections.iter().any(|(_, b)| !b.trim().is_empty()))
+    {
+        sections.push((h, current_body));
+    }
     sections
 }
 
@@ -1191,8 +1244,8 @@ pub(crate) fn parse_sections(md: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-        use std::path::PathBuf;
-        use std::sync::Arc;
+    use std::path::PathBuf;
+    use std::sync::Arc;
 
     /// Create a temp workspace with `.claude/sessions.json` pre-populated.
     /// Create a temp directory with a data directory structure for testing.
@@ -1299,7 +1352,11 @@ mod tests {
                 consumer: String::new(),
             }],
         };
-        std::fs::write(&data_dir.join("sessions.json"), serde_json::to_string_pretty(&reg).unwrap()).unwrap();
+        std::fs::write(
+            data_dir.join("sessions.json"),
+            serde_json::to_string_pretty(&reg).unwrap(),
+        )
+        .unwrap();
 
         let (loaded, _lock) = WorkspaceRegistry::load_locked_from(&data_dir).unwrap();
         assert_eq!(loaded.sessions.len(), 1);
@@ -1396,9 +1453,13 @@ mod tests {
 
         // All entries should be present — none lost to race
         let reg = WorkspaceRegistry::load_from(&data_dir).unwrap();
-        assert_eq!(reg.sessions.len(), num_threads,
+        assert_eq!(
+            reg.sessions.len(),
+            num_threads,
             "expected {} entries, got {} — mutations were lost to a race",
-            num_threads, reg.sessions.len());
+            num_threads,
+            reg.sessions.len()
+        );
 
         let mut names: Vec<_> = reg.sessions.iter().map(|s| s.name.clone()).collect();
         names.sort();
@@ -1421,8 +1482,8 @@ mod tests {
             let d = Arc::clone(&data_dir);
             handles.push(std::thread::spawn(move || {
                 let name = format!("unlocked-{}", i);
-                let mut reg = WorkspaceRegistry::load_from(&d)
-                    .unwrap_or_else(|_| WorkspaceRegistry::empty());
+                let mut reg =
+                    WorkspaceRegistry::load_from(&d).unwrap_or_else(|_| WorkspaceRegistry::empty());
                 reg.sessions.push(WorkspaceSession {
                     session_id: String::new(),
                     name,
@@ -1482,20 +1543,35 @@ mod tests {
     #[test]
     fn global_data_dir_defaults_to_home_ccsm() {
         let prev = std::env::var("CCSM_DATA_DIR").ok();
-        unsafe { std::env::remove_var("CCSM_DATA_DIR"); }
+        unsafe {
+            std::env::remove_var("CCSM_DATA_DIR");
+        }
         let dir = global_data_dir("test-id");
         assert!(dir.to_string_lossy().contains("/.ccsm/test-id"));
-        if let Some(v) = prev { unsafe { std::env::set_var("CCSM_DATA_DIR", v); } }
+        if let Some(v) = prev {
+            unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            }
+        }
     }
 
     #[test]
     fn global_data_dir_respects_env_override() {
         let prev = std::env::var("CCSM_DATA_DIR").ok();
-        unsafe { std::env::set_var("CCSM_DATA_DIR", "/tmp/ccsm-data"); }
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", "/tmp/ccsm-data");
+        }
         let dir = global_data_dir("test-id");
         assert_eq!(dir, std::path::PathBuf::from("/tmp/ccsm-data/test-id"));
-        if let Some(v) = prev { unsafe { std::env::set_var("CCSM_DATA_DIR", v); } }
-            else { unsafe { std::env::remove_var("CCSM_DATA_DIR"); } }
+        if let Some(v) = prev {
+            unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            }
+        }
     }
 
     #[test]
@@ -1528,7 +1604,9 @@ mod tests {
         });
         // Set up CCSM_DATA_DIR so global_registry_path resolves to our temp dir
         let prev = std::env::var("CCSM_DATA_DIR").ok();
-        unsafe { std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref()); }
+        unsafe {
+            std::env::set_var("CCSM_DATA_DIR", data_dir.to_string_lossy().as_ref());
+        }
 
         let identity = WorkspaceIdentity {
             version: "0.16.0".into(),
@@ -1544,16 +1622,29 @@ mod tests {
 
         // Verify worktree FIELD exists before stripping
         let raw = std::fs::read_to_string(&reg_path).unwrap();
-        assert!(raw.contains(r#""worktree":"#), "worktree field should exist before");
+        assert!(
+            raw.contains(r#""worktree":"#),
+            "worktree field should exist before"
+        );
 
         strip_stale_worktree(&identity).unwrap();
 
         // Verify worktree FIELD is gone after stripping (use_worktree still exists)
         let cleaned = std::fs::read_to_string(&reg_path).unwrap();
-        assert!(!cleaned.contains(r#""worktree":"#), "worktree field should be stripped");
+        assert!(
+            !cleaned.contains(r#""worktree":"#),
+            "worktree field should be stripped"
+        );
 
-        if let Some(v) = prev { unsafe { std::env::set_var("CCSM_DATA_DIR", v); } }
-            else { unsafe { std::env::remove_var("CCSM_DATA_DIR"); } }
+        if let Some(v) = prev {
+            unsafe {
+                std::env::set_var("CCSM_DATA_DIR", v);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("CCSM_DATA_DIR");
+            }
+        }
     }
 
     #[test]

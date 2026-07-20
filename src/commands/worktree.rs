@@ -7,10 +7,7 @@ use anyhow::{Context, Result};
 
 /// Canonical worktree path for a session: `<workspace>/.claude/worktrees/<name>/`
 pub fn worktree_path_for(workspace: &Path, name: &str) -> PathBuf {
-    workspace
-        .join(".claude")
-        .join("worktrees")
-        .join(name)
+    workspace.join(".claude").join("worktrees").join(name)
 }
 
 // ── Git helpers ───────────────────────────────────────────────────────
@@ -22,7 +19,7 @@ pub fn is_git_repo(workspace: &Path) -> bool {
         .current_dir(workspace)
         .output()
         .ok()
-        .map_or(false, |o| o.status.success())
+        .is_some_and(|o| o.status.success())
 }
 
 /// Check whether `branch` exists locally or as `origin/<branch>`.
@@ -30,21 +27,31 @@ pub fn is_git_repo(workspace: &Path) -> bool {
 pub fn branch_exists(workspace: &Path, branch: &str) -> bool {
     // Check local branches first (fast)
     if Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
         .current_dir(workspace)
         .status()
         .ok()
-        .map_or(false, |s| s.success())
+        .is_some_and(|s| s.success())
     {
         return true;
     }
     // Check remote via ls-remote (fast — just queries refs, no fetch)
     Command::new("git")
-        .args(["ls-remote", "--exit-code", "origin", &format!("refs/heads/{branch}")])
+        .args([
+            "ls-remote",
+            "--exit-code",
+            "origin",
+            &format!("refs/heads/{branch}"),
+        ])
         .current_dir(workspace)
         .status()
         .ok()
-        .map_or(false, |s| s.success())
+        .is_some_and(|s| s.success())
 }
 
 // ── Gitignore management ──────────────────────────────────────────────
@@ -70,7 +77,10 @@ pub fn ensure_worktree_gitignore(workspace: &Path) {
         return;
     }
 
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&gitignore_path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&gitignore_path)
+    {
         use std::io::Write;
         let _ = writeln!(file, "{pattern}");
     }
@@ -95,7 +105,9 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
         !wt_path.exists(),
         "worktree for session '{}' already exists at {}\n\
          Use `ccsm resume {}` to continue.",
-        name, wt_path.display(), name,
+        name,
+        wt_path.display(),
+        name,
     );
 
     // ── Ensure branch is up-to-date with main ──────────────────────────
@@ -105,7 +117,7 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
         .current_dir(workspace)
         .status()
         .ok()
-        .map_or(false, |s| s.success());
+        .is_some_and(|s| s.success());
 
     if !is_ancestor {
         // Only fetch if we can reach the remote (fast ls-remote check)
@@ -114,7 +126,7 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
             .current_dir(workspace)
             .status()
             .ok()
-            .map_or(false, |s| s.success());
+            .is_some_and(|s| s.success());
 
         if remote_reachable {
             let fetch_ok = Command::new("git")
@@ -128,7 +140,12 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
             if fetch_ok {
                 // Re-check behind status after fetch
                 let behind = Command::new("git")
-                    .args(["rev-list", "--count", "--left-right", &format!("{branch}...origin/main")])
+                    .args([
+                        "rev-list",
+                        "--count",
+                        "--left-right",
+                        &format!("{branch}...origin/main"),
+                    ])
                     .current_dir(workspace)
                     .output()
                     .ok()
@@ -140,7 +157,9 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                     .unwrap_or(0);
 
                 if behind > 0 {
-                    eprintln!("  branch '{branch}' is {behind} commit(s) behind origin/main — rebasing...");
+                    eprintln!(
+                        "  branch '{branch}' is {behind} commit(s) behind origin/main — rebasing..."
+                    );
 
                     let is_dirty = Command::new("git")
                         .args(["status", "--porcelain"])
@@ -153,7 +172,8 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                     let stashed = if is_dirty {
                         anyhow::bail!(
                             "branch '{}' has uncommitted changes. Commit or stash first, then run `ccsm start {}` again.",
-                            branch, name,
+                            branch,
+                            name,
                         );
                     } else {
                         false
@@ -168,19 +188,29 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                         .unwrap_or(false);
 
                     if !rebase_ok {
-                        let _ = Command::new("git").args(["rebase", "--abort"]).current_dir(workspace).output();
+                        let _ = Command::new("git")
+                            .args(["rebase", "--abort"])
+                            .current_dir(workspace)
+                            .output();
                         if stashed {
-                            let _ = Command::new("git").args(["stash", "pop"]).current_dir(workspace).output();
+                            let _ = Command::new("git")
+                                .args(["stash", "pop"])
+                                .current_dir(workspace)
+                                .output();
                         }
-                        anyhow::bail!("failed to rebase '{}' onto origin/main.\nResolve conflicts manually, then run `ccsm start` again.", branch);
+                        anyhow::bail!(
+                            "failed to rebase '{}' onto origin/main.\nResolve conflicts manually, then run `ccsm start` again.",
+                            branch
+                        );
                     }
                     eprintln!("  rebase complete — '{branch}' is now up-to-date with main");
 
                     if stashed {
                         // Create worktree + pop stash inside it
                         if let Some(parent) = wt_path.parent() {
-                            std::fs::create_dir_all(parent)
-                                .with_context(|| format!("creating worktree parent: {}", parent.display()))?;
+                            std::fs::create_dir_all(parent).with_context(|| {
+                                format!("creating worktree parent: {}", parent.display())
+                            })?;
                         }
                         let add_ok = Command::new("git")
                             .args(["worktree", "add", &wt_path.to_string_lossy(), branch])
@@ -191,7 +221,10 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                             .unwrap_or(false);
                         if !add_ok {
                             let _ = std::fs::remove_dir_all(&wt_path);
-                            let _ = Command::new("git").args(["stash", "pop"]).current_dir(workspace).output();
+                            let _ = Command::new("git")
+                                .args(["stash", "pop"])
+                                .current_dir(workspace)
+                                .output();
                             anyhow::bail!("failed to create worktree after rebase.");
                         }
                         eprintln!("  restoring stashed changes into worktree...");
@@ -203,7 +236,9 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
                             .map(|o| o.status.success())
                             .unwrap_or(false);
                         if !pop_ok {
-                            eprintln!("  warning: stash had conflicts in worktree. Resolve manually (git stash list).");
+                            eprintln!(
+                                "  warning: stash had conflicts in worktree. Resolve manually (git stash list)."
+                            );
                         } else {
                             eprintln!("  changes moved to worktree successfully");
                         }
@@ -226,11 +261,16 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
 
     // Create worktree — auto-create branch from HEAD if it doesn't exist
     let branch_exists = Command::new("git")
-        .args(["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")])
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
         .current_dir(workspace)
         .status()
         .ok()
-        .map_or(false, |s| s.success());
+        .is_some_and(|s| s.success());
 
     let result = if branch_exists {
         Command::new("git")
@@ -241,19 +281,27 @@ pub fn create_worktree(workspace: &Path, name: &str, branch: &str) -> Result<Pat
     } else {
         eprintln!("  creating new branch '{}' from HEAD...", branch);
         Command::new("git")
-            .args(["worktree", "add", "-b", branch, &wt_path.to_string_lossy(), "HEAD"])
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                &wt_path.to_string_lossy(),
+                "HEAD",
+            ])
             .current_dir(workspace)
             .output()
             .context("failed to run `git worktree add -b`")?
     };
-
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
         let _ = std::fs::remove_dir_all(&wt_path);
         anyhow::bail!(
             "git worktree add failed for branch '{}' at {}:\n{}",
-            branch, wt_path.display(), stderr.trim(),
+            branch,
+            wt_path.display(),
+            stderr.trim(),
         );
     }
 
@@ -293,7 +341,10 @@ pub fn remove_worktree(workspace: &Path, name: &str, force: bool) -> Result<()> 
         anyhow::bail!(
             "failed to remove worktree for '{}' at {}:\n{}\n\
              Use `ccsm complete {} --force` to force remove.",
-            name, wt_path.display(), stderr.trim(), name,
+            name,
+            wt_path.display(),
+            stderr.trim(),
+            name,
         );
     }
 
