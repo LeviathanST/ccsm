@@ -10,7 +10,7 @@ ccsm uses [semantic versioning](https://semver.org/).
 - add lock staleness detection to `doctor` with PID-based `/proc` check + 5-min threshold (#39)
 - add `ccsm doctor --fix` to auto-remove stale lock files (#39)
 - add hierarchical help: `ccsm help commands` (categorized), `ccsm help <command>` (detailed + examples) (#41)
-- add interactive `ccsm tutorial` — sandbox walkthrough of the full session lifecycle (#42)
+- add interactive `ccsm tutorial` — sandboxed walkthrough with isolated project + data dirs, includes `ccsm init` step (#42)
 - make docs OpenCode-first: legacy consumer section, swarm removal notice (#43)
 - backfill CHANGELOG for v0.21.0 and v0.21.1 (#40)
 
