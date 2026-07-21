@@ -33,7 +33,7 @@
 
 | Field | Who | When |
 |-------|-----|------|
-| `session_id` | **ccsm** — NEVER touch | Harvested from consumer session file (~/.claude/sessions/<pid>.json for Claude, OpenCode/SQLite) on exit. Use `ccsm attach` to set manually |
+| `session_id` | **ccsm** — NEVER touch | Harvested from consumer session store (OpenCode SQLite DB, or legacy JSON) on exit. Use `ccsm attach` to set manually |
 | `pids` | **ccsm** — NEVER touch | Set at spawn, cleared on exit |
 | `started` | **ccsm** — NEVER touch | Set on first spawn |
 | `name`, `goal`, `scope`, `tags` | **You** | On session create, refine as needed |

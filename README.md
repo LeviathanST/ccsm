@@ -1,8 +1,8 @@
 # ccsm — Session Registry & Lifecycle Manager
 
-ccsm is a CLI session registry and lifecycle manager for AI coding agents. It tracks sessions in `.ccsm/sessions.json`, links transcripts, and spawns agents (`opencode`, `claude`, `pi`) with resume support. It also ships **ccsm-swarm**, an MCP server for multi-agent orchestration via tmux.
+**ccsm is an [OpenCode](https://opencode.ai) companion.** It tracks sessions in `.ccsm/sessions.json`, links transcripts, and spawns OpenCode with resume support. ccsm is the backbone of a structured multi-agent workflow: plan → session → work → review → merge → archive. Every session is tracked, every transcript is linked, and nothing falls through the cracks.
 
-ccsm is the backbone of a structured multi-agent workflow: plan → session → work → review → merge → archive. Every session is tracked, every transcript is linked, and nothing falls through the cracks.
+> **ccsm-swarm was removed in v0.21.0.** See [AGENTS.md](AGENTS.md) for the current orchestration approach. If you need swarm functionality, use ccsm v0.20.0 or earlier.
 
 ---
 
@@ -11,11 +11,10 @@ ccsm is the backbone of a structured multi-agent workflow: plan → session → 
 ```bash
 cargo build --release
 cp target/release/ccsm ~/.local/bin/ccsm
-cp target/release/ccsm-swarm ~/.local/bin/ccsm-swarm
 ccsm setup
 ```
 
-Prerequisites: Rust toolchain, tmux (for swarm). Build times ~30s.
+Prerequisites: Rust toolchain. Build times ~30s.
 
 ---
 
@@ -23,7 +22,6 @@ Prerequisites: Rust toolchain, tmux (for swarm). Build times ~30s.
 
 ```
 ccsm CLI              — Session registry (new, start, resume, complete, archive)
-ccsm-swarm (MCP)      — Multi-agent orchestration via tmux
     │
     ├── <workspace>/.ccsm                  # Identity file (TOML: version + id)
     ├── ~/.ccsm/<id>/sessions.json         # Canonical registry (single source of truth)
@@ -31,17 +29,16 @@ ccsm-swarm (MCP)      — Multi-agent orchestration via tmux
     ├── ~/.ccsm/<id>/session-group/        # Group detail files
     ├── ~/.ccsm/<id>/worktrees/            # Git worktrees for branch isolation
     ├── ~/.ccsm/<id>/config.toml           # Project policy config
-    └── rmcp (stdio MCP)                   # Rust MCP SDK for ccsm-swarm tooling
+    └── OpenCode SQLite DB (~/.local/share/opencode/opencode.db)
 ```
 
 ### Design Principles
 
 1. **CLI-first.** Purpose-built subcommands for every operation. Same output format across agents and shell scripts.
 2. **`.ccsm/sessions.json` is canonical.** Structured JSON, diffable, parseable by any tool.
-3. **Consumer abstraction.** `src/consumer.rs` encapsulates all agent-specific paths. New consumer = one enum variant.
+3. **OpenCode-first.** ccsm is designed for and tested against [OpenCode](https://opencode.ai). Other consumers are legacy (see below).
 4. **Batch with `sequence`.** Multiple mutations under one lock and one save — faster than `&&` chaining.
 5. **Advisory file locking.** Exclusive `flock` on `.ccsm/sessions.json.lock` before every mutation.
-6. **ccsm-swarm is an MCP server over stdio.** Single 3.8MB Rust binary, no runtime deps beyond tmux.
 
 ---
 
@@ -53,9 +50,8 @@ Most workflow documentation lives in Claude skills (`.claude/skills/`). These ar
 
 | Skill / Doc | What it covers | For |
 |-------------|----------------|-----|
-| [AGENTS.md](AGENTS.md) | ccsm-swarm MCP tools — create swarm, label panes, inject, wait, capture | Orchestrator setup |
 | [.claude/skills/session-manager/SKILL.md](.claude/skills/session-manager/SKILL.md) | Full session lifecycle — start, work, note, complete. Status rules, attach modes, team awareness | Every session |
-| [docs/ccsm-swarm.md](docs/ccsm-swarm.md) | Detailed MCP tool reference — args, returns, architecture, delta tracking | Tool implementors |
+| [AGENTS.md](AGENTS.md) | Orchestration workflow for multi-agent sessions | Orchestrator setup |
 | [docs/adding-a-consumer.md](docs/adding-a-consumer.md) | Adding a new agent backend (Consumer enum) | Developers |
 
 ### Agent Workflow Skills
@@ -79,31 +75,20 @@ Most workflow documentation lives in Claude skills (`.claude/skills/`). These ar
 
 See the full command list in [.claude/skills/session-manager/reference/cli-commands.md](.claude/skills/session-manager/reference/cli-commands.md).
 
-### ccsm-swarm MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `swarm-list-panes` | List all tmux panes with session, window, process |
-| `swarm-capture` | Read pane output (delta-aware — only new content) |
-| `swarm-inject` | Type text into a pane |
-| `swarm-wait` | Block until a sentinel string appears |
-| `swarm-status` | Consolidated status of all panes |
-| `swarm-broadcast` | Same text to every pane |
-| `swarm-label` | Name a pane for role-based targeting |
-
-See [AGENTS.md](AGENTS.md) for the orchestration workflow.
+_(ccsm-swarm was removed in v0.21.0. Use v0.20.0 if you need swarm functionality.)_
 
 ---
 
 ## Consumer Model
 
-ccsm supports multiple AI coding agents via the `--consumer` flag:
+ccsm is **OpenCode-first** — this is the only actively maintained consumer. Other consumers are legacy and receive no active development.
 
-| Consumer | Flag | Binary | Sessions |
-|----------|------|--------|----------|
-| OpenCode (default) | `--consumer opencode` | `opencode` | SQLite at `~/.local/share/opencode/opencode.db` |
-| Claude Code | `--consumer claude` | `claude` | `~/.claude/sessions/<pid>.json` |
-| Pi | `--consumer pi` | `pi` | `~/.pi/agent/sessions/<slug>/` |
+| Consumer | Status | Binary | Sessions |
+|----------|--------|--------|----------|
+| **OpenCode** | **Active (default)** | `opencode` | SQLite at `~/.local/share/opencode/opencode.db` |
+| Claude Code | Legacy | `claude` | `~/.claude/sessions/<pid>.json` |
+| Pi | Legacy | `pi` | `~/.pi/agent/sessions/<slug>/` |
+| CodeWhale | Legacy | — | — |
 
 Detection order: `--consumer` flag → `CCSM_CONSUMER` env var → auto-detect (most recently active config dir wins).
 
@@ -129,15 +114,13 @@ See [.claude/skills/session-manager/SKILL.md](.claude/skills/session-manager/SKI
 | `~/.ccsm/<id>/sessions.json` | Registry entries (canonical) |
 | `~/.ccsm/<id>/sessions/<name>.md` | Session detail files (progress, checklists) |
 | `<workspace>/.claude/skills/` | Workflow skills (session-manager, seed-session, wrap-up) |
-| `~/.claude/sessions/<pid>.json` | Live Claude session ID |
-| `~/.claude/projects/<slug>/<uuid>.jsonl` | Claude transcript |
+| `~/.local/share/opencode/opencode.db` | OpenCode session transcripts |
 
 ---
 
 ## Related
 
 - [.claude/skills/session-manager/](.claude/skills/session-manager/) — Full session management protocol
-- [AGENTS.md](AGENTS.md) — ccsm-swarm orchestration workflow
-- [docs/ccsm-swarm.md](docs/ccsm-swarm.md) — MCP tool reference
-- [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks)
-- [Claude Code .claude Directory Guide](https://code.claude.com/docs/en/claude-directory)
+- [AGENTS.md](AGENTS.md) — Multi-agent orchestration workflow
+- [OpenCode](https://opencode.ai) — The AI coding agent ccsm is built for
+- [Learn Session Manager Skill](https://opencode.ai/docs/skills) — How to write OpenCode skills

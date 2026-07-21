@@ -40,7 +40,8 @@ pub(crate) const TEMPLATE_CONTENT: &str = r#"# Session: {{name}}
 "#;
 
 /// `ccsm doctor` — scan session registry and filesystem for health issues.
-pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
+/// Pass `fix: true` to auto-clean fixable issues (stale locks).
+pub fn run_doctor(home: &Path, workspace: &Path, fix: bool) -> anyhow::Result<()> {
     let ctx = registry::resolve_identity()?;
     let consumer = crate::consumer::Consumer::detect(home, None);
     let reg = match crate::registry::WorkspaceRegistry::load() {
@@ -224,13 +225,66 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
         ));
     }
 
-    // 8. Stale lock file
+    // 8. Stale lock file — PID-based detection with 5-min age threshold
     if lock_path.exists() {
-        infos.push(format!(
-            "  stale lock file  {}\n    → rm {}  (if no ccsm command is running)",
-            lock_path.display(),
-            lock_path.display(),
-        ));
+        let pid = registry::read_lock_pid(&lock_path);
+        let pid_alive = pid
+            .map(|p| std::path::Path::new(&format!("/proc/{p}")).exists())
+            .unwrap_or(false);
+        let mtime = std::fs::metadata(&lock_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let age_secs = mtime
+            .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let is_stale = !pid_alive && age_secs > 300; // 5 minutes
+
+        if pid_alive {
+            infos.push(format!(
+                "  lock held by PID {} (alive, {}s old) — {}",
+                pid.unwrap_or(0),
+                age_secs,
+                lock_path.display(),
+            ));
+        } else if is_stale {
+            if fix {
+                match std::fs::remove_file(&lock_path) {
+                    Ok(_) => warnings.push(format!(
+                        "  stale lock file removed  {}\n    PID {} was dead, lock file was {}s old",
+                        lock_path.display(),
+                        pid.unwrap_or(0),
+                        age_secs,
+                    )),
+                    Err(e) => warnings.push(format!(
+                        "  failed to remove stale lock  {}\n    {}",
+                        lock_path.display(),
+                        e,
+                    )),
+                }
+            } else {
+                warnings.push(format!(
+                    "  stale lock file  {}\n    PID {} is dead, lock file is {}s old (>5 min)\n    → ccsm doctor --fix  to auto-remove",
+                    lock_path.display(),
+                    pid.unwrap_or(0),
+                    age_secs,
+                ));
+            }
+        } else if !pid_alive && age_secs <= 300 {
+            // Recent lock file with dead PID — borderline. Report as info.
+            infos.push(format!(
+                "  recent lock file with dead PID  {}\n    PID {} dead but lock file is only {}s old (<5 min, may be a race)",
+                lock_path.display(),
+                pid.unwrap_or(0),
+                age_secs,
+            ));
+        } else {
+            // age_secs == 0 (couldn't read mtime) — basic check
+            infos.push(format!(
+                "  lock file exists  {} (no mtime available)",
+                lock_path.display(),
+            ));
+        }
     }
 
     // 9. Session aging — stale in_progress sessions
@@ -381,7 +435,7 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
                 e,
             ));
         } else {
-            auto_created.push(format!("  {}sessions/", global.display()));
+            auto_created.push(format!("  {}/sessions/", global.display()));
         }
     }
 
@@ -472,6 +526,9 @@ pub fn run_doctor(home: &Path, workspace: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
     use super::*;
     use crate::registry::{SessionStatus, WorkspaceRegistry, WorkspaceSession};
     use std::path::PathBuf;
@@ -534,6 +591,7 @@ mod tests {
     where
         F: FnOnce() + std::panic::UnwindSafe,
     {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let orig_data_dir = std::env::var("CCSM_DATA_DIR").ok();
         let orig_home = std::env::var("HOME").ok();
         let orig_cwd = std::env::current_dir().ok();
@@ -605,7 +663,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should pass for healthy session: {:?}",
@@ -625,7 +683,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle empty goal: {:?}",
@@ -645,7 +703,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle vague goal: {:?}",
@@ -665,7 +723,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle name-as-goal: {:?}",
@@ -685,7 +743,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle cli artifact: {:?}",
@@ -705,7 +763,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle empty scope on completed: {:?}",
@@ -736,7 +794,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle stale session: {:?}",
@@ -756,7 +814,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should auto-create template: {:?}",
@@ -795,7 +853,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle multiple sessions: {:?}",
@@ -827,7 +885,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle corrupt registry: {:?}",
@@ -846,16 +904,73 @@ mod tests {
         )]);
         let data_dir = dir.path().join("data");
 
-        // Create a stale lock file
+        // Create a stale lock file with a dead PID (PID 99999999 is unlikely to be alive)
         let id_dir = data_dir.join("test-doctor-id");
-        std::fs::write(id_dir.join("sessions.json.lock"), "").unwrap();
+        let lock_path = id_dir.join("sessions.json.lock");
+        std::fs::write(&lock_path, "99999999\n").unwrap();
+
+        // Set mtime to 10 minutes ago
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        let f = std::fs::File::open(&lock_path).unwrap();
+        let _ = f.set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(old_time)
+                .set_modified(old_time),
+        );
+        drop(f);
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle stale lock: {:?}",
                 result
+            );
+        });
+    }
+
+    #[test]
+    fn run_doctor_fix_removes_stale_lock() {
+        let (dir, workspace, home) = setup_doctor_env(vec![make_session(
+            "task",
+            "a real goal that is long enough to be useful",
+            "approach: do work",
+            SessionStatus::Pending,
+        )]);
+        let data_dir = dir.path().join("data");
+        let id_dir = data_dir.join("test-doctor-id");
+        let lock_path = id_dir.join("sessions.json.lock");
+
+        // Create a stale lock file with dead PID
+        std::fs::write(&lock_path, "99999998\n").unwrap();
+
+        // Set mtime to 10 minutes ago using file times API
+        let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        let f = std::fs::File::open(&lock_path).unwrap();
+        f.set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(old_time)
+                .set_modified(old_time),
+        )
+        .unwrap();
+        drop(f);
+
+        run_doctor_in_env(&workspace, &home, &data_dir, || {
+            // Verify lock exists before fix
+            assert!(
+                lock_path.exists(),
+                "lock should exist before fix at {}",
+                lock_path.display()
+            );
+
+            let result = run_doctor(&home, &workspace, true);
+            assert!(result.is_ok(), "doctor --fix should succeed: {:?}", result);
+
+            // Verify lock was removed
+            assert!(
+                !lock_path.exists(),
+                "lock should be removed after --fix at {}",
+                lock_path.display()
             );
         });
     }
@@ -875,7 +990,7 @@ mod tests {
         let data_dir = dir.path().join("data");
 
         run_doctor_in_env(&workspace, &home, &data_dir, || {
-            let result = run_doctor(&home, &workspace);
+            let result = run_doctor(&home, &workspace, false);
             assert!(
                 result.is_ok(),
                 "doctor should handle hype mode: {:?}",

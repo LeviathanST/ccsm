@@ -119,7 +119,7 @@ macro_rules! eprint_err {
 // ── CLI (clap) ──────────────────────────────────────────────────────
 
 #[derive(Parser)]
-#[command(name = "ccsm", version, about = "Session registry CLI", long_about = None)]
+#[command(name = "ccsm", version, about = "Session registry CLI", long_about = None, disable_help_subcommand = true)]
 struct Cli {
     /// Target agent: auto-detected (opencode, claude, or pi). Also via CCSM_CONSUMER env var.
     #[arg(long)]
@@ -406,8 +406,13 @@ enum Commands {
     Archive { name: String },
     /// Archive all completed sessions that still have transcripts
     ArchiveAll,
-    /// Scan for health issues: orphaned IDs, dead PIDs, empty fields, cleanup candidates
-    Doctor,
+    /// Scan for health issues: orphaned IDs, dead PIDs, empty fields, cleanup candidates.
+    /// Pass --fix to auto-clean fixable issues (stale locks, etc.).
+    Doctor {
+        /// Auto-fix fixable issues (stale lock files)
+        #[arg(long)]
+        fix: bool,
+    },
     /// Run multiple mutations in a single lock/load/save cycle.
     /// Each -q starts an operation: -q start foo -q scope foo text -q complete foo
     Sequence {
@@ -486,6 +491,16 @@ enum Commands {
         #[arg(num_args = 1..)]
         args: Vec<String>,
     },
+    /// Browse help by category. Use `ccsm help commands` for a categorized list,
+    /// or `ccsm help <command>` for detailed help with examples.
+    Help {
+        #[arg(num_args = 1..)]
+        topic: Vec<String>,
+    },
+    /// Interactive walkthrough of the session lifecycle.
+    /// Runs through new → start → note → scope → tag → close → complete
+    /// in a throwaway sandbox session. Silent in non-terminal.
+    Tutorial,
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -640,7 +655,7 @@ fn run_main() -> anyhow::Result<()> {
         Commands::CleanAll => run_clean_all(&home, &workspace_path(), consumer),
         Commands::Archive { name } => run_archive(&name, &home, &workspace_path(), consumer),
         Commands::ArchiveAll => run_archive_all(&home, &workspace_path(), consumer),
-        Commands::Doctor => commands::doctor::run_doctor(&home, &workspace_path()),
+        Commands::Doctor { fix } => commands::doctor::run_doctor(&home, &workspace_path(), fix),
         Commands::Sequence { args } => run_sequence(&args),
         Commands::Note { name, text, cross } => run_note(&name, &text.join(" "), cross.as_deref()),
         Commands::Completions { shell } => run_completions(&shell),
@@ -653,6 +668,11 @@ fn run_main() -> anyhow::Result<()> {
         ),
         Commands::Migrate => run_migrate(),
         Commands::Config { args } => run_config(&args),
+        Commands::Help { topic } => {
+            commands::help::run_help(&topic);
+            Ok(())
+        }
+        Commands::Tutorial => commands::tutorial::run_tutorial(),
     }
 }
 // ── First-Run Welcome ───────────────────────────────────────────────
@@ -5751,7 +5771,21 @@ mod tests {
     #[test]
     fn cli_parse_doctor_command() {
         let cli = Cli::try_parse_from(["ccsm", "doctor"]).unwrap();
-        assert!(matches!(cli.command, Commands::Doctor));
+        assert!(matches!(cli.command, Commands::Doctor { .. }));
+    }
+
+    #[test]
+    fn cli_parse_help_command() {
+        let cli = Cli::try_parse_from(["ccsm", "help", "commands"]).unwrap();
+        assert!(matches!(cli.command, Commands::Help { .. }));
+        let cli = Cli::try_parse_from(["ccsm", "help"]).unwrap();
+        assert!(matches!(cli.command, Commands::Help { .. }));
+    }
+
+    #[test]
+    fn cli_parse_tutorial_command() {
+        let cli = Cli::try_parse_from(["ccsm", "tutorial"]).unwrap();
+        assert!(matches!(cli.command, Commands::Tutorial));
     }
 
     #[test]

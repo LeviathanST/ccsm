@@ -356,11 +356,12 @@ fn misc_doctor_stale_lock() {
     ws.run_ok(&["new", "lock-session", "-g", "test session"]);
 
     let lock_path = ws.global_dir().join("sessions.json.lock");
-    std::fs::write(&lock_path, "locked by test").unwrap();
+    // Write a dead PID into the lock file (99999999 is unlikely to be alive)
+    std::fs::write(&lock_path, "99999999\n").unwrap();
 
     let out = ws.run_ok(&["doctor"]);
     assert!(
-        out.contains("stale lock file"),
+        out.contains("recent lock file with dead PID") || out.contains("stale lock file"),
         "doctor should report stale lock: {out}"
     );
 

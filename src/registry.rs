@@ -853,6 +853,9 @@ impl WorkspaceRegistry {
 ///
 /// The OS releases the lock automatically if the process exits,
 /// so a crash won't leave the registry permanently locked.
+///
+/// The lock file contains the PID of the holding process so `doctor`
+/// can detect stale locks by checking if the PID is still alive.
 pub struct LockFile {
     _file: std::fs::File,
 }
@@ -872,8 +875,19 @@ impl LockFile {
             .context("opening lock file")?;
         file.lock_exclusive()
             .context("acquiring exclusive lock on sessions.json")?;
+        // Write our PID into the lock file so doctor can detect staleness.
+        // Safe to truncate now — we hold the exclusive lock.
+        use std::io::Write;
+        file.set_len(0).ok();
+        let _ = writeln!(&file, "{}", std::process::id());
         Ok(Self { _file: file })
     }
+}
+
+/// Read the PID stored in a lock file, if any.
+pub fn read_lock_pid(lock_path: &Path) -> Option<u32> {
+    let content = std::fs::read_to_string(lock_path).ok()?;
+    content.lines().next()?.trim().parse::<u32>().ok()
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
